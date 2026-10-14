@@ -11,8 +11,8 @@ English: [P5R_PORT.md](P5R_PORT.md)
 - `dm/verify/equiv.py`：支持 Windows 进程启动，穷举条件选择的 NZCV 状态，并保留游戏对测试映射 TSD 页的写入。测试覆盖检查器的损坏输入处理、源文件保护与内存写入比较。
 - `dm/host/guest_bootstrap.c`：抽出通用 SDK 启动，执行前检查九个必要符号，再按 libc、系统、模块初始化、参数设置、游戏入口的顺序调用。`DM_GUEST_PROFILE=p5r` 选择实验模式；启动域锁定后不可切换。缺省仍为 D2R。
 - P5R 启动域跳过 D2R 的启动钩子、TACT 预取、物品/技能/光标输入链、存档预置与提交前扩展、固定地址堆统计和渲染比例修改，也不报告 D2R 的术士 DLC。未实现导入会中止并报告接口名。
-- 音频接管补齐带事件和不带事件的 `OpenDefaultAudioOut` 重载，以及默认设备名称查询。可选接管表允许旧 SDK 没有这些符号；既有 D2R 必需接管检查仍保留。原生音频行为尚待 macOS 测试。
-- `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频测试与 Python 测试；仅使用源码和合成数据，不构建游戏安装包。
+- 音频接管补齐带事件和不带事件的 `OpenDefaultAudioOut` 重载、默认设备名称查询，以及 `subsdk0` 导入的 `GetAudioOutPlayedSampleCount`。采样数按实际消耗的 PCM 帧累计，停止和空队列补零不计，跨缓冲保留半帧余数，重新打开时归零。可选接管表允许旧 SDK 没有这些符号；既有 D2R 必需接管检查仍保留。与真实 Switch 的完整行为一致性仍需验证。
+- `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频测试、iOS ARM64 组件编译与 22 个 Python 测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。
 
 静态依赖候选包括条件编译声明、占位实现与原版 Switch SDK 内部函数。名字匹配不代表宿主服务或驱动可用。检查器目前要求 NSO 头带动态符号表描述，支持 LZ4 与未压缩段，不支持 Zbic。
 
@@ -33,6 +33,7 @@ E:\port-tools-venv\Scripts\python.exe -X utf8 dm/tools/prepare_port.py "E:\games
 ```powershell
 python -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
 python -m unittest discover -s dm/verify -p test_equiv_compare.py -v
+python -m unittest discover -s dm/i18n -p test_scan_literals.py -v
 ```
 
 ## 可玩版本之前仍需完成
@@ -41,11 +42,13 @@ python -m unittest discover -s dm/verify -p test_equiv_compare.py -v
 2. 验证 P5R 的 SDK 初始化、线程、文件系统、手柄、音频及视频与宿主的兼容性，补齐所需服务，不能依赖原版 Switch 驱动的导出。
 3. 找到 P5R 的着色器二进制和反射信息，生成专用翻译数据库，实现它使用的图形调用。暗黑 2 的 shader map/facts 不能作为 P5R 数据复用。
 4. 实现 P5R 应用壳、资源挂载、存档路径与合适的触控操作。原来的暗黑 2 无 Xcode 打包壳不包含这个新运行时。
-5. 在本地或云端的 macOS/Xcode 环境编译新增 iOS 原生代码，并在真机验证启动、画面、声音、存档读写和游戏流程。iOS 27 目标尚未测试。
+5. 完成完整 iOS 应用的链接、打包与签名，并在真机验证启动、画面、声音、存档读写和游戏流程。新增组件已通过 iOS SDK 26.5 的 ARM64 编译，iOS 27 真机目标尚未测试。
 
 ## 验证范围
 
-本地 P5R 模块可由改写器处理，没有应用暗黑 2 专用剪口或观测钩子。逐处检查使用 Unicorn 验证改写 CPU 指令；SVC/计时器宿主门、苹果 ABI、GPU 输出与游戏本身需要另行验证。这台 Windows 电脑尚未运行完整苹果宿主/图形测试、独立 LLVM 结构检查及 iOS 编译/真机测试。中文字面量扫描器已统一 Windows 路径并登记两个原有构建期诊断，扫描与字符串表一致性检查均通过。
+本地 P5R 模块可由改写器处理，没有应用暗黑 2 专用剪口或观测钩子。逐处检查使用 Unicorn 验证改写 CPU 指令；SVC/计时器宿主门、苹果 ABI、GPU 输出与游戏本身需要另行验证。完整苹果宿主/图形测试、独立 LLVM 结构检查、iOS 应用链接/打包及真机测试仍未完成。中文字面量扫描器已统一 Windows 路径并登记两个原有构建期诊断，扫描与字符串表一致性检查均通过。
+
+源码云端测试已在 macOS 26 ARM64 运行：启动两组测试、音频缓冲释放顺序/事件、AudioUnit 暂停恢复和 10 万块三线程队列测试通过。使用 iOS SDK 26.5 编译了 10 个改动的宿主组件；这仅生成目标文件，不代表完整应用已链接或可安装。云端没有读取或上传本地游戏文件。
 
 通用启动代码已使用 Windows C 编译器实际编译，D2R/P5R 两组测试通过：验证调用顺序、主线程/参数区传递、参数 ABI、九种缺入口时不执行 SDK、以及 P5R 不执行 D2R 钩子。它们使用假 SDK，不能代替苹果系统上执行真实游戏的验证。现有 iOS 壳与构建生成表仍绑定 D2R；仅设置启动环境变量不足以得到 P5R 应用。
 
