@@ -26,6 +26,7 @@ typedef struct {
     gbuf *q[QMAX]; _Atomic uint32_t q_head, q_tail;       // 待播：游戏侧写，出声端读 | Pending: written by the game side, read by the output side
     gbuf *rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // 已释放：出声端写，游戏侧读 | Released: written by the output side, read by the game side
     uint64_t pos;                      // 当前块已播字节 | Bytes already played of the current block
+    _Atomic uint64_t played_bytes;     // 实际消耗的 PCM 字节；跨块/回调保留半帧余数 | Consumed PCM bytes; retain partial-frame remainders across buffers/callbacks
     AudioUnit au;
     pthread_t null_th; _Atomic int null_run;
     dispatch_semaphore_t notify_sem;
@@ -73,6 +74,7 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
         uint64_t k = b->size - a->pos; if (k > n) k = n;
         memcpy(dst, (uint8_t *)b->ptr + a->pos, k);
         dst += k; n -= k; a->pos += k;
+        atomic_fetch_add_explicit(&a->played_bytes, k, memory_order_release);
         if (a->pos >= b->size) {
             uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
             uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_acquire);
@@ -144,6 +146,7 @@ HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKN
     aout *a = calloc(1, sizeof *a);
     pthread_mutex_init(&a->m, NULL); a->event = ev; a->ch = ch;
     atomic_init(&a->state, STATE_STOPPED);
+    atomic_init(&a->played_bytes, 0);
     atomic_init(&a->q_head, 0); atomic_init(&a->q_tail, 0);
     atomic_init(&a->rel_head, 0); atomic_init(&a->rel_tail, 0);
     atomic_init(&a->null_run, 0); atomic_init(&a->notify_run, 1);
@@ -173,6 +176,13 @@ HLE_FORCE_OPTIONAL("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11Sy
 }
 HLE_FORCE_OPTIONAL("_ZN2nn5audio15GetAudioOutNameEPKNS0_8AudioOutE", "宿主默认设备名称", const char *, h_au_Name, const void *g) {
     (void)ao(g); return "DeviceOut";
+}
+// P5R 的 subsdk0 查询此接口；原 SDK 查 Switch 服务对象，不能用于宿主创建的 AudioOut。
+// P5R's subsdk0 queries this interface; the original SDK looks up a Switch service object, incompatible with host-created AudioOut.
+HLE_FORCE_OPTIONAL("_ZN2nn5audio28GetAudioOutPlayedSampleCountEPKNS0_8AudioOutE",
+                   "宿主 PCM 播放帧计数；避开 Switch 音频服务", uint64_t, h_au_Played, const void *g) {
+    aout *a = ao(g);
+    return atomic_load_explicit(&a->played_bytes, memory_order_acquire) / (2u * (unsigned)a->ch);
 }
 HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "开始播放", Result, h_au_Start, void *g) {
     aout *a = ao(g);
