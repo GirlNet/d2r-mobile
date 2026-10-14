@@ -41,4 +41,6 @@ Three kinds of things live here. The first you will use when following the front
 
 For experimental preparation of another Switch game, `inspect_exefs.py` inventories local NSO modules and `prepare_port.py` runs rewriting and optional equivalence checks. These tools do not provide a game runtime or install package. See [P5R port preparation](../../docs/P5R_PORT.md).
 
+`prepare_p5r_shaders.py` extracts the inspected embedded NVN 11 layout from a local P5R NSO into a new directory outside the repository. It produces diagnostic translation jobs with unverified resource/state defaults, not a finished shader library.
+
 `nso.py` (splits the game program into segments), `fn.py` (function boundaries from the unwind table), `sweep.py` (linear instruction sweep), `x18.py` and `cat18.py` (find and classify instructions using x18, a register Apple reserves), `xref_sdk.py` (cross-references of system library functions), `tp.c` (checks how the thread pointer register behaves under Apple's kernel). They were written before the rewrite approach was settled and depend on intermediate files from that time; they are not guaranteed to run as they are. The basis of the rewrite approach is in [dm/README.md](../README.md) and [dm/verify/README.md](../verify/README.md).
