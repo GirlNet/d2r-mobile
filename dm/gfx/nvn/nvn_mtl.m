@@ -55,6 +55,7 @@
 #include "nvn_cover.h"
 #include "dmsh_chain.h"   // DMSH_CHAIN：本源码树期望的 B 着色器库翻译链版本 | DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree
 #include "nvn_hmap.h"
+#include "nvn_shader_control.h"
 #include "../../host/dm.h"
 #import <CommonCrypto/CommonDigest.h>
 #include <stdarg.h>
@@ -2019,6 +2020,8 @@ static NSString *exe_rel(const char *rel) {
 static void shmap_load(void) {
     if (g_shmap) return;
     const char *e = getenv("DM_NVN_SHMAP");
+    if (!dm_guest_d2r() && (!e || !*e || !getenv("DM_MSL_DIR") || !*getenv("DM_MSL_DIR")))
+        MDIE("P5R requires explicit DM_NVN_SHMAP and DM_MSL_DIR for its own shaders");
     NSString *path = e ? @(e) : exe_rel("../gfx/nvn/shader_map.tsv");
     NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
     if (!txt) MDIE("读不到着色器映射表 %s（DM_NVN_SHMAP 可指定）", path.UTF8String);
@@ -2276,11 +2279,13 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提�
     shmap_load();
     NvProg *o = [NvProg new];
     for (unsigned i = 0; i < p->nstage; i++) {
-        uint8_t md[32]; CC_SHA256(p->sd[i].control, 0x880, md);
+        size_t ctl_size = nvn_control_hash_size(p->sd[i].control, 0x24, !dm_guest_d2r());
+        if (!ctl_size) MDIE("Unsupported shader control layout for guest profile");
+        uint8_t md[32]; CC_SHA256(p->sd[i].control, (CC_LONG)ctl_size, md);
         NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]];
         NSString *zh = g_shmap[k];
         if (!zh) {   // 不在包里：查 main 本体内嵌的计算核（nvn_builtin.h） | Not in the package: look up the compute kernels embedded in the main body (nvn_builtin.h)
-            NvShader *b = builtin_get(k.UTF8String);
+            NvShader *b = dm_guest_d2r() ? builtin_get(k.UTF8String) : nil;
             if (b) { o->sh[5] = b; continue; }
             MLOG("【红】着色器控制段 %s 不在映射表里", k.UTF8String); continue;
         }

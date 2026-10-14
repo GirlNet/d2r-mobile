@@ -7,6 +7,9 @@ on:
     paths:
       - '.github/workflows/p5r-runtime-tests.yml'
       - 'dm/host/**'
+      - 'dm/gfx/nvn/**'
+      - 'dm/tools/prepare_p5r_shaders.py'
+      - 'dm/tools/test_prepare_p5r_shaders.py'
       - 'dm/tools/inspect_exefs.py'
       - 'dm/tools/prepare_port.py'
       - 'dm/tools/test_inspect_exefs.py'
@@ -35,11 +38,20 @@ jobs:
           DM_AUDIO: '0'
         run: |
           set -euo pipefail
-          make -C dm/host/tests build/t_guest_bootstrap build/t_audio build/t_audio_spsc
+          make -C dm/host/tests build/t_guest_bootstrap build/t_audio build/t_audio_spsc build/t_shader_control
           dm/host/tests/build/t_guest_bootstrap d2r
           dm/host/tests/build/t_guest_bootstrap p5r
           dm/host/tests/build/t_audio
           dm/host/tests/build/t_audio_spsc
+          dm/host/tests/build/t_shader_control
+      - name: Compile changed Metal backend
+        run: |
+          set -euo pipefail
+          xcrun clang -fobjc-arc -mmacosx-version-min=26.0 -Werror=implicit-function-declaration \
+            -I dm/host -I dm/gfx/nvn/include -c dm/gfx/nvn/nvn_mtl.m -o "$RUNNER_TEMP/p5r-nvn-macos.o"
+          xcrun --sdk iphoneos clang -arch arm64 -fobjc-arc -miphoneos-version-min=26.0 \
+            -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+            -c dm/gfx/nvn/nvn_mtl.m -o "$RUNNER_TEMP/p5r-nvn-ios.o"
       - name: Compile changed host components for iOS
         run: |
           set -euo pipefail
@@ -58,6 +70,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/p5r-tests"
           "$RUNNER_TEMP/p5r-tests/bin/python" -m pip install lz4==4.4.5
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/verify -p test_equiv_compare.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/i18n -p test_scan_literals.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" dm/i18n/scan_literals.py
