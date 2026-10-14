@@ -12,6 +12,7 @@ on:
       - 'dm/tools/test_inspect_exefs.py'
       - 'dm/verify/equiv_compare.py'
       - 'dm/verify/test_equiv_compare.py'
+      - 'dm/i18n/**'
 permissions:
   contents: read
 jobs:
@@ -39,6 +40,18 @@ jobs:
           dm/host/tests/build/t_guest_bootstrap p5r
           dm/host/tests/build/t_audio
           dm/host/tests/build/t_audio_spsc
+      - name: Compile changed host components for iOS
+        run: |
+          set -euo pipefail
+          xcrun --sdk iphoneos --show-sdk-version
+          mkdir -p "$RUNNER_TEMP/p5r-ios-objects"
+          for source in dm/host/guest_bootstrap.c dm/host/main.c dm/host/loader.c dm/host/hle.c \
+            dm/host/hle_hid.c dm/host/hle_fs.c dm/host/hle_oe.c dm/host/hle_svc.c \
+            dm/host/hle_audio.c dm/host/hle_misc.c; do
+            xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=26.0 \
+              -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+              -c "$source" -o "$RUNNER_TEMP/p5r-ios-objects/${source##*/}.o"
+          done
       - name: Run Python tool tests
         run: |
           set -euo pipefail
@@ -46,5 +59,6 @@ jobs:
           "$RUNNER_TEMP/p5r-tests/bin/python" -m pip install lz4==4.4.5
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/verify -p test_equiv_compare.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/i18n -p test_scan_literals.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" dm/i18n/scan_literals.py
           "$RUNNER_TEMP/p5r-tests/bin/python" dm/ios/tools/dm_i18n.py --check

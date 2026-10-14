@@ -43,7 +43,23 @@ def strip_py(s):
     lits = []; lines = s.splitlines(True); off = [0]
     for l in lines: off.append(off[-1] + len(l))
     prev = None
+    fstart = getattr(tokenize, 'FSTRING_START', -1)
+    fend = getattr(tokenize, 'FSTRING_END', -1)
+    fdepth, fpos = 0, None
     for t in tokenize.generate_tokens(io.StringIO(s).readline):
+        # 新版 Python 将 f-string 拆成多种 token；还原最外层源码片段，保持旧版扫描范围与位置。
+        # Newer Python splits f-strings into multiple token types; restore the outer source span to preserve old scan coverage and positions.
+        if t.type == fstart:
+            if not fdepth: fpos = off[t.start[0] - 1] + t.start[1]
+            fdepth += 1
+            continue
+        if t.type == fend and fdepth:
+            fdepth -= 1
+            if not fdepth:
+                end = off[t.end[0] - 1] + t.end[1]
+                lits.append((fpos, s[fpos:end])); prev = tokenize.STRING
+            continue
+        if fdepth: continue
         if t.type == tokenize.STRING:
             doc = prev in (None, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.NL) and t.string.lstrip('rbuRBUfF')[:3] in ('"""', "'''")
             if not doc: lits.append((off[t.start[0] - 1] + t.start[1], t.string))
