@@ -371,6 +371,22 @@ static void receipt(const NpadState *s, uint32_t id, uint32_t style, uint64_t km
 void (*dm_pad_hook)(uint64_t, uint64_t *, int32_t *, int32_t *, int32_t *, int32_t *);
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
     pthread_once(&g_receipt_once, receipt_init);
+    // P5R 直接接前端手柄数据，不进入暗黑 UI 消息、物品、技能及光标改写链。
+    // P5R reads front-end controller data directly, bypassing D2R UI messages, items, skills and cursor rewriting.
+    if (!dm_guest_d2r()) {
+        uint64_t start = g_receipt_file ? now_ns() : 0;
+        memset(s, 0, sizeof *s); s->sampling = ++g_sampling;
+        if (!(style_of(id) & style)) { receipt(s, id, style, 0, start); return; }
+        s->buttons = g_in.buttons | atomic_exchange(&g_press_latch, 0) | atomic_load(&g_pad_btn) | atomic_exchange(&g_pad_latch, 0);
+        s->lx = g_in.lx; s->ly = g_in.ly; s->rx = g_in.rx; s->ry = g_in.ry;
+        uint64_t axes = atomic_load(&g_pad_axes);
+        if (!(s->lx || s->ly)) { s->lx = (int16_t)axes; s->ly = (int16_t)(axes >> 16); }
+        if (!(s->rx || s->ry)) { s->rx = (int16_t)(axes >> 32); s->ry = (int16_t)(axes >> 48); }
+        s->attributes = ATTR_CONNECTED;
+        atomic_store_explicit(&g_sampled_right, (uint32_t)s->rx | ((uint64_t)(uint32_t)s->ry << 32), memory_order_release);
+        receipt(s, id, style, 0, start);
+        return;
+    }
     ui_taps_step();
     dm_ui_frontend_pump();
     { void dm_textinput_pump(void); dm_textinput_pump(); }   // 文本框补「弹键盘」那一下、数量框设值（dm_textinput.c） | the extra "bring up keyboard" press for text boxes, setting the value of quantity boxes (dm_textinput.c)

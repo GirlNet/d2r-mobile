@@ -15,6 +15,7 @@ SRC=\
 	diag.c \
 	entry.S \
 	front_mac.m \
+	guest_bootstrap.c \
 	hle.c \
 	loader.c \
 	main.c \

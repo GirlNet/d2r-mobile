@@ -17,6 +17,7 @@ static uint8_t g_stub_seen[MAX_STUB];
 extern uint64_t unimpl_stubs[MAX_STUB];   // 每桩 8 字节 | 8 bytes per stub
 
 uint64_t unimpl_c(unsigned idx, uint64_t *regs) {
+    if (!dm_guest_d2r()) die("P5R unresolved import: %s", g_stub_name[idx]);
     if (!g_stub_seen[idx]++)
         LOG("UNIMPL %s (x0=%#llx x1=%#llx x2=%#llx)", g_stub_name[idx], regs[0], regs[1], regs[2]);
     return 0;

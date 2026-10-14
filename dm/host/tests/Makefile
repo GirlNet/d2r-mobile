@@ -18,6 +18,7 @@ run: \
 	$(B)/t_doorspot \
 	$(B)/t_fs \
 	$(B)/t_fs_case \
+	$(B)/t_guest_bootstrap \
 	$(B)/t_hid_receipt \
 	$(B)/t_hid_script \
 	$(B)/t_hud_dead \
@@ -60,6 +61,8 @@ run: \
 	DM_ROMFS="$(DM_ROOT)/data/switch/3.3.94012/Update/RomFS" $(B)/t_romfs_validate
 	$(B)/t_audio
 	$(B)/t_audio_spsc
+	$(B)/t_guest_bootstrap d2r
+	$(B)/t_guest_bootstrap p5r
 	$(B)/t_swkbd
 	$(B)/t_altstack
 	$(B)/t_movie
@@ -79,6 +82,9 @@ run: \
 	$(PY) oe_notify.py $(B)/main.orig.bin
 $(B)/t_i18n: t_i18n.c ../dm_i18n.c ../dm_i18n.h ../dm_i18n_tab.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_i18n.c ../dm_i18n.c
+
+$(B)/t_guest_bootstrap: t_guest_bootstrap.c ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
+	clang -std=c11 -Wall -Wextra -Werror -o $@ t_guest_bootstrap.c ../guest_bootstrap.c
 $(B)/t_hud_dead: t_hud_dead.c ../dm_hud.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_hud_dead.c
 $(B)/t_textbox: t_textbox.c ../dm_textbox_core.c ../dm_textbox_core.h | $(B)

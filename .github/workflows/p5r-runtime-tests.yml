@@ -1,0 +1,50 @@
+# 无游戏内容的 macOS 宿主测试；不构建或上传 P5R 安装包。
+# macOS host tests without game content; does not build or upload a P5R install package.
+name: P5R runtime components
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/p5r-runtime-tests.yml'
+      - 'dm/host/**'
+      - 'dm/tools/inspect_exefs.py'
+      - 'dm/tools/prepare_port.py'
+      - 'dm/tools/test_inspect_exefs.py'
+      - 'dm/verify/equiv_compare.py'
+      - 'dm/verify/test_equiv_compare.py'
+permissions:
+  contents: read
+jobs:
+  macos-components:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check changed host sources
+        run: |
+          set -euo pipefail
+          xcrun clang -fsyntax-only -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+            dm/host/guest_bootstrap.c dm/host/main.c dm/host/loader.c dm/host/hle.c \
+            dm/host/hle_hid.c dm/host/hle_fs.c dm/host/hle_oe.c dm/host/hle_svc.c \
+            dm/host/hle_audio.c dm/host/hle_misc.c
+      - name: Run bootstrap and audio tests
+        env:
+          DM_AUDIO: '0'
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_guest_bootstrap build/t_audio build/t_audio_spsc
+          dm/host/tests/build/t_guest_bootstrap d2r
+          dm/host/tests/build/t_guest_bootstrap p5r
+          dm/host/tests/build/t_audio
+          dm/host/tests/build/t_audio_spsc
+      - name: Run Python tool tests
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/p5r-tests"
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m pip install lz4==4.4.5
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/verify -p test_equiv_compare.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" dm/i18n/scan_literals.py
+          "$RUNNER_TEMP/p5r-tests/bin/python" dm/ios/tools/dm_i18n.py --check

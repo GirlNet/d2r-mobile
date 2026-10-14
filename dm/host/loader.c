@@ -122,10 +122,18 @@ static uint64_t resolve_sym(module_t *m, const char *name) {
 
 // 强制接管表（hle.h HLE_FORCE，__DATA,swforce 段）：命中即覆盖模块内定义
 // Forced take-over table (hle.h HLE_FORCE, the __DATA,swforce section): a hit overrides the definition inside the module
-static const hle_force_ent *g_force; static unsigned g_nforce; static unsigned *g_force_hits;
+static hle_force_ent *g_force; static unsigned g_nforce, g_nforce_required; static unsigned *g_force_hits;
 static void force_init(void) {
-    unsigned long sz; g_force = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
-    g_nforce = g_force ? (unsigned)(sz / sizeof *g_force) : 0;
+    unsigned long sz = 0, optional_sz = 0;
+    const hle_force_ent *required = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
+    const hle_force_ent *optional = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforceopt", &optional_sz);
+    if (sz % sizeof *g_force || optional_sz % sizeof *g_force) die("Invalid forced HLE section size");
+    g_nforce_required = required ? (unsigned)(sz / sizeof *g_force) : 0;
+    unsigned noptional = optional ? (unsigned)(optional_sz / sizeof *g_force) : 0;
+    g_nforce = g_nforce_required + noptional;
+    g_force = calloc(g_nforce + 1, sizeof *g_force);
+    if (g_nforce_required) memcpy(g_force, required, sz);
+    if (noptional) memcpy(g_force + g_nforce_required, optional, optional_sz);
     g_force_hits = calloc(g_nforce + 1, sizeof *g_force_hits);
     for (unsigned i = 0; i < g_nforce; i++)
         for (unsigned j = i + 1; j < g_nforce; j++)
@@ -142,9 +150,10 @@ static void *force_lookup(const char *name) {
 static void force_check(void) {
     int bad = 0;
     for (unsigned i = 0; i < g_nforce; i++)
-        if (!g_force_hits[i]) { LOG("强制接管条目无任何引用：%s", g_force[i].name); bad = 1; }
+        if (!g_force_hits[i] && i < g_nforce_required && dm_guest_d2r()) { LOG("强制接管条目无任何引用：%s", g_force[i].name); bad = 1; }
     if (bad) die("强制接管清单有误");
-    LOG("force: %u 条全部命中", g_nforce);
+    unsigned hits = 0; for (unsigned i = 0; i < g_nforce; i++) hits += g_force_hits[i] != 0;
+    LOG("force: %u/%u referenced entries, %u optional", hits, g_nforce, g_nforce - g_nforce_required);
 }
 
 // 读改写器表头（段边界、槽号）；表头以外有任何行即旧版产物（装载期改代码），拒绝

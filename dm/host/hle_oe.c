@@ -198,6 +198,7 @@ static _Atomic int g_scale3d_level;
 static _Atomic int g_scale3d_resumed;
 void dm_3d_scale_resumed(void) { atomic_store(&g_scale3d_resumed, 1); }   // 前端：刚回前台。回来头几秒的慢帧是恢复（表面重建、缓存变冷），不是 GPU 吃紧：停判 3 秒 | front end: just returned to foreground. Slow frames in the first few seconds back are recovery (surface rebuild, caches gone cold), not GPU pressure: suspend judging for 3 seconds
 void dm_3d_scale_feed(double iv_ms) {   // 出图线程每帧调（diag.c dm_perf_present 转来）：实际上屏间隔 ms，−1 = 被丢弃，0 = 无读数 | called by the present thread every frame (forwarded from diag.c dm_perf_present): actual present interval in ms, −1 = dropped, 0 = no reading
+    if (!dm_guest_d2r()) return;
     static scale3d_ctl c = {.max_level = 2}; static int on = -1; static long inj0 = -1, inj1 = -1;
     if (on < 0) { const char *e = getenv("DM_3D_SCALE_DYN"), *j = getenv("DM_3D_SCALE_DYN_INJECT"); on = !(e && !strcmp(e, "0")) && !getenv("DM_THERMAL_NOFALLBACK");
         if (j) { inj0 = atol(j); inj1 = strchr(j, '-') ? atol(strchr(j, '-') + 1) : inj0; } }
@@ -217,6 +218,7 @@ void dm_3d_scale_hot(int hot) { (void)hot; }   // 过热不再直接降档（改
 static _Atomic float g_scale3d_cur = 1.0f;
 float dm_3d_scale_cur(void) { return atomic_load(&g_scale3d_cur); }
 static void scale3d_tick(void) {
+    if (!dm_guest_d2r()) return;
     static float want_cfg = -1, cur = 1.0f; static module_t *main;
     if (want_cfg < 0) {
         const char *e = getenv("DM_3D_SCALE"); want_cfg = TARGET_OS_IPHONE ? 0.75f : 1.0f;
@@ -250,7 +252,7 @@ HLE_FORCE("_ZN2nn2oe25TryPopNotificationMessageEPj", "系统通知队列；前�
     // When they are read: each time the handler is entered, once after the first notification is fetched (0xe10d5c / 0xe10d60), and notifications fetched later in the loop still use the values from that read. So every time one is taken, the value due at this moment is written into the current thread's slot --
     // writing only when 31 is taken is not enough: when 31 is queued behind another notification (e.g. focus 15), the parameter bits have already been read after fetching 15 (iOS app: the front end did not switch to 16:9, in the Mac host run 31 happened to be queued first).
     if (ok) for (int i = 0; i < 2; i++) if (g_keyres[i]) pthread_setspecific(g_keyres[i], (void *)dm_game_res(i));
-    if (ok && *msg == MSG_PERFMODE) dm_uiscreen_res_reread();
+    if (ok && *msg == MSG_PERFMODE && dm_guest_d2r()) dm_uiscreen_res_reread();
     if (ok) LOG("oe 通知被游戏取走：%u", *msg);   // 状态变化很少，逐条打不刷屏 | state changes are rare, printing each one does not flood the log
     return ok;
 }

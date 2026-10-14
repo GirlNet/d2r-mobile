@@ -39,4 +39,6 @@ English: [README.md](README.md)
 
 ## 早期分析用的一次性探针
 
+为其他 Switch 游戏做实验性移植准备时，`inspect_exefs.py` 检查本地 NSO 模块，`prepare_port.py` 运行改写与可选等价检查。它们不提供游戏运行时或安装包。参见 [P5R 移植准备](../../docs/P5R_PORT.zh-CN.md)。
+
 `nso.py`（拆游戏程序的段）、`fn.py`（从异常表取函数边界）、`sweep.py`（线性扫指令）、`x18.py` 与 `cat18.py`（找出并归类用到苹果保留寄存器 x18 的指令）、`xref_sdk.py`（系统库函数的交叉引用）、`tp.c`（验证线程指针寄存器在苹果内核下的行为）。它们是定下改写方案之前写的，依赖当时的中间文件，不保证能直接跑；改写方案的依据在 [dm/README.zh-CN.md](../README.zh-CN.md) 与 [dm/verify/README.zh-CN.md](../verify/README.zh-CN.md)。

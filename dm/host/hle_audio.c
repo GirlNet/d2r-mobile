@@ -161,6 +161,19 @@ HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKN
     if (real_audio()) au_open(a);
     return RES_OK;
 }
+// P5R SDK 同时使用带事件和不带事件的默认设备重载，必须落到同一个宿主输出对象。
+// The P5R SDK uses default-device overloads both with and without an event; both must create the same host output object.
+HLE_FORCE_OPTIONAL("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE",
+                   "默认设备无事件重载；复用宿主音频输出", Result, h_au_OpenDefault, void *g, const uint8_t *param) {
+    return h_au_Open(g, NULL, "DeviceOut", param);
+}
+HLE_FORCE_OPTIONAL("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE",
+                   "默认设备带事件重载；复用宿主音频输出", Result, h_au_OpenDefaultEvent, void *g, void *event, const uint8_t *param) {
+    return h_au_Open(g, event, "DeviceOut", param);
+}
+HLE_FORCE_OPTIONAL("_ZN2nn5audio15GetAudioOutNameEPKNS0_8AudioOutE", "宿主默认设备名称", const char *, h_au_Name, const void *g) {
+    (void)ao(g); return "DeviceOut";
+}
 HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "开始播放", Result, h_au_Start, void *g) {
     aout *a = ao(g);
     pthread_mutex_lock(&a->m); int was = atomic_load_explicit(&a->state, memory_order_relaxed); atomic_store_explicit(&a->state, STATE_STARTED, memory_order_release); pthread_mutex_unlock(&a->m);

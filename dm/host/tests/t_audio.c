@@ -15,6 +15,14 @@ void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; }
 int main(void) {
     char out[64], ev[64]; uint8_t prm[16]; gbuf b[3]; static int16_t pcm[3][4800 * 2];
     h_au_InitParam(prm);
+    // 默认设备的两种 ABI 重载均建立真正的宿主对象；事件只在带事件版本绑定。
+    // Both default-device ABI overloads create real host objects; only the event overload binds an event.
+    if (h_au_OpenDefault(out, prm)) return 1;
+    if (strcmp(h_au_Name(out), "DeviceOut") || ao(out)->event) return 1;
+    h_au_Close(out);
+    if (h_au_OpenDefaultEvent(out, ev, prm)) return 1;
+    if (strcmp(h_au_Name(out), "DeviceOut") || ao(out)->event != ev) return 1;
+    h_au_Close(out);
     if (h_au_Open(out, ev, NULL, prm)) return 1;
     if (h_au_Ch(out) != 2 || h_au_Rate(out) != 48000 || h_au_State(out) != STATE_STOPPED) { puts("FAIL 参数"); return 1; }
     for (int i = 0; i < 3; i++) { h_au_SetBuf(&b[i], pcm[i], sizeof pcm[i], sizeof pcm[i]); if (!h_au_Append(out, &b[i])) return 1; }

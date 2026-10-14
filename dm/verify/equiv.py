@@ -16,6 +16,7 @@ from unicorn.arm64_const import *
 from capstone import *
 sys.path.insert(0, os.path.dirname(__file__))
 import nsoimg
+from equiv_compare import visible_patch_writes
 
 ap = argparse.ArgumentParser()
 ap.add_argument('dir'); ap.add_argument('mod'); ap.add_argument('nso')
@@ -160,7 +161,7 @@ def state(u, st, patched):
     tp = u.reg_read(UC_ARM64_REG_TPIDR_EL0)
     if patched: g[18] = struct.unpack('<Q', u.mem_read(TSD + 8 * SLOT18, 8))[0]; tp = struct.unpack('<Q', u.mem_read(TSD + 8 * SLOTTLS, 8))[0]
     g = g + [tp]
-    w = [x for x in st['w'] if not (patched and TSD <= x[0] < TSD + 0x10000)]
+    w = list(st['w'])
     return g, u.reg_read(UC_ARM64_REG_SP), u.reg_read(UC_ARM64_REG_NZCV), [u.reg_read(r) for r in VR], w, st['fault']
 
 def run(u, st, start, patched, init):
@@ -216,8 +217,10 @@ def init_state(rng, kind, site_br=None):
 def trial(UO, SO, UP, SP, a, init):
     so = run(UO, SO, IB + a, False, init)
     sp_ = run(UP, SP, IB + a, True, init)
-    ow = {x[0] for x in so[4]}
-    sp_ = sp_[:4] + ([x for x in sp_[4] if not (SP0 - 128 <= x[0] < SP0 and x[0] not in ow)],) + sp_[5:]
+    # 只过滤补丁自己的槽写与溢出暂存；游戏也可能写到测试映射的 TSD 页，其写入必须保留比较。
+    # Filter only patch-owned slot writes and spill scratch; guest writes may hit the test-mapped TSD page and must remain comparable.
+    slots = {TSD + 8 * value for value in KEY_SLOT.values()}
+    sp_ = sp_[:4] + (visible_patch_writes(sp_[4], so[4], SP0, slots),) + sp_[5:]
     both = bool(so[5] and sp_[5])
     same = (so[5] == sp_[5]) if (so[5] or sp_[5]) else (so == sp_)
     return same, both, [k for k, (x, y) in enumerate(zip(so, sp_)) if x != y]
@@ -239,6 +242,17 @@ def work(job):
             n += 1; eff += not both
             if not same: diffs.append((kind, fl))
             if mutated and diffs: break
+        # 条件选择可能在全部随机试验中保留旧 x18，令 nop 变异看似正确；穷举 NZCV 覆盖两向。
+        # Conditional selects may preserve old x18 in every random trial, hiding a nop mutation; enumerate NZCV to cover both outcomes.
+        instruction = next(md.disasm(orig[a:a + 4], a))
+        if instruction.mnemonic in ('csel', 'csinc', 'csinv', 'csneg', 'cset', 'csetm', 'cinc', 'cinv', 'cneg', 'ccmp', 'ccmn'):
+            for flags in range(16):
+                if mutated and diffs: break
+                init = init_state(rng, 0)
+                init['nzcv'] = flags << 28
+                same, both, fl = trial(UO, SO, UP, SP, a, init)
+                n += 1; eff += not both
+                if not same: diffs.append((f'NZCV={flags:x}', fl))
         if not mutated:
             for c, wo, to, cp, wp, tp_ in win_br.get(a, ()):
                 for mode in ('不跳', '必跳'):
@@ -257,7 +271,10 @@ def work(job):
 def runall(lst, mutated):
     k = 64                                   # 切块数固定，结果只随 seed 变、不随 jobs 变 | Chunk count is fixed, so the result varies only with seed, not with jobs
     jobs = [(i, lst[i::k], mutated) for i in range(k) if lst[i::k]]
-    with mp.get_context('fork').Pool(A.jobs) as p:
+    # Windows 没有 fork；spawn 重载模块后保留相同种子与切块顺序。
+    # Windows has no fork; spawn reloads the module while preserving seeds and chunk order.
+    method = 'fork' if 'fork' in mp.get_all_start_methods() else 'spawn'
+    with mp.get_context(method).Pool(A.jobs) as p:
         return [r for part in p.imap_unordered(work, jobs) for r in part]
 
 def ins_of(a): return next(md.disasm(orig[a:a + 4], a))

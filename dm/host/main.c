@@ -2,16 +2,15 @@
 // Bootstrap: after loading the modules, initialize the SDK runtime in the real order of nn::init::Start (sdk+0x2b0470) in the SDK, then enter nnMain.
 #include "dm.h"
 #include "front.h"
+#include "guest_bootstrap.h"
 #include <stdatomic.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <unistd.h>
 void probe_install(void); void ticks_install(void); void hid_keys_init(void); void tact_prefetch_start(const char *outdir); void tact_chk_init(void); void stubs_report(void); void crash_install(void); void guest_thread_init(void); uint32_t svc_thread_main_init(void);
-typedef void (*fn0)(void); typedef void (*fn2)(uint64_t, uint64_t); typedef void (*fnp)(void *);
-static void *req(const char *n){ void *p=guest_sym(n); if(!p) die("缺符号 %s", n); return p; }
 
-// 游戏参数：argv[0] 固定为 "D2R"，"--" 之后的原样追加（真机由 nn::init 从进程参数区取，经 SetHostArgc/Argv 交给 SDK）
-// Game arguments: argv[0] is fixed to "D2R", and whatever follows "--" is appended as is (on a real device nn::init takes them from the process argument area and hands them to the SDK through SetHostArgc/Argv)
+// 游戏参数：argv[0] 跟随启动域（D2R / P5R），"--" 之后的原样追加，经 SetHostArgc/Argv 交给 SDK。
+// Game arguments: argv[0] follows the bootstrap profile (D2R / P5R), with arguments after "--" appended unchanged and passed through SetHostArgc/Argv.
 static char *g_argv[64] = {"D2R"}; static int g_argc = 1;
 
 void crash_sample_self(void);
@@ -52,30 +51,27 @@ static void game_seed_maybe(void) {
     LOG("DM_GAME_SEED：main+0x20a0074 ← %#x", *p);
 }
 
+static void d2r_before_main(void) {
+    game_seed_maybe(); save_throttle_patch();
+    { void dm_guest_spawn_selftest(void); dm_guest_spawn_selftest(); }
+    { void dm_padmode_boot(void); dm_padmode_boot(); }
+}
+static void bootstrap_phase(int phase) {
+    if (phase == 1) dm_prof_mark("② SDK 初始化（nnosInitialize → nninitStartup）");
+    else dm_prof_mark("③ 各模块 init_array");
+}
 static void guest_main(void) {
     guest_thread_init();
-    { void inflate_bench_maybe(void); inflate_bench_maybe(); }   // DM_INFLATE_BENCH 测试模式（诊断用，跑完退出） | DM_INFLATE_BENCH test mode (for diagnostics, exits when done)
+    if (dm_guest_d2r()) { void inflate_bench_maybe(void); inflate_bench_maybe(); }
     crash_sample_self();   // DM_SAMPLE 采样（诊断用） | DM_SAMPLE sampling (for diagnostics)
-    uint32_t hmain = svc_thread_main_init();   // 主线程句柄：nnosInitialize 的 x0（存入 sdk 全局，ThreadManagerImplByHorizon 取用）；x1 = 参数区指针 | Main thread handle: x0 of nnosInitialize (stored in an sdk global, used by ThreadManagerImplByHorizon); x1 = pointer to the argument area
+    uint32_t hmain = svc_thread_main_init();   // 主线程句柄供通用 SDK 初始化使用 | Main-thread handle for generic SDK initialization
     // 逐条照抄 Start：_init_libc1 = __nnmusl_init_locks（把 stdio 等锁初始化成递归锁，略过会在 putc 嵌套加锁时自锁死）+ __init_ssp。
     // rtld 传入的三个回调：A 只置 rtld 标志（略）、B = 各模块 DT_INIT（nnMain 前）、C = 析构（不做）
     // Copy Start step by step: _init_libc1 = __nnmusl_init_locks (initializes the stdio etc. locks as recursive locks; skipping it self-deadlocks on nested locking in putc) + __init_ssp.
     // The three callbacks passed in by rtld: A only sets an rtld flag (skipped), B = each module's DT_INIT (before nnMain), C = destructors (not done)
-    ((fn0)req("_init_libc0"))();
-    LOG(">>> nnosInitialize"); ((fn2)req("nnosInitialize"))(hmain, 0);
-    ((fn0)req("_init_libc1"))();
-    LOG(">>> nninitInitializeSdkModule"); ((fn0)req("nninitInitializeSdkModule"))();
-    LOG(">>> nninitStartup"); ((fn0)req("nninitStartup"))();
-    ((fn0)req("_init_libc2"))();
-    dm_prof_mark("② SDK 初始化（nnosInitialize → nninitStartup）");
-    run_module_inits();   // rtld 回调 B：各模块 DT_INIT（全局构造函数） | rtld callback B: each module's DT_INIT (global constructors)
-    dm_prof_mark("③ 各模块 init_array");
-    ((fnp)req("_ZN2nn2os11SetHostArgcEi"))((void *)(uint64_t)g_argc);
-    ((fnp)req("_ZN2nn2os11SetHostArgvEPPc"))(g_argv);
-    game_seed_maybe(); save_throttle_patch();
-    { void dm_guest_spawn_selftest(void); dm_guest_spawn_selftest(); }   // DM_GUEST_SPAWN_TEST 宿主客体线程自检（hle_guestthread.c） | DM_GUEST_SPAWN_TEST self-test of host-created guest threads (hle_guestthread.c)
-    { void dm_padmode_boot(void); dm_padmode_boot(); }   // 触屏覆盖层在：布局前缀改指触屏版（dm_padmode.c），要在游戏建面板之前 | Touch overlay present: repoint the layout prefixes to the touch version (dm_padmode.c); must happen before the game builds its panels
-    LOG(">>> nnMain"); ((fn0)req("nnMain"))();
+    const dm_guest_boot_ops ops = {guest_sym, run_module_inits, bootstrap_phase, d2r_before_main};
+    const char *missing = NULL;
+    if (!dm_guest_sdk_bootstrap(&ops, hmain, 0, g_argc, g_argv, &missing)) die("SDK bootstrap failed: %s", missing ? missing : "invalid arguments");
     LOG("nnMain returned");
 }
 
@@ -107,6 +103,10 @@ static void *keyrace_thread(void *unused);
 static void host_preload(int argc, char **argv) {
     g_t0_ns = proc_start_mono_ns();
     flags_init();
+    const char *profile = getenv("DM_GUEST_PROFILE");
+    if (!dm_guest_profile_select(profile)) die("Invalid or changed DM_GUEST_PROFILE: %s", profile ? profile : "d2r");
+    g_argv[0] = (char *)dm_guest_argument_name();
+    LOG("Guest bootstrap profile: %s", dm_guest_profile_name());
     dm_prof_mark("⓪ 进程创建 → 宿主 main（dyld）");
     if (argc < 2) die("usage: dmhost <dir> [mod...] [-- 游戏参数...]");
     // 时区：游戏把绝对时刻换成本地时刻走两条路，都落到宿主 libc——nn::time::ToCalendarTime（hle_time.c，localtime_r）和客体 libc 的
@@ -131,16 +131,17 @@ static void host_preload(int argc, char **argv) {
     int i = 2;
     for (; i < argc && strcmp(argv[i], "--") && n < MAX_MOD; i++) names[n++] = argv[i];
     if (i < argc && !strcmp(argv[i], "--")) for (i++; i < argc && g_argc < 63; i++) g_argv[g_argc++] = argv[i];
-    if (!n) { names[n++] = "main"; names[n++] = "sdk"; }
+    if (!n) { names[n++] = "main"; names[n++] = "sdk"; if (!dm_guest_d2r()) names[n++] = "subsdk0"; }
     load_modules(argv[1], names, n);
     uint64_t ta = now_ns();
-    probe_install();   // DM_PROBE 探针（诊断用） | DM_PROBE probes (for diagnostics)
-    ticks_install();   // DM_TICKS 逐拍状态哈希（拍入口观测门） | DM_TICKS per-tick state hash (tick-entry observation gate)
-    { void target_rank_install(void); target_rank_install(); }   // 触屏版自动选怪 Boss > 精英 > 普通（hle_target.c） | Touch version auto-targeting Boss > elite > normal (hle_target.c)
-    hid_keys_init();   // DM_KEYS 脚本输入（按 UI 消息驱动的步骤要在消息出现前订阅） | DM_KEYS scripted input (steps driven by UI messages must subscribe before the message appears)
+    if (dm_guest_d2r()) {
+        probe_install();
+        ticks_install();
+        { void target_rank_install(void); target_rank_install(); }
+        hid_keys_init();
+    }
     uint64_t tb = now_ns();
-    tact_chk_init();                // DM_TACTCHK 逐块记录（到选角停记） | DM_TACTCHK per-block log (logging stops at character select)
-    tact_prefetch_start(argv[1]);   // 启动块后台预解码（缺省开：产物目录 bootlist.tsv；DM_TACT_PREFETCH=0 关） | Background pre-decode of boot blocks (on by default: bootlist.tsv in the build output directory; DM_TACT_PREFETCH=0 turns it off)
+    if (dm_guest_d2r()) { tact_chk_init(); tact_prefetch_start(argv[1]); }
     uint64_t tc = now_ns();
     stubs_report();
     if (g_flag.bootprof) LOG("① 细分（装载后）：探针 / 拍门 / 按键 %.1f ms、预取启动（读清单）%.1f ms、桩报告 %.1f ms", (tb - ta) / 1e6, (tc - tb) / 1e6, (now_ns() - tc) / 1e6);
