@@ -59,7 +59,8 @@ def scan_segment(data, memory_offset=0):
         records.append(dict(control_address=memory_offset + start, code_address=memory_offset + code_start,
                             key=hashlib.sha256(control).hexdigest()[:16], control_sha256=hashlib.sha256(control).hexdigest(),
                             control_size=CONTROL_SIZE, stage=stage, code_size=code_size, c1_size=len(c1),
-                            code_sha256=hashlib.sha256(code[prefix:]).hexdigest(), code=code[prefix:], c1=c1))
+                            code_sha256=hashlib.sha256(code[prefix:]).hexdigest(),
+                            c1_sha256=hashlib.sha256(c1).hexdigest(), code=code[prefix:], c1=c1))
         occupied_end = code_start + total_size
     return records, rejected
 

@@ -13,7 +13,7 @@ Status: **experimental runtime adaptation in progress; P5R does not yet run on i
 - `dm/host/guest_bootstrap.c`: extracts generic SDK startup, validates nine required symbols before execution, then calls libc, system, module initialization, argument setup and the game entry in order. `DM_GUEST_PROFILE=p5r` selects the experimental profile; selection becomes immutable. D2R remains the default.
 - The P5R profile skips D2R bootstrap hooks, TACT prefetch, item/skill/cursor input rewriting, save seeding and pre-commit extensions, fixed-address heap statistics and render scaling, and does not report D2R's Warlock DLC. Unimplemented imports abort with the interface name.
 - Audio takeover adds both event and no-event `OpenDefaultAudioOut` overloads, default-device name queries and the `GetAudioOutPlayedSampleCount` import in `subsdk0`. Count consumed PCM frames, excluding stopped/empty-queue silence, carrying partial-frame remainders across buffers and resetting on reopen. An optional takeover table permits older SDKs to omit these symbols, retaining D2R's existing required-entry checks. Full behavioral parity with the actual Switch remains unverified.
-- `.github/workflows/p5r-runtime-tests.yml`: macOS compilation checks, SDK bootstrap C tests, audio/control tests, iOS ARM64 component compilation and 30 Python tests using source and synthetic data only; does not build a game package. Literal scanning supports both older Python and Python 3.14 f-string tokenization.
+- `.github/workflows/p5r-runtime-tests.yml`: macOS compilation checks, SDK bootstrap C tests, audio/control tests, iOS ARM64 component compilation and 40 Python tool tests plus a native macOS/iOS synthetic Metal compilation test; uses source and synthetic data only and does not build a game package. Literal scanning supports both older Python and Python 3.14 f-string tokenization.
 
 Static symbol providers include conditional declarations, stubs and functions inside the original Switch SDK. A matching name is not evidence that the host service or driver works. The inspector currently requires the dynamic-table descriptors in the NSO header and supports LZ4/uncompressed segments, not Zbic.
 
@@ -36,6 +36,7 @@ python -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
 python -m unittest discover -s dm/verify -p test_equiv_compare.py -v
 python -m unittest discover -s dm/i18n -p test_scan_literals.py -v
 python -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
+python -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
 ```
 
 Prepare embedded shader diagnostics (output directory must not exist):
@@ -45,6 +46,14 @@ python dm/tools/prepare_p5r_shaders.py "E:\games\P5R\ExeFS\main" "E:\p5r-work\sh
 ```
 
 Pass `diagnostic-jobs.json` to the in-repo `dmsh_xlate` for local SPIR-V diagnostics. Resource/render-state defaults remain unverified; jobs disable the AST optimizer and keep strict floating-point behavior. Generating SPIR-V or passing structural validation does not prove reflection correctness, complete shader coverage or a finished Metal library. Existing `dmsh_build.py` remains tied to D2R maps/type facts and cannot directly build these jobs.
+
+The reproducible `diagnose_p5r_shaders.py` pipeline checks code and extra-constant SHA-256 digests, translates all jobs, runs SPIR-V validation, converts to MSL and records raw texture handles, constant/storage buffers and unresolved bindings. Each stage keeps its log; partial failures return a nonzero exit code and preserve the report. Output must be a new directory outside the repository and extraction tree. Older extractions lack constant digests and must be regenerated.
+
+```powershell
+python dm/tools/diagnose_p5r_shaders.py "E:\p5r-work\shaders" "E:\p5r-work\diagnostic" --translator "E:\tools\dmsh_xlate.exe" --spirv-val "E:\tools\spirv-val.exe" --spirv-cross "E:\tools\spirv-cross.exe"
+```
+
+Use a runtime matching the translator's .NET target; set `DOTNET_ROOT` to a separately installed runtime if required. On a Mac with Apple's Metal compiler, add `--metal-sdk macosx --metal-sdk iphoneos` to compile diagnostic libraries for both targets. Xcode may require the additional [Metal toolchain component](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components). Libraries remain diagnostic: the pipeline does not generate runtime reflection, shader maps or `b-<chain>` caches. Compilation alone does not verify NVN bindings or GPU output. CI compiles a synthetic kernel for both targets; game-derived shaders stay local.
 
 ## Remaining work before a playable build
 
@@ -67,3 +76,5 @@ No game executables, assets, keys, generated shader content or install packages 
 The supplied local P5R main contains 228 validated embedded controls: 10 vertex, 212 fragment and 6 compute, with 87 carrying 256-byte extra constants and no control-key collisions. Without AST optimization, all 228 diagnostic jobs generate SPIR-V and pass `spirv-val --target-env vulkan1.2`; enabling AST optimization throws exceptions in eight fragment shaders. All intermediate files stay local. These results do not validate GPU output or unknown resource facts.
 
 Using SPIRV-Cross source commit `300681bbcb8365a8d1eacdacdbdd0249bbf1d6b1`, all 228 files also convert to MSL 2.3 source with argument buffers, native texture buffers and padded fragment outputs. These sources have not been compiled into Apple Metal libraries; P5R texture/sampler/constant-buffer bindings remain unverified. They are not ready-to-use rendering assets.
+
+The reproducible pipeline passed again on all 228 local shaders. Of these, 208 use textures; all 208 have handle offsets outside the D2R texture-table layout. The comparison is a compatibility diagnostic, not evidence for a replacement P5R slot mapping. The six compute jobs also retain unverified workgroup/local/shared-memory defaults. These facts prevent treating successful diagnostic translation as a usable rendering library.

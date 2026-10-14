@@ -13,7 +13,7 @@ English: [P5R_PORT.md](P5R_PORT.md)
 - `dm/host/guest_bootstrap.c`：抽出通用 SDK 启动，执行前检查九个必要符号，再按 libc、系统、模块初始化、参数设置、游戏入口的顺序调用。`DM_GUEST_PROFILE=p5r` 选择实验模式；启动域锁定后不可切换。缺省仍为 D2R。
 - P5R 启动域跳过 D2R 的启动钩子、TACT 预取、物品/技能/光标输入链、存档预置与提交前扩展、固定地址堆统计和渲染比例修改，也不报告 D2R 的术士 DLC。未实现导入会中止并报告接口名。
 - 音频接管补齐带事件和不带事件的 `OpenDefaultAudioOut` 重载、默认设备名称查询，以及 `subsdk0` 导入的 `GetAudioOutPlayedSampleCount`。采样数按实际消耗的 PCM 帧累计，停止和空队列补零不计，跨缓冲保留半帧余数，重新打开时归零。可选接管表允许旧 SDK 没有这些符号；既有 D2R 必需接管检查仍保留。与真实 Switch 的完整行为一致性仍需验证。
-- `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频及控制块测试、iOS ARM64 组件编译与 30 个 Python 测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。
+- `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频及控制块测试、iOS ARM64 组件编译与 40 个 Python 工具测试，另有 macOS/iOS 合成 Metal 原生编译测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。
 
 静态依赖候选包括条件编译声明、占位实现与原版 Switch SDK 内部函数。名字匹配不代表宿主服务或驱动可用。检查器目前要求 NSO 头带动态符号表描述，支持 LZ4 与未压缩段，不支持 Zbic。
 
@@ -36,6 +36,7 @@ python -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
 python -m unittest discover -s dm/verify -p test_equiv_compare.py -v
 python -m unittest discover -s dm/i18n -p test_scan_literals.py -v
 python -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
+python -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
 ```
 
 内嵌着色器诊断准备（输出目录必须尚不存在）：
@@ -45,6 +46,14 @@ python dm/tools/prepare_p5r_shaders.py "E:\games\P5R\ExeFS\main" "E:\p5r-work\sh
 ```
 
 `diagnostic-jobs.json` 可交给仓内 `dmsh_xlate` 做本地 SPIR-V 诊断。当前使用未验证的资源/渲染状态缺省值，关闭 AST 优化器并保持严格浮点；生成 SPIR-V 或通过结构校验都不代表反射信息正确、覆盖全部游戏着色器或完成 Metal 库。现有 `dmsh_build.py` 仍绑定 D2R 的映射和类型事实，不能直接用于这些作业。
+
+可复用的 `diagnose_p5r_shaders.py` 流程校验代码与附加常数段的 SHA-256 散列，翻译全部作业，运行 SPIR-V 验证，转换 MSL，并记录原始贴图句柄、常量/存储缓冲及未解决的绑定。各阶段保留日志；部分失败返回非零退出码并保留报告。输出必须是仓库和提取目录之外的新目录。旧的提取结果缺少常数散列，需要重新提取。
+
+```powershell
+python dm/tools/diagnose_p5r_shaders.py "E:\p5r-work\shaders" "E:\p5r-work\diagnostic" --translator "E:\tools\dmsh_xlate.exe" --spirv-val "E:\tools\spirv-val.exe" --spirv-cross "E:\tools\spirv-cross.exe"
+```
+
+使用与翻译器 .NET 目标相符的运行时；若另行安装，可设置 `DOTNET_ROOT`。在具有苹果 Metal 编译器的 Mac 上，加 `--metal-sdk macosx --metal-sdk iphoneos` 可以编译两个目标的诊断库。Xcode 可能需要额外安装 [Metal 工具链组件](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components)。这些库仍是诊断产物：流程不生成运行时反射、映射表或 `b-<chain>` 缓存；编译通过不代表 NVN 绑定或 GPU 输出正确。CI 使用合成内核测试两个目标，游戏衍生着色器保留在本地。
 
 ## 可玩版本之前仍需完成
 
@@ -67,3 +76,5 @@ python dm/tools/prepare_p5r_shaders.py "E:\games\P5R\ExeFS\main" "E:\p5r-work\sh
 本地所给 P5R main 中找到 228 个有效内嵌控制块：10 个顶点、212 个片元、6 个计算，87 个带 256 字节附加常数段，无控制键冲突。关闭 AST 优化后，228 个诊断作业生成 SPIR-V，并通过 `spirv-val --target-env vulkan1.2`；启用 AST 优化时有 8 个片元着色器抛出异常。全部中间文件留在本地；这些结果不验证 GPU 输出或未知类型事实。
 
 随后使用 SPIRV-Cross 源码提交 `300681bbcb8365a8d1eacdacdbdd0249bbf1d6b1`，228 个文件均成功转换为 MSL 2.3 源码（参数缓冲、原生贴图缓冲、片元输出填充选项）。尚未将这些源码编译成苹果 Metal 库，也未验证 P5R 的贴图/采样器/常量缓冲绑定；不能当作可用的渲染资源。
+
+新的可复用流水线再次完成全部 228 个本地着色器的诊断。208 个使用贴图的着色器，其句柄偏移全部不符合 D2R 的贴图表布局。这个比较用于定位不兼容，不能作为 P5R 新槽号映射的证据。六个计算作业的线程组、局部/共享内存配置也仍使用未验证的缺省值。因此，诊断翻译成功尚不能产出可用的渲染库。
