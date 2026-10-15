@@ -19,6 +19,7 @@ run: \
 	$(B)/t_fs \
 	$(B)/t_fs_case \
 	$(B)/t_guest_bootstrap \
+	$(B)/t_elf_imports \
 	$(B)/t_shader_control \
 	$(B)/t_nvn_handles \
 	$(B)/t_nvn_buffers \
@@ -67,6 +68,7 @@ run: \
 	$(B)/t_audio_spsc
 	$(B)/t_guest_bootstrap d2r
 	$(B)/t_guest_bootstrap p5r
+	$(B)/t_elf_imports
 	$(B)/t_shader_control
 	$(B)/t_nvn_handles
 	$(B)/t_nvn_buffers
@@ -93,6 +95,8 @@ $(B)/t_i18n: t_i18n.c ../dm_i18n.c ../dm_i18n.h ../dm_i18n_tab.h | $(B)
 
 $(B)/t_guest_bootstrap: t_guest_bootstrap.c ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_guest_bootstrap.c ../guest_bootstrap.c
+$(B)/t_elf_imports: t_elf_imports.c ../loader.c ../hle.c ../dm.h ../hle.h ../boot_probe.h | $(B)
+	clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I .. -o $@ t_elf_imports.c ../hle.c
 $(B)/t_shader_control: t_shader_control.c ../../gfx/nvn/nvn_shader_control.h | $(B)
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_shader_control.c
 $(B)/t_nvn_handles: t_nvn_handles.c ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_buffer_bindings.h | $(B)

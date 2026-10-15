@@ -93,6 +93,12 @@ jobs:
           dm/host/tests/build/t_nvn_handles
           dm/host/tests/build/t_nvn_buffers
           dm/host/tests/build/t_nvn_combined_refl
+      - name: Check ELF optional imports through the actual loader
+        run: |
+          set -euo pipefail
+          xcrun clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I dm/host \
+            dm/host/tests/t_elf_imports.c dm/host/hle.c -o "$RUNNER_TEMP/p5r-elf-imports"
+          "$RUNNER_TEMP/p5r-elf-imports"
       - name: Run synthetic compute on an available Metal device
         run: |
           set +e
