@@ -20,6 +20,8 @@ run: \
 	$(B)/t_fs_case \
 	$(B)/t_guest_bootstrap \
 	$(B)/t_shader_control \
+	$(B)/t_nvn_handles \
+	$(B)/t_nvn_combined_refl \
 	$(B)/t_hid_receipt \
 	$(B)/t_hid_script \
 	$(B)/t_hud_dead \
@@ -65,6 +67,8 @@ run: \
 	$(B)/t_guest_bootstrap d2r
 	$(B)/t_guest_bootstrap p5r
 	$(B)/t_shader_control
+	$(B)/t_nvn_handles
+	$(B)/t_nvn_combined_refl
 	$(B)/t_swkbd
 	$(B)/t_altstack
 	$(B)/t_movie
@@ -89,6 +93,10 @@ $(B)/t_guest_bootstrap: t_guest_bootstrap.c ../guest_bootstrap.c ../guest_bootst
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_guest_bootstrap.c ../guest_bootstrap.c
 $(B)/t_shader_control: t_shader_control.c ../../gfx/nvn/nvn_shader_control.h | $(B)
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_shader_control.c
+$(B)/t_nvn_handles: t_nvn_handles.c ../../gfx/nvn/nvn_handle_bindings.h | $(B)
+	clang -std=c11 -Wall -Wextra -Werror -o $@ t_nvn_handles.c
+$(B)/t_nvn_combined_refl: t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h | $(B)
+	clang -O1 -g -Wall -fobjc-arc -o $@ t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
 $(B)/t_hud_dead: t_hud_dead.c ../dm_hud.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_hud_dead.c
 $(B)/t_textbox: t_textbox.c ../dm_textbox_core.c ../dm_textbox_core.h | $(B)

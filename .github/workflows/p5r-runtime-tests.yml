@@ -10,6 +10,8 @@ on:
       - 'dm/gfx/nvn/**'
       - 'dm/tools/diagnose_p5r_shaders.py'
       - 'dm/tools/test_diagnose_p5r_shaders.py'
+      - 'dm/tools/nvn_handle_layout.py'
+      - 'dm/tools/test_nvn_handle_layout.py'
       - 'dm/tools/prepare_p5r_shaders.py'
       - 'dm/tools/test_prepare_p5r_shaders.py'
       - 'dm/tools/inspect_exefs.py'
@@ -40,12 +42,14 @@ jobs:
           DM_AUDIO: '0'
         run: |
           set -euo pipefail
-          make -C dm/host/tests build/t_guest_bootstrap build/t_audio build/t_audio_spsc build/t_shader_control
+          make -C dm/host/tests build/t_guest_bootstrap build/t_audio build/t_audio_spsc build/t_shader_control build/t_nvn_handles build/t_nvn_combined_refl
           dm/host/tests/build/t_guest_bootstrap d2r
           dm/host/tests/build/t_guest_bootstrap p5r
           dm/host/tests/build/t_audio
           dm/host/tests/build/t_audio_spsc
           dm/host/tests/build/t_shader_control
+          dm/host/tests/build/t_nvn_handles
+          dm/host/tests/build/t_nvn_combined_refl
       - name: Compile changed Metal backend
         run: |
           set -euo pipefail
@@ -54,6 +58,11 @@ jobs:
           xcrun --sdk iphoneos clang -arch arm64 -fobjc-arc -miphoneos-version-min=26.0 \
             -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
             -c dm/gfx/nvn/nvn_mtl.m -o "$RUNNER_TEMP/p5r-nvn-ios.o"
+          xcrun clang -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+            -c dm/gfx/nvn/hle_nvn.c -o "$RUNNER_TEMP/p5r-hle-nvn-macos.o"
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=26.0 \
+            -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+            -c dm/gfx/nvn/hle_nvn.c -o "$RUNNER_TEMP/p5r-hle-nvn-ios.o"
       - name: Compile changed host components for iOS
         run: |
           set -euo pipefail
@@ -82,6 +91,7 @@ jobs:
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/verify -p test_equiv_compare.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/i18n -p test_scan_literals.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" dm/i18n/scan_literals.py

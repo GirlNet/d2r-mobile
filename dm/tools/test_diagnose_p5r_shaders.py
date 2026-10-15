@@ -62,6 +62,8 @@ class DiagnosticTests(unittest.TestCase):
         self.assertFalse(report['resource_bindings_verified'])
         self.assertFalse(report['runnable_verified'])
         self.assertEqual(report['shaders'][0]['audit']['handles'][0]['texture_byte_offset'], 32)
+        self.assertEqual(report['shaders'][0]['audit']['handles'][0]['handle_source']['texture'], dict(kind='tex_combined', reg=0))
+        self.assertEqual(report['summary']['shaders_with_unresolved_handles'], 0)
         self.assertEqual([x['sdk'] for x in report['shaders'][0]['metal']], ['macosx', 'iphoneos'])
         self.assertEqual(report['tools']['translator']['source_sha16'], '0123456789abcdef')
         self.assertFalse(any('_b.' in p.name for p in (self.root / 'out').rglob('*')))
@@ -140,6 +142,8 @@ class DiagnosticTests(unittest.TestCase):
         self.assertTrue(audit['handles'][0]['d2r_texture_range_match'])
         self.assertFalse(audit['compute_configuration_verified'])
         self.assertFalse(audit['resource_bindings_verified'])
+        array_resource = resources(job); array_resource['textures'][0]['array'] = 2
+        self.assertIsNone(audit_resources(job, array_resource)['handles'][0]['handle_source'])
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'Apple Metal tools require macOS')

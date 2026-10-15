@@ -26,6 +26,7 @@
 #include "nvn_pace.h"
 #include "../../host/front.h"
 #include "nvn_dirty.h"
+#include "nvn_handle_bindings.h"
 #include <mach/mach_time.h>
 #include <mach/mach.h>
 #include <TargetConditionals.h>
@@ -157,6 +158,12 @@ NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out)
     OLOG("DeviceGetInteger %#x -> %d", w, *out);
 }
 NVN(nvnDeviceGetImageHandle, NVNimageHandle, const NVNdevice *d, int id) { (void)d; return (NVNimageHandle)id; }
+NVN(nvnDeviceGetTextureHandle, NVNtextureHandle, const NVNdevice *d, int texture, int sampler) {
+    (void)d; return nvn_combined_handle(texture, sampler);
+}
+NVN(nvnDeviceGetTexelFetchHandle, NVNtextureHandle, const NVNdevice *d, int texture) {
+    (void)d; return nvn_combined_handle(texture, 0);
+}
 // 分离贴图 / 采样器句柄：值 = 描述符号（采样器号放 20 位以上，与组合句柄的位布局一致）
 // Separate texture / sampler handles: value = descriptor index (the sampler index goes in bit 20 and above, consistent with the bit layout of combined handles)
 NVN(nvnDeviceGetSeparateTextureHandle, NVNseparateTextureHandle, const NVNdevice *d, int id) { (void)d; return (NVNseparateTextureHandle){(uint64_t)id}; }
@@ -596,7 +603,9 @@ NVN(nvnCommandBufferBindStorageBuffers, void, NVNcommandBuffer *c, NVNshaderStag
     for (int i = 0; i < n; i++) *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size};
 }
 static void bind_handles(NVNcommandBuffer *c, int op, int st, int first, int n, const uint64_t *h) {
-    if (n < 0 || n > 32) { LOG("【红】绑定句柄数 %d", n); return; }
+    int limit = op == OP_BIND_IMG ? NVN_IMAGE_SLOTS : op == OP_BIND_TEX ? NVN_TEX_SLOTS : NVN_SEPARATE_TEX_SLOTS;
+    if (!nvn_handle_range(st, first, n, limit) || (n && !h)) { LOG("【红】绑定句柄数 %d", n); return; }
+    if (!n) return;
     p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st; r->first = first; r->n = n; memcpy(r->h, h, 8 * n);
 }
 // 图像（可写贴图）：句柄 = 贴图池号（GetImageHandle 原样返回；游戏不调 RegisterImage，图像与贴图共用登记）
@@ -605,7 +614,18 @@ NVN(nvnCommandBufferBindImages, void, NVNcommandBuffer *c, NVNshaderStage st, in
     bind_handles(c, OP_BIND_IMG, st, first, n, (const uint64_t *)h);
 }
 NVN(nvnCommandBufferBindSeparateTextures, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNseparateTextureHandle *h) {
+    if (!nvn_handle_range(st, first, n, NVN_SEPARATE_TEX_SLOTS)) { LOG("【红】绑定句柄数 %d", n); return; }
     bind_handles(c, OP_BIND_TEX, st, first, n, (const uint64_t *)h);
+}
+NVN(nvnCommandBufferBindSeparateTexture, void, NVNcommandBuffer *c, NVNshaderStage st, int index, NVNseparateTextureHandle h) {
+    h_nvnCommandBufferBindSeparateTextures(c, st, index, 1, &h);
+}
+NVN(nvnCommandBufferBindTextures, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNtextureHandle *h) {
+    if (!nvn_handle_range(st, first, n, NVN_COMBINED_TEX_SLOTS)) { LOG("【红】绑定句柄数 %d", n); return; }
+    bind_handles(c, OP_BIND_TEX, st, NVN_COMBINED_TEX_FIRST + first, n, (const uint64_t *)h);
+}
+NVN(nvnCommandBufferBindTexture, void, NVNcommandBuffer *c, NVNshaderStage st, int index, NVNtextureHandle h) {
+    h_nvnCommandBufferBindTextures(c, st, index, 1, &h);
 }
 NVN(nvnCommandBufferBindSeparateSamplers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNseparateSamplerHandle *h) {
     bind_handles(c, OP_BIND_SAMP, st, first, n, (const uint64_t *)h);

@@ -32,7 +32,13 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             NSString *k = b[@"kind"]; nvn_rbind *r = &o->b[o->nb];
             id rg = b[@"reg"]; int reg = [rg isKindOfClass:[NSNumber class]] ? [rg intValue] : -1, aid = [b[@"arg_id"] intValue];
             r->aid = (uint16_t)aid; r->reg = reg < 0 ? 0 : (uint16_t)reg;
-            if ([k isEqualToString:@"cbuf"]) r->kind = NVN_RB_CBUF;
+            if ([k isEqualToString:@"tex_combined"] || [k isEqualToString:@"samp_combined"] || [k isEqualToString:@"tbuf_combined"]) {
+                if (reg < 0 || reg >= NVN_COMBINED_TEX_SLOTS) FAIL("Invalid combined texture slot");
+                r->reg = (uint16_t)(NVN_COMBINED_TEX_FIRST + reg);
+                if ([k isEqualToString:@"samp_combined"]) r->kind = NVN_RB_SAMPT;
+                else { r->kind = [k isEqualToString:@"tbuf_combined"] ? NVN_RB_TBUF : NVN_RB_TEX; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); }
+            }
+            else if ([k isEqualToString:@"cbuf"]) r->kind = NVN_RB_CBUF;
             else if ([k isEqualToString:@"samp"]) r->kind = NVN_RB_SAMP;
             else if ([k isEqualToString:@"samp_tex"]) r->kind = NVN_RB_SAMPT;
             else if ([k isEqualToString:@"tex"]) { r->kind = NVN_RB_TEX; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); }
@@ -44,6 +50,7 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"c1"]) r->kind = NVN_RB_C1;
             else if ([k isEqualToString:@"drvcb"]) r->kind = [b[@"bank"] intValue] == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
             else FAIL("B 绑定种类 %s 未实现（%s）", k.UTF8String, [b[@"msl_name"] UTF8String]);
+            if (aid < 0 || aid >= NVN_REFL_MAXB) FAIL("Invalid argument buffer index");
             if ((r->kind == NVN_RB_CBUF || r->kind == NVN_RB_SAMP || r->kind == NVN_RB_SAMPT || r->kind == NVN_RB_TEX || r->kind == NVN_RB_IMG || r->kind == NVN_RB_TBUF || r->kind == NVN_RB_SBUFP || r->kind == NVN_RB_UBOP) && reg < 0)
                 FAIL("B 绑定 %s 没解出槽号", [b[@"msl_name"] UTF8String]);
             o->nb++;

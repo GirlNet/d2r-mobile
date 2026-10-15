@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from nvn_handle_layout import decode_handle
 
 
 MSL_OPTIONS = ['--msl', '--msl-version', '20300', '--msl-argument-buffers',
@@ -86,8 +87,8 @@ def run_command(command, log, timeout=120):
 def audit_resources(job, resource):
     if resource['key'] != job['key'] or resource['stage'] != job['stage']:
         raise ValueError('Translator resource identity mismatch')
-    # 只记录原始资源地址；D2R 规则比较用于定位不兼容，不作为 P5R 绑定推断。
-    # Record raw resource addresses only; comparison with D2R rules diagnoses incompatibility, never infers P5R bindings.
+    # 记录原始地址并解码组合/分离 API 表；不推断资源类型、常量缓冲槽或绘制状态。
+    # Record raw addresses and decode combined/separate API tables; do not infer resource types, uniform slots or draw state.
     handles = []
     for kind in ('textures', 'images'):
         for item in resource[kind]:
@@ -103,12 +104,13 @@ def audit_resources(job, resource):
                                 handle_type=handle_type, array_length=item['array'],
                                 translated_type=item['type'], translated_format=item['format'],
                                 d2r_texture_range_match=(bank == -1 or bank & 0xffff == 2)
-                                and 0x168 <= offset < 0x568 and (offset - 0x168) % 8 == 0))
+                                and 0x168 <= offset < 0x568 and (offset - 0x168) % 8 == 0,
+                                handle_source=decode_handle(handle, bank) if kind == 'textures' and item['array'] == 1 else None))
     return dict(resource_bindings_verified=False, render_state_verified=False,
                 constant_buffers=resource['cbufs'], storage_buffers=resource['sbufs'],
                 handles=handles, translator_notes=resource['notes'],
                 compute_configuration_verified=False if job['stage'] == 'cs' else None,
-                blockers=['P5R resource types, NVN slots and render state require independent evidence']
+                blockers=['P5R resource types, constant/storage-buffer slots and render state require independent evidence']
                 + (['Compute workgroup, local and shared memory use diagnostic defaults'] if job['stage'] == 'cs' else []))
 
 
@@ -191,6 +193,8 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                                  stages=dict(Counter(j['stage'] for j in jobs)),
                                  shaders_with_textures=sum(bool(r.get('audit', {}).get('handles')) for r in report['shaders']),
                                  shaders_outside_d2r_texture_layout=sum(any(not h['d2r_texture_range_match']
+                                     for h in r.get('audit', {}).get('handles', [])) for r in report['shaders']),
+                                 shaders_with_unresolved_handles=sum(any(h['handle_source'] is None
                                      for h in r.get('audit', {}).get('handles', [])) for r in report['shaders']))
         report['status'] = 'diagnostic_passed' if report['summary']['passed'] == len(jobs) and not report['errors'] else 'failed'
     except (ValueError, OSError, RuntimeError) as error:

@@ -13,7 +13,8 @@ English: [P5R_PORT.md](P5R_PORT.md)
 - `dm/host/guest_bootstrap.c`：抽出通用 SDK 启动，执行前检查九个必要符号，再按 libc、系统、模块初始化、参数设置、游戏入口的顺序调用。`DM_GUEST_PROFILE=p5r` 选择实验模式；启动域锁定后不可切换。缺省仍为 D2R。
 - P5R 启动域跳过 D2R 的启动钩子、TACT 预取、物品/技能/光标输入链、存档预置与提交前扩展、固定地址堆统计和渲染比例修改，也不报告 D2R 的术士 DLC。未实现导入会中止并报告接口名。
 - 音频接管补齐带事件和不带事件的 `OpenDefaultAudioOut` 重载、默认设备名称查询，以及 `subsdk0` 导入的 `GetAudioOutPlayedSampleCount`。采样数按实际消耗的 PCM 帧累计，停止和空队列补零不计，跨缓冲保留半帧余数，重新打开时归零。可选接管表允许旧 SDK 没有这些符号；既有 D2R 必需接管检查仍保留。与真实 Switch 的完整行为一致性仍需验证。
-- `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频及控制块测试、iOS ARM64 组件编译与 40 个 Python 工具测试，另有 macOS/iOS 合成 Metal 原生编译测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。
+- NVN 组合纹理绑定已实现 `GetTextureHandle`、`GetTexelFetchHandle`、`BindTexture`、`BindTextures`，并补齐单个分离纹理重载。组合槽与分离槽独立保存状态；反射接受显式的组合纹理/采样器/缓冲纹理种类，Metal 参数编码、驱动表和资源读取跟踪均覆盖组合槽。取采样器编号时排除句柄标记位。
+- `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频/控制块/组合句柄测试、iOS ARM64 组件编译与 46 个 Python 工具测试，另有 macOS/iOS 合成 Metal 原生编译测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。
 
 静态依赖候选包括条件编译声明、占位实现与原版 Switch SDK 内部函数。名字匹配不代表宿主服务或驱动可用。检查器目前要求 NSO 头带动态符号表描述，支持 LZ4 与未压缩段，不支持 Zbic。
 
@@ -37,6 +38,7 @@ python -m unittest discover -s dm/verify -p test_equiv_compare.py -v
 python -m unittest discover -s dm/i18n -p test_scan_literals.py -v
 python -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
 python -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
+python -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
 ```
 
 内嵌着色器诊断准备（输出目录必须尚不存在）：
@@ -77,4 +79,4 @@ python dm/tools/diagnose_p5r_shaders.py "E:\p5r-work\shaders" "E:\p5r-work\diagn
 
 随后使用 SPIRV-Cross 源码提交 `300681bbcb8365a8d1eacdacdbdd0249bbf1d6b1`，228 个文件均成功转换为 MSL 2.3 源码（参数缓冲、原生贴图缓冲、片元输出填充选项）。尚未将这些源码编译成苹果 Metal 库，也未验证 P5R 的贴图/采样器/常量缓冲绑定；不能当作可用的渲染资源。
 
-新的可复用流水线再次完成全部 228 个本地着色器的诊断。208 个使用贴图的着色器，其句柄偏移全部不符合 D2R 的贴图表布局。这个比较用于定位不兼容，不能作为 P5R 新槽号映射的证据。六个计算作业的线程组、局部/共享内存配置也仍使用未验证的缺省值。因此，诊断翻译成功尚不能产出可用的渲染库。
+初次可复用流水线完成了全部 228 个本地着色器的诊断，并发现纹理句柄不在之前支持的分离纹理表中。后续 SDK 分析确认了独立的组合绑定 API 表；诊断解码器现在可报告对应的组合纹理/采样器来源，但不据此推断资源类型。未知常量缓冲库、未实现的句柄模式及资源数组仍标为未解决。计算配置、类型事实、常量/存储缓冲槽映射、运行时反射生成及 GPU 输出仍需验证，翻译成功尚不能产出可用的渲染库。
