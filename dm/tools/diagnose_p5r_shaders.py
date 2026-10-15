@@ -11,6 +11,7 @@ import subprocess
 import struct
 import sys
 from nvn_handle_layout import decode_handle
+from maxwell_memory_audit import audit_compute_memory
 from p5r_reflection import reflection_plan
 from prepare_p5r_shaders import CONTROL_SIZE, HEADER_FIELDS, STAGES, compute_workgroup, word
 
@@ -126,8 +127,8 @@ def run_command(command, log, timeout=120):
 def audit_resources(job, resource):
     if resource['key'] != job['key'] or resource['stage'] != job['stage']:
         raise ValueError('Translator resource identity mismatch')
-    # 记录原始地址并解码组合/分离 API 表；不推断资源类型、常量缓冲槽或绘制状态。
-    # Record raw addresses and decode combined/separate API tables; do not infer resource types, uniform slots or draw state.
+    # 记录原始地址并解码组合/分离 API 表；缓冲槽在反射草案中另行核对，不推断资源类型或绘制状态。
+    # Record raw addresses and decode combined/separate API tables; check buffer slots separately in reflection plans without inferring resource types or draw state.
     handles = []
     for kind in ('textures', 'images'):
         for item in resource[kind]:
@@ -151,7 +152,7 @@ def audit_resources(job, resource):
                 compute_configuration_verified=False if job['stage'] == 'cs' else None,
                 compute_workgroup=job.get('local'),
                 compute_workgroup_verified=bool(job.get('local')) if job['stage'] == 'cs' else None,
-                blockers=['P5R resource types, constant/storage-buffer slots and render state require independent evidence']
+                blockers=['P5R texture types, driver-bank contents and render state require independent evidence']
                 + (['Compute local and shared memory remain unverified'] if job['stage'] == 'cs' else []))
 
 
@@ -223,12 +224,20 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                     if row['spirv_compute_workgroup'] != job['local']:
                         raise ValueError('SPIR-V LocalSize does not match the extracted control')
                     row['completed'].append('compute_workgroup_validated')
+                    row['compute_memory_audit'] = audit_compute_memory(Path(job['code']).read_bytes(), resource.get('decoded_size'))
                 msl = msl_dir / (key + '.metal')
                 runner([cross, binary, *MSL_OPTIONS, '--output', msl], output / (key + '-msl.log'))
                 if not msl.is_file() or not msl.stat().st_size:
                     raise ValueError('SPIRV-Cross did not produce MSL')
                 row['completed'].append('msl_generated')
                 plan = reflection_plan(job, resource, msl.read_bytes().decode('utf-8'))
+                row['audit']['buffer_slot_mapping_verified'] = not plan['missing_descriptors'] and all(
+                    b['slot_mapping_verified'] for b in plan['bindings']
+                    if b.get('descriptor', {}).get('category') in ('cbufs', 'sbufs'))
+                if job['stage'] == 'cs':
+                    plan['compute_memory_audit'] = row['compute_memory_audit']
+                    if plan['compute_memory_audit']['memory_unused_proven']:
+                        plan['blockers'].remove('Compute local and shared memory remain unverified')
                 plan['source'] = next({field: record[field] for field in
                                      ('control_sha256', 'code_sha256', 'c1_sha256')}
                                     for record in manifest['shaders'] if record['key'] == key)

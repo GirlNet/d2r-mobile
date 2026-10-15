@@ -28,7 +28,7 @@ def compute_spirv(group=(4, 2, 1)):
 
 
 def resources(job, handle=8):
-    return dict(key=job['key'], stage=job['stage'], cbufs=[], sbufs=[], images=[], notes=[],
+    return dict(key=job['key'], stage=job['stage'], decoded_size=16, cbufs=[], sbufs=[], images=[], notes=[],
                 textures=[dict(binding=1, handle=handle, cbuf_slot=-1, array=1, type=3, format='Unknown')])
 
 
@@ -125,6 +125,18 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(row['spirv_compute_workgroup'], [4, 2, 1])
         self.assertTrue(row['audit']['compute_workgroup_verified'])
         self.assertFalse(row['audit']['compute_configuration_verified'])
+        self.assertFalse(row['compute_memory_audit']['memory_unused_proven'])
+
+    def test_old_translator_missing_decode_extent_is_rejected(self):
+        self.use_compute_job()
+        def runner(command, log, timeout=120):
+            self.runner(command, log, timeout)
+            if len(command) == 3:
+                for path in Path(command[2]).glob('*.res.json'):
+                    res = json.loads(path.read_text()); res.pop('decoded_size'); path.write_text(json.dumps(res))
+        report = self.run_diagnostic(runner)
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('rebuild the translator', report['shaders'][0]['error'])
 
     def test_compute_dimensions_or_control_tampering_rejected(self):
         self.use_compute_job()

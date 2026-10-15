@@ -2990,7 +2990,10 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 if (bank == 0) {
                     int base = nvn_stage == 0 ? 0x110 : nvn_stage == 5 ? 0x310 : nvn_stage == 1 ? 0x510 : -1;
                     if (base < 0) RED_ONCE(45, "阶段 %d 的着色器读驱动段 c0，存储缓冲表基址未实测", nvn_stage);
-                    else for (int r = 0; r < 16; r++) { uint64_t a = S.ssbo[nvn_stage][r].addr; uint32_t n = (uint32_t)S.ssbo[nvn_stage][r].size; memcpy(d + base + 16 * r, &a, 8); memcpy(d + base + 16 * r + 8, &n, 4); }
+                    else for (int r = 0; r < 16; r++) {
+                        nvn_write_buffer_driver(d, 0xA00, nvn_stage, 0, r, S.ssbo[nvn_stage][r].addr, (uint32_t)S.ssbo[nvn_stage][r].size);
+                        if (nvn_stage == 5) nvn_write_buffer_driver(d, 0xA00, nvn_stage, 1, r, S.ubo[nvn_stage][r].addr, (uint32_t)S.ubo[nvn_stage][r].size);
+                    }
                 } else {
                     nvn_fill_texture_driver(d, 0xA00, S.tex[nvn_stage], S.samp[nvn_stage]);
                 }

@@ -57,7 +57,7 @@ class ReflectionPlanTests(unittest.TestCase):
                                    dict(binding=4, slot=1, cb_slot=0, cb_offset=200, flags=0)])
         plan = self.plan(msl('device _21* cp_s1 [[id(0)]];', 'device _21* cp_s0 [[id(1)]];'), res, 'cs')
         self.assertEqual([(b['reg'], b['rw']) for b in plan['bindings']], [(1, False), (0, True)])
-        self.assertTrue(all(not b['slot_mapping_verified'] for b in plan['bindings']))
+        self.assertTrue(all(b['slot_mapping_verified'] for b in plan['bindings']))
         self.assertEqual(plan['threadgroup_size'], [32, 1, 1])
 
     def test_uniform_pointer_and_unrecognized_driver_pointer(self):
@@ -66,8 +66,8 @@ class ReflectionPlanTests(unittest.TestCase):
             res = resource('cs', sbufs=[dict(binding=1, slot=0, cb_slot=bank, cb_offset=offset, flags=0)])
             binding = self.plan(msl('device _21* cp_s0 [[id(0)]];'), res, 'cs')['bindings'][0]
             self.assertEqual(binding['kind'], expected)
-            self.assertFalse(binding['slot_mapping_verified'])
-            self.assertTrue(binding['blockers'])
+            self.assertEqual(binding['slot_mapping_verified'], expected != 'unresolved')
+            self.assertEqual(bool(binding['blockers']), expected == 'unresolved')
 
     def test_constants_driver_and_user_uniforms_keep_evidence_distinct(self):
         res = resource(cbufs=[dict(binding=i, slot=n) for i, n in enumerate((0, 1, 2, 3, 16, 17))])
@@ -76,7 +76,14 @@ class ReflectionPlanTests(unittest.TestCase):
         self.assertEqual([b['kind'] for b in bs], ['drvcb', 'c1', 'drvcb', 'cbuf', 'cbuf', 'unresolved'])
         self.assertEqual([bs[i]['reg'] for i in (3, 4)], [0, 13])
         self.assertTrue(bs[1]['slot_mapping_verified'])
-        self.assertFalse(bs[3]['slot_mapping_verified'])
+        self.assertTrue(bs[3]['slot_mapping_verified'])
+
+    def test_compute_only_first_five_uniforms_are_direct_banks(self):
+        for bank in range(3, 17):
+            res = resource('cs', cbufs=[dict(binding=1, slot=bank)])
+            binding = self.plan(msl(f'constant _16* cp_c{bank} [[id(0)]];'), res, 'cs')['bindings'][0]
+            self.assertEqual(binding['slot_mapping_verified'], bank <= 7)
+            self.assertEqual(binding['kind'], 'cbuf' if bank <= 7 else 'unresolved')
 
     def test_unknown_members_missing_resources_and_stage_mismatch_are_visible(self):
         res = resource(cbufs=[dict(binding=1, slot=3)])

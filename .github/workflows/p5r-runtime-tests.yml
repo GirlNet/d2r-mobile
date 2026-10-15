@@ -10,10 +10,13 @@ on:
       - 'dm/gfx/nvn/**'
       - 'dm/gfx/tools/dmsh_build.py'
       - 'dm/gfx/tools/dmsh_chain.py'
+      - 'dm/gfx/tools/dmsh_xlate/**'
       - 'dm/tools/diagnose_p5r_shaders.py'
       - 'dm/tools/test_diagnose_p5r_shaders.py'
       - 'dm/tools/p5r_reflection.py'
       - 'dm/tools/test_p5r_reflection.py'
+      - 'dm/tools/maxwell_memory_audit.py'
+      - 'dm/tools/test_maxwell_memory_audit.py'
       - 'dm/tools/nvn_handle_layout.py'
       - 'dm/tools/test_nvn_handle_layout.py'
       - 'dm/tools/test_shader_buffer_reflection.py'
@@ -47,14 +50,25 @@ jobs:
           DM_AUDIO: '0'
         run: |
           set -euo pipefail
-          make -C dm/host/tests build/t_guest_bootstrap build/t_audio build/t_audio_spsc build/t_shader_control build/t_nvn_handles build/t_nvn_combined_refl
+          make -C dm/host/tests build/t_guest_bootstrap build/t_audio build/t_audio_spsc build/t_shader_control build/t_nvn_handles build/t_nvn_buffers build/t_nvn_combined_refl build/t_nvn_compute_gpu
           dm/host/tests/build/t_guest_bootstrap d2r
           dm/host/tests/build/t_guest_bootstrap p5r
           dm/host/tests/build/t_audio
           dm/host/tests/build/t_audio_spsc
           dm/host/tests/build/t_shader_control
           dm/host/tests/build/t_nvn_handles
+          dm/host/tests/build/t_nvn_buffers
           dm/host/tests/build/t_nvn_combined_refl
+      - name: Run synthetic compute on an available Metal device
+        run: |
+          set +e
+          dm/host/tests/build/t_nvn_compute_gpu
+          result=$?
+          if [ "$result" -eq 77 ]; then
+            echo '::warning::Synthetic compute GPU execution skipped: runner has no Metal device.'
+            exit 0
+          fi
+          exit "$result"
       - name: Compile changed Metal backend
         run: |
           set -euo pipefail
@@ -97,9 +111,18 @@ jobs:
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/verify -p test_equiv_compare.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/i18n -p test_scan_literals.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" dm/i18n/scan_literals.py
           "$RUNNER_TEMP/p5r-tests/bin/python" dm/ios/tools/dm_i18n.py --check
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Compile translator and test synthetic Maxwell code
+        run: |
+          set -euo pipefail
+          dotnet publish dm/gfx/tools/dmsh_xlate/dmsh_xlate.csproj -c Release -o "$RUNNER_TEMP/p5r-translator" --nologo
+          P5R_TRANSLATOR="$RUNNER_TEMP/p5r-translator/dmsh_xlate" "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v

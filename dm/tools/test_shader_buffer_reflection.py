@@ -17,6 +17,37 @@ def reflection_function():
 
 
 class BufferReflectionTests(unittest.TestCase):
+    def driver_functions(self):
+        path = Path(__file__).resolve().parents[1] / 'gfx/tools/dmsh_build.py'
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        nodes = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in ('drv_reads', 'unfillable'))
+                 or (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in ('DRV_STORAGE', 'DRV_TEXTURE') for t in n.targets))]
+        namespace = {'re': re}; exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
+        return namespace['drv_reads'], namespace['unfillable']
+
+    def test_driver_reads_cover_all_stages_and_dynamic_indices(self):
+        reads, _ = self.driver_functions()
+        for prefix in ('vp', 'fp', 'cp', 'gp'):
+            result = reads(f'(*spvDescriptorSet0.{prefix}_c0)._m0[33u]; (*spvDescriptorSet0.{prefix}_c2)._m0[i];')
+            self.assertEqual(result['0'], dict(vec4_offsets=[0x210], dynamic=False))
+            self.assertTrue(result['2']['dynamic'])
+
+    def test_driver_ranges_follow_current_stage_and_full_vectors(self):
+        _, unfillable = self.driver_functions()
+        def read(bank, offset, stage):
+            return unfillable({str(bank):dict(vec4_offsets=[offset], dynamic=False)}, stage)
+        self.assertEqual(read(0, 0x210, 'cs'), [])
+        self.assertTrue(read(0, 0x210, 'vs'))
+        self.assertTrue(read(0, 0x310, 'ps'))
+        self.assertEqual(read(0, 0x510, 'ps'), [])
+        self.assertTrue(read(0, 0x110, 'gs'))
+        self.assertEqual(read(2, 0x20, 'ps'), [])
+        self.assertEqual(read(2, 0x110, 'ps'), [])
+        self.assertTrue(read(2, 0x120, 'ps'))
+        self.assertTrue(read(2, 0x160, 'ps'))
+        self.assertEqual(read(2, 0x560, 'ps'), [])
+        self.assertTrue(read(2, 0x960, 'ps'))
+
     def test_write_bit_and_sorted_metadata_select_the_correct_slot(self):
         msl = 'struct spvDescriptorSetBuffer0 {\n device _21* cp_s0 [[id(0)]];\n device _21* cp_s1 [[id(1)]];\n};'
         resource = dict(sbufs=[dict(binding=3, cb_slot=0, cb_offset=196, flags=1),

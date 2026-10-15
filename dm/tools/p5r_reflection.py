@@ -103,14 +103,15 @@ def reflection_plan(job, resource, msl):
                     entry.update(kind='c1', bank=1, slot_mapping_verified=True)
                 elif slot in (0, 2):
                     entry.update(kind='drvcb', bank=slot)
-                elif 3 <= slot <= 16:
-                    entry.update(kind='cbuf', reg=slot - 3)
+                elif 3 <= slot <= (7 if stage == 'cs' else 16):
+                    entry.update(kind='cbuf', reg=slot - 3, slot_mapping_verified=True)
                 entry['resource_type_verified'] = True
             else:
                 flags = integer(item['flags'], 'storage usage flags')
                 source = pointer_source(stage, item)
                 if source:
                     entry.update(source)
+                    entry['slot_mapping_verified'] = True
                 entry.update(rw=bool(flags & 1), resource_type_verified=True)
                 if flags & ~1:
                     entry['blockers'].append('Unknown storage usage flags')
@@ -134,7 +135,7 @@ def reflection_plan(job, resource, msl):
         if entry['kind'] == 'unresolved':
             entry['blockers'].append('Unsupported resource slot or handle source')
         if not entry['slot_mapping_verified']:
-            entry['blockers'].append('Buffer slot or driver-bank mapping requires independent P5R evidence')
+            entry['blockers'].append('Unsupported direct uniform bank or unverified driver-bank contents')
         if not entry['resource_type_verified']:
             entry['blockers'].append('Texture type and format require independent P5R evidence')
 

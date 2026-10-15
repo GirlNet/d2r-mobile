@@ -21,6 +21,7 @@ run: \
 	$(B)/t_guest_bootstrap \
 	$(B)/t_shader_control \
 	$(B)/t_nvn_handles \
+	$(B)/t_nvn_buffers \
 	$(B)/t_nvn_combined_refl \
 	$(B)/t_hid_receipt \
 	$(B)/t_hid_script \
@@ -68,6 +69,7 @@ run: \
 	$(B)/t_guest_bootstrap p5r
 	$(B)/t_shader_control
 	$(B)/t_nvn_handles
+	$(B)/t_nvn_buffers
 	$(B)/t_nvn_combined_refl
 	$(B)/t_swkbd
 	$(B)/t_altstack
@@ -95,7 +97,11 @@ $(B)/t_shader_control: t_shader_control.c ../../gfx/nvn/nvn_shader_control.h | $
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_shader_control.c
 $(B)/t_nvn_handles: t_nvn_handles.c ../../gfx/nvn/nvn_handle_bindings.h | $(B)
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_nvn_handles.c
-$(B)/t_nvn_combined_refl: t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_shader_control.h | $(B)
+$(B)/t_nvn_buffers: t_nvn_buffers.c ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
+	clang -std=c11 -Wall -Wextra -Werror -o $@ t_nvn_buffers.c
+$(B)/t_nvn_compute_gpu: t_nvn_compute_gpu.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
+	clang -mmacosx-version-min=26.0 -O1 -g -Wall -fobjc-arc -o $@ t_nvn_compute_gpu.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
+$(B)/t_nvn_combined_refl: t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_buffer_bindings.h ../../gfx/nvn/nvn_shader_control.h | $(B)
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
 $(B)/t_hud_dead: t_hud_dead.c ../dm_hud.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_hud_dead.c

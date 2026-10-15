@@ -11,6 +11,7 @@
 #pragma once
 #include <stdint.h>
 #include "nvn_handle_bindings.h"
+#include "nvn_buffer_bindings.h"
 
 enum { NVN_RB_CBUF = 1, NVN_RB_SAMP, NVN_RB_TEX, NVN_RB_IMG, NVN_RB_TBUF,
        NVN_RB_SBUFP, NVN_RB_SUPPORT, NVN_RB_C1, NVN_RB_DRV0, NVN_RB_DRV2, NVN_RB_SAMPT, NVN_RB_UBOP };   // UBOP：计算阶段 uniform 槽 r 的设备指针（Maxwell 计算阶段经 c0 地址表 + 全局内存读 uniform）   // SAMPT：采样器取自贴图槽 r 的合并句柄（高位 = 采样器号）   // 绑定种类（json 的 type）；IMG = 可写贴图（D3D u_r，NVN 图像槽 r）；TBUF = 类型化缓冲（D3D t_r Buffer<T>，NVN 贴图槽 r 的缓冲贴图） | UBOP: device pointer of compute-stage uniform slot r (the Maxwell compute stage reads uniforms via the c0 address table + global memory)   // SAMPT: the sampler is taken from the combined handle of texture slot r (high bits = sampler ID)   // Binding kind (type in the json); IMG = writable texture (D3D u_r, NVN image slot r); TBUF = typed buffer (D3D t_r Buffer<T>, buffer texture in NVN texture slot r)

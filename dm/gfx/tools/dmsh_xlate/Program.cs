@@ -124,7 +124,8 @@ static class SwshXlate
                 File.WriteAllBytes(Path.Combine(outDir, key + ".spv"), p.BinaryCode);
                 var res = new JsonObject
                 {
-                    ["key"] = key, ["stage"] = (string)job["stage"], ["notes"] = new JsonArray(acc.Notes.ConvertAll(n => (JsonNode)n).ToArray()),
+                    ["key"] = key, ["stage"] = (string)job["stage"], ["decoded_size"] = ctx.Size,
+                    ["notes"] = new JsonArray(acc.Notes.ConvertAll(n => (JsonNode)n).ToArray()),
                     ["cbufs"] = new JsonArray(), ["sbufs"] = new JsonArray(), ["textures"] = new JsonArray(), ["images"] = new JsonArray(),
                     ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
                 };
