@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import plistlib
 import subprocess
+import struct
 import sys
 import zipfile
 
@@ -15,7 +16,7 @@ import zipfile
 REPO = Path(__file__).resolve().parents[3]
 CORE = ['crash.c', 'entry.S', 'guest_bootstrap.c', 'hle.c', 'loader.c', 'main.c', 'memstat.m', 'thread.c', 'dm_i18n.c']
 EXCLUDE = {'hle_tact.c', 'hle_private_aim.c', 'hle_target.c', 'hle_charname.c', 'hle_granny.c', 'hle_movie.c'}
-FRAMEWORKS = ['UIKit', 'Foundation', 'QuartzCore', 'Metal', 'AudioToolbox', 'ImageIO', 'UniformTypeIdentifiers',
+FRAMEWORKS = ['UIKit', 'Foundation', 'QuartzCore', 'CoreGraphics', 'Metal', 'AudioToolbox', 'ImageIO', 'UniformTypeIdentifiers',
               'GameController', 'Network', 'AVFoundation', 'VideoToolbox', 'CoreMedia', 'CoreVideo', 'Security']
 
 
@@ -68,6 +69,21 @@ def build(output):
     if run(command, logs / 'link.log'):
         print((logs / 'link.log').read_text(errors='replace')[-16000:], file=sys.stderr)
         raise RuntimeError('Full host link failed; see link.log')
+    binary = executable.read_bytes(); header = struct.unpack_from('<IiiIIIII', binary)
+    if header[:4] != (0xfeedfacf, 0x100000c, 0, 2): raise RuntimeError('Linked host has an unexpected Mach-O architecture/type')
+    if run(['xcrun', '--sdk', 'iphoneos', 'otool', '-l', executable], logs / 'macho-load-commands.log'):
+        raise RuntimeError('Cannot inspect linked host load commands')
+    load_commands = (logs / 'macho-load-commands.log').read_text()
+    offset, has_entry, has_ios = 32, False, False
+    for _ in range(header[4]):
+        kind, size = struct.unpack_from('<II', binary, offset)
+        if size < 8 or offset + size > 32 + header[5]: raise RuntimeError('Invalid linked Mach-O load commands')
+        if kind == 0x80000028: has_entry = True
+        if kind == 0x32 and struct.unpack_from('<I', binary, offset + 8)[0] == 2: has_ios = True
+        offset += size
+    if not has_entry or not has_ios:
+        raise RuntimeError('Linked host lacks an iOS entry point/platform declaration')
+    if 'sectname __dm' in load_commands: raise RuntimeError('Game module sections must not appear in the shell')
     report['linked'] = True
     info = dict(CFBundleExecutable='P5RMobile', CFBundleIdentifier='org.p5r.experimental', CFBundleName='P5RMobile',
                 CFBundleDisplayName='P5R Mobile', CFBundlePackageType='APPL', CFBundleInfoDictionaryVersion='6.0',

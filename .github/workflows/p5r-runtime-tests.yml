@@ -42,7 +42,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Link and package the complete game-free P5R host
-        run: python3 dm/ios/p5r/build_shell.py "$RUNNER_TEMP/p5r-shell"
+        run: |
+          set -euo pipefail
+          xcrun clang -DDM_P5R_ONLY=1 dm/host/tests/t_guest_bootstrap.c dm/host/guest_bootstrap.c -o "$RUNNER_TEMP/p5r-profile"
+          "$RUNNER_TEMP/p5r-profile" p5r
+          python3 -m unittest discover -s dm/tools -p test_p5r_pack.py -v
+          python3 dm/ios/p5r/build_shell.py "$RUNNER_TEMP/p5r-shell"
       - name: Retain unsigned shell and build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
