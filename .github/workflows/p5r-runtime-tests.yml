@@ -112,6 +112,10 @@ jobs:
             echo '::warning::Synthetic texture GPU execution skipped: runner has no Metal device.'
             exit 0
           fi
+          if [ "$result" -eq 78 ]; then
+            echo '::warning::Metal 3 texture GPU checks passed; Metal 4 execution skipped because this device does not support it.'
+            exit 0
+          fi
           exit "$result"
       - name: Compile changed Metal backend
         run: |

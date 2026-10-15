@@ -59,6 +59,11 @@ int main(void) {
     CHECK(nvn_rbind_handle(&binding, table[1], samplers, images) == samplers[0]);
     CHECK(!nvn_rbind_handle(&binding, table[1], NULL, images));
     CHECK(!nvn_rbind_handle(NULL, table[1], samplers, images));
+    uint64_t mixed[2] = {1, UINT64_C(1) << 63};
+    CHECK(nvn_fetch_slot_blocked(mixed, 0) && nvn_fetch_slot_blocked(mixed, 127));
+    CHECK(!nvn_fetch_slot_blocked(mixed, 63) && !nvn_fetch_slot_blocked(mixed, 64));
+    for (unsigned reg = 128; reg < NVN_TEX_SLOTS; reg++) CHECK(nvn_fetch_slot_blocked(mixed, reg));
+    CHECK(nvn_fetch_slot_blocked(mixed, UINT_MAX) && nvn_fetch_slot_blocked(NULL, 0));
     puts("NVN HANDLES OK: combined/separate isolation, stages, invalid ranges, driver bytes, unbind");
     return 0;
 }

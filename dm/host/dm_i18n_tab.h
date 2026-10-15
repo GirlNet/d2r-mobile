@@ -357,4 +357,11 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmP5RShell", "这是不含游戏内容的 P5R 宿主壳。请用自己的游戏文件完成本地打包。", "This P5R host shell contains no game content. Complete local packaging with your own game files." },
     { "dmP5RRomfsMissing", "请将自己的 P5R romfs 文件夹放入本 App 的文稿目录。", "Place your own P5R romfs folder in this app's Documents directory." },
     { "dmP5RStartFailed", "无法创建游戏线程，请查看 p5r-runtime.log。", "Could not create the game thread. See p5r-runtime.log." },
+    { "dmP5RGpuTest", "运行 GPU 自检", "Run GPU Self-Test" },
+    { "dmP5RGpuRunning", "正在运行合成 GPU 自检…", "Running synthetic GPU checks…" },
+    { "dmP5RGpuPassed", "GPU 自检通过（96 组）。结果已保存到 p5r-gpu-selftest.json；这不代表游戏图形已验证。", "GPU self-test passed (96 cases). Results saved to p5r-gpu-selftest.json; game graphics remain unverified." },
+    { "dmP5RGpuPartial", "Metal 3 自检通过（48 组），设备不支持 Metal 4。结果已保存到 p5r-gpu-selftest.json。", "Metal 3 passed (48 cases); Metal 4 is unsupported. Results saved to p5r-gpu-selftest.json." },
+    { "dmP5RGpuNoDevice", "未检测到 Metal 设备。结果已保存到 p5r-gpu-selftest.json。", "No Metal device detected. Results saved to p5r-gpu-selftest.json." },
+    { "dmP5RGpuFailed", "GPU 自检未通过（返回码 %d）。结果已保存到 p5r-gpu-selftest.json。", "GPU self-test failed (code %d). Results saved to p5r-gpu-selftest.json." },
+    { "dmP5RGpuSaveFailed", "GPU 自检结束（返回码 %d），但无法保存结果。", "GPU self-test finished (code %d), but results could not be saved." },
 };

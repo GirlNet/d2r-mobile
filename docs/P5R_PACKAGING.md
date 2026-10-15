@@ -9,8 +9,11 @@ This workflow links the complete P5R host and packages locally prepared game mod
 On a Mac with Xcode's iOS SDK, from the repository root:
 
 ```sh
+python3 dm/gfx/tools/dmsh_chain.py --header
 python3 dm/ios/p5r/build_shell.py /absolute/path/out/p5r-shell
 ```
+
+The game-free shell includes **Run GPU Self-Test**. After signing and installing it on an iPhone, this button runs synthetic resources without RomFS or a Guest framework. Results are saved as `Documents/p5r-gpu-selftest.json`, accessible through file sharing. Metal 3 and supported Metal 4 paths each run 48 cases; unsupported Metal 4 is reported separately. Passing does not verify P5R graphics or enable game launch. CI may expose only Metal 3 even with a newer SDK; compiling the Metal 4 path is not GPU execution proof.
 
 The new output directory must be outside the repository. The builder compiles the loader, host gates, supported platform services, Metal backend and dedicated UIKit/controller front end, then performs a complete ARM64 iOS link. `DM_P5R_ONLY` removes D2R-only branches; D2R feature sources and generated tables are excluded. Unimplemented guest imports still fail explicitly.
 

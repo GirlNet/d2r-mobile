@@ -9,8 +9,11 @@ English: [P5R_PACKAGING.md](P5R_PACKAGING.md)
 在装有 Xcode iOS SDK 的 Mac 上，于仓库根目录执行：
 
 ```sh
+python3 dm/gfx/tools/dmsh_chain.py --header
 python3 dm/ios/p5r/build_shell.py /absolute/path/out/p5r-shell
 ```
+
+无游戏内容的壳包含「运行 GPU 自检」。签名并安装到 iPhone 后，可直接测试合成资源，不需要 RomFS 或 Guest 框架。结果保存在 `Documents/p5r-gpu-selftest.json`，可通过文件共享读取。Metal 3 和设备支持的 Metal 4 路径各运行 48 组；不支持的 Metal 4 会单独报告。自检通过不表示 P5R 图形已验证，也不会开放游戏启动。云端即使有新版 SDK，也可能只提供 Metal 3 设备；编译 Metal 4 路径不等于执行过 GPU 验证。
 
 输出目录必须尚不存在且在仓库外。构建器编译装载器、宿主门、已支持的平台服务、Metal 后端和专用 UIKit/手柄前端，再执行完整 ARM64 iOS 链接。`DM_P5R_ONLY` 移除 D2R 专用分支，源码列表不包含 D2R 功能与生成表。未实现的客体导入仍会明确中止。
 

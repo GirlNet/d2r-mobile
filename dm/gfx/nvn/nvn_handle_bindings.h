@@ -27,6 +27,12 @@ static inline unsigned nvn_handle_texture_id(uint64_t handle) {
     return (uint32_t)handle & 0xfffff;
 }
 
+// 既有 fetch 证明只覆盖分离槽；组合槽禁用这项优化，避免越界读两字位图。
+// Existing fetch proofs cover separate slots only; disable this optimization for combined slots to avoid reading past the two-word bitmap.
+static inline int nvn_fetch_slot_blocked(const uint64_t mixed[2], unsigned reg) {
+    return !mixed || reg >= NVN_SEPARATE_TEX_SLOTS || ((mixed[reg >> 6] >> (reg & 63)) & 1);
+}
+
 static inline int nvn_apply_handles(void *table, int limit, int stage, int first,
                                     int count, const uint64_t *handles) {
     if (!table || !nvn_handle_range(stage, first, count, limit) || !count || !handles) return 0;

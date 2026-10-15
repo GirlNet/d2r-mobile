@@ -101,8 +101,8 @@ $(B)/t_nvn_buffers: t_nvn_buffers.c ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_nvn_buffers.c
 $(B)/t_nvn_compute_gpu: t_nvn_compute_gpu.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
 	clang -mmacosx-version-min=26.0 -O1 -g -Wall -fobjc-arc -o $@ t_nvn_compute_gpu.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
-$(B)/t_nvn_texture_gpu: t_nvn_texture_gpu.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
-	clang -mmacosx-version-min=26.0 -O1 -g -Wall -Werror -fobjc-arc -fblocks -o $@ t_nvn_texture_gpu.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
+$(B)/t_nvn_texture_gpu: t_nvn_texture_gpu.m ../../gfx/nvn/nvn_texture_selftest.m ../../gfx/nvn/nvn_texture_selftest.h ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
+	clang -mmacosx-version-min=26.0 -O1 -g -Wall -Werror -fobjc-arc -fblocks -o $@ t_nvn_texture_gpu.m ../../gfx/nvn/nvn_texture_selftest.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
 $(B)/t_nvn_combined_refl: t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_buffer_bindings.h ../../gfx/nvn/nvn_shader_control.h | $(B)
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
 $(B)/t_hud_dead: t_hud_dead.c ../dm_hud.h | $(B)

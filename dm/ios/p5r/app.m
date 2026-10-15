@@ -9,6 +9,7 @@
 #include "front.h"
 #include "dm_input.h"
 #include "dm_i18n.h"
+#include "../../gfx/nvn/nvn_texture_selftest.h"
 #include <unistd.h>
 
 static CAMetalLayer *metalLayer;
@@ -47,6 +48,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 @interface P5RController : UIViewController
 @property UILabel *status;
 @property UIButton *launch;
+@property UIButton *gpuTest;
+@property UILabel *gpuStatus;
+@property UIStackView *menu;
+@property BOOL testingGpu;
 @property CADisplayLink *poll;
 @property NSDictionary *package;
 @end
@@ -60,17 +65,24 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     [self.view addSubview:canvas];
     self.status = [UILabel new]; self.status.textColor = UIColor.whiteColor; self.status.numberOfLines = 0;
     self.status.textAlignment = NSTextAlignmentCenter; self.status.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:self.status];
     self.launch = [UIButton buttonWithType:UIButtonTypeSystem]; self.launch.translatesAutoresizingMaskIntoConstraints = NO;
     [self.launch setTitle:text("dmP5RLaunch") forState:UIControlStateNormal];
     [self.launch addTarget:self action:@selector(startGuest) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.launch];
+    self.gpuTest = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.gpuTest setTitle:text("dmP5RGpuTest") forState:UIControlStateNormal];
+    [self.gpuTest addTarget:self action:@selector(testGpu) forControlEvents:UIControlEventTouchUpInside];
+    self.gpuStatus = [UILabel new]; self.gpuStatus.textColor = UIColor.lightGrayColor;
+    self.gpuStatus.font = [UIFont systemFontOfSize:13]; self.gpuStatus.numberOfLines = 0;
+    self.gpuStatus.textAlignment = NSTextAlignmentCenter;
+    self.menu = [[UIStackView alloc] initWithArrangedSubviews:@[self.status,self.launch,self.gpuTest,self.gpuStatus]];
+    self.menu.axis = UILayoutConstraintAxisVertical; self.menu.spacing = 12;
+    self.menu.translatesAutoresizingMaskIntoConstraints = NO; [self.view addSubview:self.menu];
     [NSLayoutConstraint activateConstraints:@[
-        [self.status.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.status.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor constant:-25],
-        [self.status.widthAnchor constraintLessThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.widthAnchor constant:-40],
-        [self.launch.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.launch.topAnchor constraintEqualToAnchor:self.status.bottomAnchor constant:20]]];
+        [self.menu.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [self.menu.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [self.menu.widthAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.widthAnchor constant:-40],
+        [self.launch.heightAnchor constraintGreaterThanOrEqualToConstant:44],
+        [self.gpuTest.heightAnchor constraintGreaterThanOrEqualToConstant:44]]];
     NSString *path = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/p5r-package.json"];
     NSData *data = [NSData dataWithContentsOfFile:path];
     self.package = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
@@ -98,13 +110,13 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
                pad.rightThumbstick.xAxis.value * 32767, pad.rightThumbstick.yAxis.value * 32767);
 }
 - (void)startGuest {
-    if (started || ![self.package[@"runtime_ready"] isEqual:@YES]) return;
+    if (started || self.testingGpu || ![self.package[@"runtime_ready"] isEqual:@YES]) return;
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *romfs = [documents stringByAppendingPathComponent:@"romfs"];
     if (![NSFileManager.defaultManager fileExistsAtPath:[romfs stringByAppendingPathComponent:@"CPK/ALL_ASIA.CPK"]]) {
         self.status.text = text("dmP5RRomfsMissing"); return;
     }
-    started = 1; self.status.hidden = self.launch.hidden = YES;
+    started = 1; self.menu.hidden = YES;
     NSString *save = [documents stringByAppendingPathComponent:@"save-p5r"], *temporary = [documents stringByAppendingPathComponent:@"temp-p5r"];
     for (NSString *directory in @[save, temporary]) [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
     setenv("DM_GUEST_PROFILE", "p5r", 1); setenv("DM_ROMFS", romfs.fileSystemRepresentation, 1);
@@ -114,9 +126,37 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     chdir(documents.fileSystemRepresentation);
     freopen([documents stringByAppendingPathComponent:@"p5r-runtime.log"].fileSystemRepresentation, "a", stderr);
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 8 << 20);
-    pthread_t thread; if (pthread_create(&thread, &attr, runHost, NULL)) { started = 0; self.status.hidden = NO; self.status.text = text("dmP5RStartFailed"); }
+    pthread_t thread; if (pthread_create(&thread, &attr, runHost, NULL)) { started = 0; self.menu.hidden = NO; self.status.text = text("dmP5RStartFailed"); }
     else pthread_detach(thread);
     pthread_attr_destroy(&attr);
+}
+- (void)testGpu {
+    if (started || self.testingGpu) return;
+    self.testingGpu = YES; self.launch.enabled = self.gpuTest.enabled = NO;
+    self.gpuStatus.text = text("dmP5RGpuRunning");
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        int result = nvn_texture_selftest();
+        BOOL passed3 = result == 0 || result == NVN_TEXTURE_SELFTEST_METAL4_UNSUPPORTED;
+        NSDictionary *report = @{@"schema_version":@1, @"synthetic_only":@YES, @"result_code":@(result),
+            @"metal3_passed":@(passed3), @"metal4_passed":@(result == 0),
+            @"metal4_skipped":@(result == NVN_TEXTURE_SELFTEST_METAL4_UNSUPPORTED),
+            @"cases_passed":@(result == 0 ? 96 : passed3 ? 48 : 0), @"game_graphics_verified":@NO,
+            @"time":@([NSDate.date timeIntervalSince1970]), @"os_version":NSProcessInfo.processInfo.operatingSystemVersionString};
+        NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+        NSString *path = [documents stringByAppendingPathComponent:@"p5r-gpu-selftest.json"];
+        NSError *error = nil;
+        NSData *data = [NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:&error];
+        BOOL saved = data && [data writeToFile:path options:NSDataWritingAtomic error:&error];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.testingGpu = NO; self.gpuTest.enabled = YES;
+            self.launch.enabled = [self.package[@"runtime_ready"] isEqual:@YES];
+            if (!saved) self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RGpuSaveFailed"),result];
+            else if (result == 0) self.gpuStatus.text = text("dmP5RGpuPassed");
+            else if (result == NVN_TEXTURE_SELFTEST_METAL4_UNSUPPORTED) self.gpuStatus.text = text("dmP5RGpuPartial");
+            else if (result == NVN_TEXTURE_SELFTEST_NO_DEVICE) self.gpuStatus.text = text("dmP5RGpuNoDevice");
+            else self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RGpuFailed"),result];
+        });
+    });
 }
 static void *runHost(void *unused) {
     (void)unused; @autoreleasepool {
