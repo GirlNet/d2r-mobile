@@ -87,8 +87,16 @@ int dm_guest_heap_stat(unsigned long long *total_mb, unsigned long long *free_mb
 // The last main-heap readout (total MB, free MB, largest allocatable block KB; all 0 if never read). Callable from any thread - does not enter the allocator (the iOS shell uses it on the main thread for the memory-warning log line)
 void dm_guest_heap_last(unsigned long long v[3]) { for (int i = 0; i < 3; i++) v[i] = atomic_load(&g_gheap_last[i]); }
 HLE_FORCE("_ZN2nn3mem17StandardAllocator8AllocateEmm", "照原版分配，只在返回空时报红（原版调用方多处不判空）", void *, hle_stdalloc_allocate, void *self, size_t size, size_t align) {
-    static void *(*orig)(void *, size_t, size_t); if (!orig) { module_t *ms = mod_named("sdk"); orig = (void *(*)(void *, size_t, size_t))(ms->base + 0x2f9974); }
-    void *p = orig(self, size, align);
+    // 原实现按已装模块的导出名查找，不能跨 SDK 版本复用 D2R 偏移；多线程首次调用用原子缓存。
+    // Find the original implementation by its loaded-module export, never a D2R offset in another SDK; cache atomically for concurrent first calls.
+    static _Atomic uintptr_t original;
+    uintptr_t entry = atomic_load(&original);
+    if (!entry) {
+        entry = (uintptr_t)guest_sym("_ZN2nn3mem17StandardAllocator8AllocateEmm");
+        if (!entry || entry == (uintptr_t)hle_stdalloc_allocate) die("StandardAllocator::Allocate original export missing or recursive");
+        atomic_store(&original,entry);
+    }
+    void *p = ((void *(*)(void *, size_t, size_t))entry)(self, size, align);
     if (!p && size) { static _Atomic int n; if (atomic_fetch_add(&n, 1) < 8) LOG("【红】游戏堆分配返回空：申请 %zu 字节（对齐 %zu），分配器 %p；上次读数 主堆 %llu MB、余量 %llu MB、最大可分配块 %llu KB", size, align, self,
         (unsigned long long)g_gheap_last[0], (unsigned long long)g_gheap_last[1], (unsigned long long)g_gheap_last[2]); }
     return p;

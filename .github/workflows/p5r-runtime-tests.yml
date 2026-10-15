@@ -99,6 +99,12 @@ jobs:
           xcrun clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I dm/host \
             dm/host/tests/t_elf_imports.c dm/host/hle.c -o "$RUNNER_TEMP/p5r-elf-imports"
           "$RUNNER_TEMP/p5r-elf-imports"
+      - name: Check symbolic allocator forwarding
+        run: |
+          set -euo pipefail
+          xcrun clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I dm/host \
+            dm/host/tests/t_stdalloc_forward.c -o "$RUNNER_TEMP/p5r-stdalloc-forward"
+          "$RUNNER_TEMP/p5r-stdalloc-forward"
       - name: Run synthetic compute on an available Metal device
         run: |
           set +e
