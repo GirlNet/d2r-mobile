@@ -108,7 +108,7 @@ int main(void) { @autoreleasepool {
         for (unsigned st = 0; st < 6; st++) tex[st][NVN_COMBINED_TEX_FIRST + slot] = nvn_combined_handle(23,4095);
         NSDictionary *json = @{@"route":@"B", @"stage":@"cs", @"threadgroup_size":@[@1,@1,@1], @"bindings":@[
             binding(@"tex_combined",slot,0),binding(@"samp_combined",slot,1),binding(@"tex",slot,2),binding(@"samp",slot,3),
-            binding(@"sbuf",0,4),binding(@"drvcb",2,5),binding(@"cbuf",0,6)]};
+            binding(@"sbuf",0,4),@{@"kind":@"drvcb",@"bank":@2,@"arg_id":@5},binding(@"cbuf",0,6)]};
         nvn_refl reflection; char reason[160]; CHECK(!nvn_refl_from_json(json,&reflection,reason,sizeof reason));
         const unsigned coTid[] = {17,23,0,17}, coSid[] = {2048,4095,0,4095};
         const unsigned seTid[] = {23,17,23,0}, seSid[] = {4095,2048,4095,0};
@@ -151,7 +151,11 @@ int main(void) { @autoreleasepool {
             float values[] = {expected(coTid[iteration],coSid[iteration],0),expected(seTid[iteration],seSid[iteration],0),
                 expected(coTid[iteration],coSid[iteration],1),expected(seTid[iteration],seSid[iteration],1),
                 coTid[iteration] == 17 ? 192.f/255 : 0, seTid[iteration] == 17 ? 192.f/255 : 0,0,0};
-            for (unsigned i = 0; i < 8; i++) CHECK(isfinite(got[i]) && fabsf(got[i]-values[i]) < 0.00001f);
+            for (unsigned i = 0; i < 8; i++) {
+                if (!isfinite(got[i]) || fabsf(got[i]-values[i]) >= 0.00001f)
+                    fprintf(stderr,"api=%d stage=%u slot=%u iteration=%u value=%u actual=%g expected=%g\n",api,stage,slot,iteration,i,got[i],values[i]);
+                CHECK(isfinite(got[i]) && fabsf(got[i]-values[i]) < 0.00001f);
+            }
             uint32_t *words = output.contents;
             CHECK(words[8] == (uint32_t)combined && words[9] == combined >> 32 && words[10] == (uint32_t)separate && words[11] == (uint32_t)sampler);
             CHECK(words[12] == (coTid[iteration] ? 2u:1u) && words[13] == words[12]);
