@@ -12,6 +12,7 @@ import struct
 import sys
 from nvn_handle_layout import decode_handle
 from maxwell_memory_audit import audit_compute_memory
+from maxwell_texture_audit import audit_texture_queries
 from p5r_reflection import reflection_plan
 from prepare_p5r_shaders import CONTROL_SIZE, HEADER_FIELDS, STAGES, compute_workgroup, word
 
@@ -156,6 +157,67 @@ def audit_resources(job, resource):
                 + (['Compute local and shared memory remain unverified'] if job['stage'] == 'cs' else []))
 
 
+def audit_queries(resource):
+    # 查询日志只覆盖自定义访问器的资源/管线查询；没有查询不证明绑定类型正确。
+    # This log covers resource/pipeline queries in our accessor; no query does not prove binding types correct.
+    if type(resource.get('query_audit_schema')) is not int or resource['query_audit_schema'] != 1 or not isinstance(resource.get('query_audit'), list):
+        raise ValueError('Missing query audit schema 1; rebuild the translator')
+    sources = {
+        'sampler_type': {'job_tex', 'job_img', 'missing_default', 'invalid_default'},
+        'texture_format': {'job_img', 'missing_default', 'invalid_default'},
+        'graphics_state': {'fixed_default'},
+        'compute_shared_memory_size': {'job_shared', 'missing_default'},
+        **{name: {'fixed_default'} for name in ('compute_local_memory_size', 'constant_buffer_use',
+            'constant_buffer_draw_parameters', 'unaligned_storage_buffer', 'texture_coord_normalized',
+            'transform_feedback_enabled')},
+        **{f'compute_local_size_{axis}': {'job_local', 'missing_default'} for axis in 'xyz'},
+        **{name: {'fixed_default'} for name in ('sampler_array_length_pool',
+            'texture_array_length_buffer', 'texture_array_length_pool')},
+    }
+    rows = resource['query_audit']
+    for row in rows:
+        if not isinstance(row, dict) or row.get('query') not in sources or row.get('source') not in sources[row['query']]:
+            raise ValueError('Invalid query audit entry')
+        name, value = row['query'], row.get('value')
+        if name in ('sampler_type', 'texture_format', 'graphics_state'):
+            if not isinstance(value, str) or not value:
+                raise ValueError('Invalid query audit string answer')
+        elif name in ('constant_buffer_draw_parameters', 'unaligned_storage_buffer',
+                       'texture_coord_normalized', 'transform_feedback_enabled'):
+            if type(value) is not bool:
+                raise ValueError('Invalid query audit boolean answer')
+        elif type(value) is not int or value < 0:
+            raise ValueError('Invalid query audit numeric answer')
+        if name in ('sampler_type', 'texture_format', 'texture_coord_normalized', 'texture_array_length_buffer'):
+            bank = row.get('cbuf_slot')
+            if type(bank) is not int or not -1 <= bank <= 0x7fffffff:
+                raise ValueError('Invalid query audit constant-buffer bank')
+        if name in ('sampler_type', 'texture_format', 'texture_coord_normalized'):
+            handle = row.get('handle')
+            if type(handle) is not int or not 0 <= handle <= 0x7fffffff:
+                raise ValueError('Invalid query audit handle')
+    return dict(scope='custom_accessor_resource_and_pipeline_queries', entries=rows,
+                calls=len(rows), calls_by_query=dict(Counter(r['query'] for r in rows)),
+                default_calls=sum(r['source'].endswith('_default') for r in rows),
+                resource_facts_verified=False)
+
+
+def query_requirements(shaders):
+    groups = {}
+    for shader in shaders:
+        for row in shader.get('query_audit', {}).get('entries', []):
+            if not row['source'].endswith('_default'):
+                continue
+            identity = (row['query'], row['source'], row['value'], row.get('handle'), row.get('cbuf_slot'))
+            if identity not in groups:
+                groups[identity] = dict(row, calls=0, shaders=[])
+            group = groups[identity]
+            group['calls'] += 1
+            if shader['key'] not in group['shaders']:
+                group['shaders'].append(shader['key'])
+    return list(groups.values())
+
+
 def compile_metal(msl, directory, sdk, xcrun='xcrun', runner=run_command):
     directory.mkdir(parents=True, exist_ok=True)
     air = directory / (msl.stem + '.air')
@@ -216,6 +278,8 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                 if not binary.is_file():
                     raise ValueError('Translator did not produce SPIR-V')
                 row['audit'] = audit_resources(job, resource)
+                row['query_audit'] = audit_queries(resource)
+                row['texture_query_constraints'] = audit_texture_queries(job, resource, Path(job['code']).read_bytes())
                 row['completed'].append('translated')
                 runner([validator, '--target-env', 'vulkan1.2', binary], output / (key + '-validation.log'))
                 row['completed'].append('spirv_validated')
@@ -231,6 +295,8 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                     raise ValueError('SPIRV-Cross did not produce MSL')
                 row['completed'].append('msl_generated')
                 plan = reflection_plan(job, resource, msl.read_bytes().decode('utf-8'))
+                plan['query_audit'] = row['query_audit']
+                plan['texture_query_constraints'] = row['texture_query_constraints']
                 row['audit']['buffer_slot_mapping_verified'] = not plan['missing_descriptors'] and all(
                     b['slot_mapping_verified'] for b in plan['bindings']
                     if b.get('descriptor', {}).get('category') in ('cbufs', 'sbufs'))
@@ -270,7 +336,13 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                                  reflection_plans=sum('reflection_plan' in r for r in report['shaders']),
                                  reflection_plans_with_complete_binding_coverage=sum(
                                      r.get('reflection_plan', {}).get('binding_coverage_complete', False)
-                                     for r in report['shaders']))
+                                     for r in report['shaders']),
+                                 accessor_query_calls=sum(r.get('query_audit', {}).get('calls', 0) for r in report['shaders']),
+                                 accessor_default_calls=sum(r.get('query_audit', {}).get('default_calls', 0) for r in report['shaders']),
+                                 sampler_query_answers_corroborated=sum(q['answer_corroborated']
+                                     for r in report['shaders'] for q in r.get('texture_query_constraints', {}).get('queries', [])),
+                                 shaders_using_accessor_defaults=sum(r.get('query_audit', {}).get('default_calls', 0) > 0 for r in report['shaders']))
+        report['default_query_requirements'] = query_requirements(report['shaders'])
         report['status'] = 'diagnostic_passed' if report['summary']['passed'] == len(jobs) and not report['errors'] else 'failed'
     except (ValueError, OSError, RuntimeError) as error:
         report['errors'].append(str(error)); report['status'] = 'failed'

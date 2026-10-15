@@ -8,7 +8,7 @@ import struct
 import tempfile
 import unittest
 
-from diagnose_p5r_shaders import audit_resources, compile_metal, diagnose, load_jobs, spirv_compute_workgroup
+from diagnose_p5r_shaders import audit_queries, audit_resources, compile_metal, diagnose, load_jobs, spirv_compute_workgroup
 from prepare_p5r_shaders import scan_segment, write_outputs
 from test_prepare_p5r_shaders import shader
 
@@ -28,7 +28,9 @@ def compute_spirv(group=(4, 2, 1)):
 
 
 def resources(job, handle=8):
-    return dict(key=job['key'], stage=job['stage'], decoded_size=16, cbufs=[], sbufs=[], images=[], notes=[],
+    return dict(key=job['key'], stage=job['stage'], decoded_size=16 if job['stage'] == 'cs' else 0x60, cbufs=[], sbufs=[], images=[], notes=[],
+                query_audit_schema=1, query_audit=[dict(query='sampler_type', handle=handle, cbuf_slot=-1,
+                    value='Texture2D', source='missing_default')],
                 textures=[dict(binding=1, handle=handle, cbuf_slot=-1, array=1, type=3, format='Unknown')])
 
 
@@ -70,6 +72,8 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(report['summary']['shaders_outside_d2r_texture_layout'], 1)
         self.assertFalse(report['resource_bindings_verified'])
         self.assertFalse(report['runnable_verified'])
+        self.assertEqual(report['summary']['accessor_default_calls'], 1)
+        self.assertEqual(report['summary']['shaders_using_accessor_defaults'], 1)
         self.assertEqual(report['shaders'][0]['audit']['handles'][0]['texture_byte_offset'], 32)
         self.assertEqual(report['shaders'][0]['audit']['handles'][0]['handle_source']['texture'], dict(kind='tex_combined', reg=0))
         self.assertEqual(report['summary']['shaders_with_unresolved_handles'], 0)
@@ -81,6 +85,8 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(plan_meta['sha256'], hashlib.sha256(plan_path.read_bytes()).hexdigest())
         plan = json.loads(plan_path.read_text())
         self.assertFalse(plan['runtime_ready'])
+        self.assertEqual(plan['query_audit']['calls_by_query'], {'sampler_type': 1})
+        self.assertFalse(plan['query_audit']['resource_facts_verified'])
         self.assertTrue(plan['diagnostic_only'])
         self.assertEqual(plan['bindings'][0]['kind'], 'tex_combined')
         self.assertTrue(plan['source']['control_sha256'].startswith(self.jobs[0]['key']))
@@ -235,6 +241,40 @@ class DiagnosticTests(unittest.TestCase):
         self.assertFalse(audit['resource_bindings_verified'])
         array_resource = resources(job); array_resource['textures'][0]['array'] = 2
         self.assertIsNone(audit_resources(job, array_resource)['handles'][0]['handle_source'])
+
+    def test_query_audit_distinguishes_defaults_and_inputs_without_granting_verification(self):
+        res = resources(self.jobs[0])
+        res['query_audit'] += [dict(query='compute_local_size_x', value=32, source='job_local'),
+                              dict(query='texture_format', value='R32Uint', source='job_img', handle=8, cbuf_slot=2)]
+        audit = audit_queries(res)
+        self.assertEqual(audit['calls'], 3)
+        self.assertEqual(audit['default_calls'], 1)
+        self.assertFalse(audit['resource_facts_verified'])
+        res['query_audit'] = []
+        self.assertEqual(audit_queries(res)['default_calls'], 0)
+        self.assertFalse(audit_queries(res)['resource_facts_verified'])
+
+    def test_query_audit_rejects_missing_schema_unknown_sources_and_malformed_answers(self):
+        res = resources(self.jobs[0])
+        for field, value in [('query', 'unknown'), ('source', 'verified'), ('handle', True),
+                             ('cbuf_slot', -2), ('value', None), ('value', '')]:
+            changed = dict(res, query_audit=[dict(res['query_audit'][0], **{field: value})])
+            with self.assertRaises(ValueError): audit_queries(changed)
+        for rows in (None, {}, [None], [dict(query='compute_local_size_x', value=True, source='job_local')]):
+            with self.assertRaises(ValueError): audit_queries(dict(res, query_audit=rows))
+        for schema in (None, 0, 2):
+            with self.assertRaisesRegex(ValueError, 'rebuild'): audit_queries(dict(res, query_audit_schema=schema))
+
+    def test_old_translator_missing_query_audit_is_rejected_before_validation(self):
+        def runner(command, log, timeout=120):
+            self.runner(command, log, timeout)
+            if len(command) == 3:
+                for path in Path(command[2]).glob('*.res.json'):
+                    res = json.loads(path.read_text()); res.pop('query_audit_schema'); path.write_text(json.dumps(res))
+        report = self.run_diagnostic(runner)
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('rebuild the translator', report['shaders'][0]['error'])
+        self.assertFalse(report['shaders'][0]['completed'])
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'Apple Metal tools require macOS')

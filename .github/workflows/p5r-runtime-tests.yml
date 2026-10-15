@@ -16,6 +16,9 @@ on:
       - 'dm/gfx/tools/dmsh_xlate/**'
       - 'dm/tools/diagnose_p5r_shaders.py'
       - 'dm/tools/test_diagnose_p5r_shaders.py'
+      - 'dm/tools/test_shader_query_audit.py'
+      - 'dm/tools/maxwell_texture_audit.py'
+      - 'dm/tools/test_maxwell_texture_audit.py'
       - 'dm/tools/p5r_reflection.py'
       - 'dm/tools/test_p5r_reflection.py'
       - 'dm/tools/maxwell_memory_audit.py'
@@ -139,6 +142,7 @@ jobs:
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_texture_audit.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/verify -p test_equiv_compare.py -v
@@ -153,3 +157,4 @@ jobs:
           set -euo pipefail
           dotnet publish dm/gfx/tools/dmsh_xlate/dmsh_xlate.csproj -c Release -o "$RUNNER_TEMP/p5r-translator" --nologo
           P5R_TRANSLATOR="$RUNNER_TEMP/p5r-translator/dmsh_xlate" "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v
+          P5R_TRANSLATOR="$RUNNER_TEMP/p5r-translator/dmsh_xlate" "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_shader_query_audit.py -v

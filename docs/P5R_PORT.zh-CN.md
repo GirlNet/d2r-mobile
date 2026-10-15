@@ -19,6 +19,7 @@ English: [P5R_PORT.md](P5R_PORT.md)
 - `p5r_reflection.py` 根据 MSL 参数成员和翻译器描述符生成诊断反射草案。存储缓冲按明确的翻译器槽对应，不依赖描述符顺序或 Metal 参数编号。每个绑定记录来源、候选 NVN 槽、写权限与待验证事项；缺失描述符和不支持的成员会明确保留。运行时拒绝加载诊断或未验证草案，P5R 反射还必须具有明确的就绪标记。
 - 缓冲槽解码现在依据独立核对过的 SDK 绑定命令/队列记录。图形阶段 uniform 库 3–16 对应 API 槽 0–13；计算阶段直接库仅为 3–7，其余 uniform 指针在驱动表中。着色器读取驱动库 0 时，Metal 后端现在同时填写计算 uniform 地址表和 storage 地址表。合成 C 测试覆盖阶段表、隔离、边界及解绑。这确认的是 CPU 接口映射，不是 GPU 输出。
 - `maxwell_memory_audit.py` 使用仓内 Maxwell 指令表扫描翻译器完整已解码计算范围，跳过调度字，将未知/有歧义的指令保留为阻塞项。出现局部/共享内存操作就不能证明内存未使用。需要重新编译 `dmsh_xlate` 以输出新增的 `decoded_size` 元数据；计算诊断拒绝旧版翻译器。本次源码变化也改变了着色器缓存版本。
+- `dmsh_xlate` 用查询审计 schema 1 记录资源/管线查询的实际回答及其来源。诊断报告按查询、句柄与常量缓冲库汇总缺省回答，并保留受影响的着色器键。作业输入、缺失/无效输入和固定缺省值分开记录；审计不覆盖全部继承的宿主能力查询。重跑诊断前需重编译翻译器。`maxwell_texture_audit.py` 另外记录同着色器 TEXS/TLDS 立即数句柄的类型约束，附指令位置和来源散列；1D/缓冲歧义、未知指令及类型冲突均不能确认为旁证。这些约束仅是诊断依据，不验证已绑定的纹理对象、格式或绘制状态，也不会开启运行时加载。翻译器变化后需按原流程重新生成着色器缓存/头文件；本地生成的缓存文件不提交。
 - 专用 UIKit/手柄壳及跨平台本地打包见 [P5R_PACKAGING.zh-CN.md](P5R_PACKAGING.zh-CN.md)。完整无游戏内容的 ARM64 iOS 宿主已在 CI 链接，本地改写模块可作为 Guest.framework 加入。产物仍是未签名实验包；图形资源仍为诊断时，游戏启动保持禁用。
 - `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频/控制块/组合句柄测试、iOS ARM64 组件编译与 Python 工具测试，另有 macOS/iOS 合成 Metal 原生编译测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。
 
@@ -48,6 +49,8 @@ python -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
 python -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
 python -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
 python -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v
+python -m unittest discover -s dm/tools -p test_maxwell_texture_audit.py -v
+python -m unittest discover -s dm/tools -p test_shader_query_audit.py -v
 ```
 
 内嵌着色器诊断准备（输出目录必须尚不存在）：
