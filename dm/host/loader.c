@@ -404,6 +404,8 @@ void run_module_inits(void) {
         module_t *m = &g_mod[i];
         if (!m->init) continue;
         LOG("%s: DT_INIT +%#llx（init_array %llu 项）", m->name, m->init, m->init_arraysz / 8);
+        dm_boot_probe_note("module_init_begin", m->name);
         ((void (*)(void))(m->base + m->init))();
+        dm_boot_probe_note("module_init_complete", m->name);
     }
 }

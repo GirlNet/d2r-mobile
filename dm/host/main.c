@@ -76,7 +76,7 @@ static void guest_main(void) {
                                   dm_guest_d2r() ? NULL : dm_boot_probe_checkpoint};
     const char *missing = NULL;
     int result = dm_guest_sdk_bootstrap(&ops, hmain, 0, g_argc, g_argv, &missing);
-    if (result == DM_BOOT_STOPPED) { LOG("P5R SDK diagnostic stopped before module initialization"); return; }
+    if (result == DM_BOOT_STOPPED) { LOG("P5R initialization diagnostic reached its configured stop boundary"); return; }
     if (!result) {
         if (dm_boot_probe_active()) { dm_boot_probe_failure(missing ? missing : "invalid bootstrap arguments"); return; }
         die("SDK bootstrap failed: %s", missing ? missing : "invalid arguments");

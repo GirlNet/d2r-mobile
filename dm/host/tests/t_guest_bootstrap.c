@@ -80,6 +80,10 @@ int main(int argc, char **argv) {
     assert(dm_guest_sdk_bootstrap(&probe,0,0,2,game_argv,&missing) == DM_BOOT_STOPPED);
     assert(count == 7 && checkpoints == 13 && !missing);
     for (int i = 0; i < count; i++) assert(trace[i] == i);
+    stop_entry = "nnMain"; count = checkpoints = 0;
+    assert(dm_guest_sdk_bootstrap(&probe,0,0,2,game_argv,&missing) == DM_BOOT_STOPPED);
+    assert(count == (p5r ? 11 : 12) && checkpoints == 19 && !missing);
+    for (int i = 0; i < count; i++) assert(trace[i] == i);
     absent = 8; count = checkpoints = 0;
     assert(dm_guest_sdk_bootstrap(&probe,0,0,2,game_argv,&missing) == DM_BOOT_FAILED);
     assert(!count && !checkpoints && !strcmp(missing,"nnMain"));

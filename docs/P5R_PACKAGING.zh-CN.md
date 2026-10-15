@@ -15,9 +15,9 @@ python3 dm/ios/p5r/build_shell.py /absolute/path/out/p5r-shell
 
 无游戏内容的壳包含「运行 GPU 自检」。签名并安装到 iPhone 后，可直接测试合成资源，不需要 RomFS 或 Guest 框架。结果保存在 `Documents/p5r-gpu-selftest.json`，可通过文件共享读取。Metal 3 和设备支持的 Metal 4 路径各运行 48 组；不支持的 Metal 4 会单独报告。自检通过不表示 P5R 图形已验证，也不会开放游戏启动。云端即使有新版 SDK，也可能只提供 Metal 3 设备；编译 Metal 4 路径不等于执行过 GPU 验证。
 
-本地补齐游戏模块的包另提供「SDK 初始化诊断」，与仍禁用的游戏启动按钮独立。它加载已签名的 Guest 框架，仅执行六个 SDK 启动入口，在模块初始化及 `nnMain` 之前停止。此轮诊断不需要 RomFS。若尝试初始化 GPU 或调用未解决的导入，会先记录并停驻，不执行该操作。入口未返回时，30 秒期限会先记录超时，再结束进程。诊断停止或阻塞不表示游戏执行已验证。
+本地补齐游戏模块的包另提供「模块初始化诊断」，与仍禁用的游戏启动按钮独立。它加载已签名的 Guest 框架，执行六个 SDK 启动入口，然后运行模块构造器并设置宿主参数，始终在 `nnMain` 之前停止。GPU 初始化、未实现的 NVN 操作及未解决的导入仍会先记录并停驻，不执行该操作。若初始化尚未停止，30 秒期限会记录超时并结束进程。探针 API 仍保留只执行 SDK、在构造器前停止的初始模式，此初始模式不需要 RomFS。模块构造器可能暴露更多平台或资源要求，SDK 阶段完成不代表这些构造器或游戏启动已验证。
 
-每次运行都新建 `Documents/p5r-boot-probe-<UUID>/` 文件夹，包含 `boot-report.json`、`runtime.log` 及独立的 `save`/`temp` 目录，不复用正常存档。报告会在可用时带上宿主源码指纹/包元数据，逐入口检查点及明确为假的就绪/游戏/GPU 标记。若 App 提前退出，请保留两个文件；报告仍为 `running` 仅表示最后一个检查点已保存，不表示初始化完成。再次运行前请彻底关闭 App。报告及含游戏内容的包保留在本地。
+每次运行都新建 `Documents/p5r-boot-probe-<UUID>/` 文件夹，包含 `boot-report.json`、`runtime.log` 及独立的 `save`/`temp` 目录，不复用正常存档。报告会在可用时带上宿主源码指纹/包元数据，逐入口和逐模块检查点、独立的构造器已开始/已完成标记；SDK 入口与参数设置分开计数。游戏主函数/GPU/就绪/图形标记保持为假。`stopped_before_game_main` 表示到达设定边界；`blocked`、`failed`、`timeout` 及被中断后仍为 `running` 的报告都表示执行未完成。若 App 提前退出，请保留两个文件。再次运行前请彻底关闭 App。报告及含游戏内容的包保留在本地。
 
 输出目录必须尚不存在且在仓库外。构建器编译装载器、宿主门、已支持的平台服务、Metal 后端和专用 UIKit/手柄前端，再执行完整 ARM64 iOS 链接。`DM_P5R_ONLY` 移除 D2R 专用分支，源码列表不包含 D2R 功能与生成表。未实现的客体导入仍会明确中止。
 
@@ -35,6 +35,6 @@ python3 dm/tools/p5r_pack.py /path/P5RMobile-shell-unsigned.ipa /path/port-prepa
 
 装包器核对模块散列、段/键页范围、互不重复的线程键槽、没有 D2R 私有剪口/观测/参数，以及着色器/报告散列。着色器和程序来源必须一致。复用可跨平台的 Mach-O 写入器，将 `main`、`sdk`、`subsdk0` 三个模块写入 `Frameworks/Guest.framework/Guest`，加入装载元数据，并把着色器产物保存在 `p5r-diagnostics/`。诊断产物不会被提升成就绪的运行时着色器库。流程检查 ZIP 路径、重名项及最终 CRC，并保留已存在的输出。
 
-旁边的 `.report.json` 记录散列，并明确保留 `runtime_ready=false`、`graphics_verified=false`、`device_verified=false`、`signed=false`。UIKit 启动页显示图形待验证状态，不执行客体代码。未来经过验证的运行时包还需要使用者将自己的 RomFS 放到 `Documents/romfs/`；本工具不把 RomFS 装入 IPA。存档和临时目录独立使用 `save-p5r`、`temp-p5r`。
+旁边的 `.report.json` 记录散列，并明确保留 `runtime_ready=false`、`graphics_verified=false`、`device_verified=false`、`signed=false`。UIKit 启动页显示图形待验证状态，正常游戏启动保持禁用；独立诊断按钮只执行选定的初始化阶段。未来经过验证的运行时包还需要使用者将自己的 RomFS 放到 `Documents/romfs/`；本工具不把 RomFS 装入 IPA。存档和临时目录独立使用 `save-p5r`、`temp-p5r`。
 
 安装前必须同时签名应用和 Guest 框架。此流程不安装应用、不获取证书、不修改描述文件、不上传游戏衍生文件。含游戏的完整 IPA 和诊断报告应保留在本地。
