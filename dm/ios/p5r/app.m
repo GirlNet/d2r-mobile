@@ -81,7 +81,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     self.gpuStatus.font = [UIFont systemFontOfSize:13]; self.gpuStatus.numberOfLines = 0;
     self.gpuStatus.textAlignment = NSTextAlignmentCenter;
     self.bootProbe = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.bootProbe setTitle:text("dmP5RModuleProbe") forState:UIControlStateNormal];
+    [self.bootProbe setTitle:text("dmP5RStartupProbe") forState:UIControlStateNormal];
     [self.bootProbe addTarget:self action:@selector(probeBoot) forControlEvents:UIControlEventTouchUpInside];
     self.menu = [[UIStackView alloc] initWithArrangedSubviews:@[self.status,self.launch,self.gpuTest,self.bootProbe,self.gpuStatus]];
     self.menu.axis = UILayoutConstraintAxisVertical; self.menu.spacing = 12;
@@ -154,17 +154,21 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     if (![NSFileManager.defaultManager fileExistsAtPath:guest]) { self.gpuStatus.text = text("dmP5RBootMissing"); return; }
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
     NSString *directory = [documents stringByAppendingPathComponent:[@"p5r-boot-probe-" stringByAppendingString:NSUUID.UUID.UUIDString]];
-    if (!dm_boot_probe_begin_modules(directory.fileSystemRepresentation)) { self.gpuStatus.text = text("dmP5RBootReportFailed"); return; }
+    if (!dm_boot_probe_begin_startup(directory.fileSystemRepresentation)) { self.gpuStatus.text = text("dmP5RBootReportFailed"); return; }
     started = 1; self.probingBoot = YES; self.probeDirectory = directory;
     self.launch.enabled = self.gpuTest.enabled = self.bootProbe.enabled = NO;
-    self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RModuleRunning"),directory.lastPathComponent];
+    self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RStartupRunning"),directory.lastPathComponent];
     int log = open([directory stringByAppendingPathComponent:@"runtime.log"].fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL,0600);
     if (log < 0) { dm_boot_probe_failure("cannot create runtime.log"); return; }
     int redirected = dup2(log,STDERR_FILENO); close(log);
     if (redirected < 0) { dm_boot_probe_failure("cannot redirect runtime.log"); return; }
     setenv("DM_GUEST_PROFILE","p5r",1); setenv("DM_BOOTPROF","1",1); setenv("DM_IMPORTS","1",1);
+    setenv("DM_FS","1",1);
     if (chdir(directory.fileSystemRepresentation)) { dm_boot_probe_failure("cannot enter isolated diagnostic directory"); return; }
     setenv("DM_ROMFS",[documents stringByAppendingPathComponent:@"romfs"].fileSystemRepresentation,1);
+    BOOL isDirectory=NO;
+    BOOL romfs=[NSFileManager.defaultManager fileExistsAtPath:[documents stringByAppendingPathComponent:@"romfs"] isDirectory:&isDirectory] && isDirectory;
+    dm_boot_probe_note("romfs_root",romfs ? "directory exists; contents unverified" : "directory is missing");
     for (NSString *name in @[@"save",@"temp"]) {
         NSString *path = [directory stringByAppendingPathComponent:name];
         if (![NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:NO attributes:nil error:nil]) {

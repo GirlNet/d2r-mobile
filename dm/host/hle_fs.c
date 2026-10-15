@@ -12,6 +12,7 @@
 // Struct layout follows the public Horizon ABI: DirectoryEntry = {char name[0x301], pad[3], s8 type, pad[3], s64 size} (0x310 bytes).
 #include "hle.h"
 #include "front.h"
+#include "boot_probe.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -21,6 +22,13 @@
 #include <stdatomic.h>
 #include <sys/clonefile.h>
 #include <sys/xattr.h>
+
+// 文件诊断只记录客体路径，不改变 errno 或原有文件操作；旧宿主及非诊断模式直接略过。
+// File diagnostics only record guest paths, preserving errno and existing operations; skip legacy hosts and inactive probes.
+static void probe_path(const char *event, const char *path) {
+    if (!dm_boot_probe_active()) return;
+    int saved = errno; dm_boot_probe_note(event,path); errno = saved;
+}
 
 #define RES_PATH_NOT_FOUND 0x202u      // fs 模块 2，描述 1 | fs module 2, description 1
 #define RES_PATH_EXISTS    0x402u      // fs 模块 2，描述 2 | fs module 2, description 2
@@ -244,6 +252,7 @@ static Result err_res(const char *op, const char *path) {
 // ---------- Mount ----------
 HLE_FORCE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", "fsp-srv；rom 直读宿主目录，缓存只给最小值", Result, h_fs_QueryRomCache, size_t *out) { *out = 0x1000; return RES_OK; }
 HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv；rom → 宿主 RomFS 目录", Result, h_fs_MountRom, const char *name, void *cache, size_t sz) {
+    probe_path("fs_mount_rom",name);
     (void)cache; (void)sz; char b[1024];
     Result r = mount(name, envdir("DM_ROMFS", "data/switch/3.3.94012/Update/RomFS", b, sizeof b), 1);
     if (r == RES_OK && getenv("DM_ROMFS_OVERLAY")) {
@@ -511,6 +520,7 @@ ssize_t dm_data_pread(int fd, void *buf, size_t n, off_t off) {   // 语义同 p
     return (ssize_t)done;
 }
 HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) {
+    probe_path("fs_open",path);
     HP(path);
     if (mode & (MODE_WRITE | MODE_APPEND)) RW();
     int fd = open(hp, (mode & (MODE_WRITE | MODE_APPEND)) ? ((mode & MODE_READ) ? O_RDWR : O_WRONLY) : O_RDONLY);
@@ -627,6 +637,7 @@ HLE_FORCE("_ZN2nn2fs10RenameFileEPKcS2_", "fsp-srv → rename(2)", Result, h_fs_
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", "fsp-srv → stat(2)", Result, h_fs_GetEntryType, int32_t *out, const char *path) {
+    probe_path("fs_entry_type",path);
     HP(path); struct stat st;
     if (stat(hp, &st)) return err_res("stat", hp);
     *out = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; return RES_OK;
@@ -670,6 +681,7 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     free(resolved); free(rel); free(guest); free(parent); free(all); free(names); free(roots);
 }
 HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3)", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) {
+    probe_path("fs_open_directory",path);
     HP(path); DIR *d = opendir(hp);
     if (!d) return err_res("opendir", hp);
     dirh_t *h = calloc(1, sizeof *h); h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;

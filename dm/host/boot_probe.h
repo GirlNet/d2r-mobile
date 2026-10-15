@@ -1,9 +1,10 @@
-// P5R 初始化诊断：选择在模块或游戏主函数前停止，并持久化检查点；始终阻止图形初始化，旧宿主保持无操作。
-// P5R initialization probe: persist checkpoints and stop before modules or game main; always block graphics initialization and keep legacy hooks inert.
+// P5R 分阶段初始化诊断：可停止在模块、游戏主函数或图形初始化前；持久化检查点，旧宿主保持无操作。
+// P5R staged initialization probes: stop before modules, game main or graphics initialization; persist checkpoints and keep legacy hooks inert.
 #pragma once
 #ifdef DM_P5R_ONLY
 int dm_boot_probe_begin(const char *directory);
 int dm_boot_probe_begin_modules(const char *directory);
+int dm_boot_probe_begin_startup(const char *directory);
 int dm_boot_probe_active(void);
 void dm_boot_probe_note(const char *event, const char *detail);
 void dm_boot_probe_failure(const char *reason);

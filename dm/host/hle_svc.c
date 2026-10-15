@@ -4,6 +4,7 @@
 // Register convention: inputs w1.. / outputs w0=Result, x1=value (GetInfo / SetHeapSize), consistent with the public Horizon ABI.
 #include "dm.h"
 #include "hle.h"
+#include "boot_probe.h"
 #include <stdatomic.h>
 #include <sys/mman.h>
 #include <errno.h>
@@ -256,6 +257,12 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         regs[0] = 0; regs[1] = v; return 0;
     }
     default:
+        // 启动诊断不能把未知内核操作当成功；保留原现场并在操作前停驻。
+        // Startup probes must not treat unknown kernel operations as success; preserve the checkpoint and park before the operation.
+        if (dm_boot_probe_active()) {
+            char detail[32]; snprintf(detail,sizeof detail,"SVC %#x",num);
+            dm_boot_probe_block("unimplemented_svc",detail);
+        }
         if (!g_seen[num & 0xff]) { g_seen[num & 0xff] = 1; LOG("SVC %#x x0=%#llx x1=%#llx x2=%#llx (占位返回成功)", num, regs[0], regs[1], regs[2]); }
         regs[0] = 0; return 0;
     }

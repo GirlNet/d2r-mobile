@@ -368,7 +368,9 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmP5RBootMissing", "此诊断需要含 Guest 框架的完整实验包。", "This probe needs the full experimental package with its Guest framework." },
     { "dmP5RBootReportFailed", "无法创建诊断目录。请彻底关闭 App 后重试。", "Could not create the report directory. Close the app completely before retrying." },
     { "dmP5RBootRunning", "正在诊断 SDK 初始化；最长 30 秒，超时会退出 App。文稿目录：%@。", "Probing SDK initialization, up to 30 seconds; timeout closes the app. Documents folder: %@." },
-    { "dmP5RBootStopped", "诊断已停止，尚未进入游戏。请发送文稿中 %@ 文件夹的 boot-report.json 和 runtime.log。再次运行前请彻底关闭 App。", "Probe stopped before gameplay. Send boot-report.json and runtime.log from the %@ folder in Documents. Close the app completely before another run." },
+    { "dmP5RBootStopped", "诊断已停止，图形仍未验证。请发送文稿中 %@ 文件夹的 boot-report.json 和 runtime.log。再次运行前请彻底关闭 App。", "Probe stopped; graphics remain unverified. Send boot-report.json and runtime.log from the %@ folder in Documents. Close the app completely before another run." },
     { "dmP5RModuleProbe", "模块初始化诊断", "Probe Module Initialization" },
     { "dmP5RModuleRunning", "正在诊断模块初始化；进入游戏主函数前停止。最长 30 秒，超时会退出 App。文稿目录：%@。", "Probing module initialization; stop before game main. Up to 30 seconds; timeout closes the app. Documents folder: %@." },
+    { "dmP5RStartupProbe", "启动诊断", "Probe Startup" },
+    { "dmP5RStartupRunning", "正在诊断游戏启动；图形初始化前停止。最长 30 秒，超时会退出 App。文稿目录：%@。", "Probing game startup; stop before graphics initialization. Up to 30 seconds; timeout closes the app. Documents folder: %@." },
 };

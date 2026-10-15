@@ -105,6 +105,12 @@ jobs:
           xcrun clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I dm/host \
             dm/host/tests/t_stdalloc_forward.c -o "$RUNNER_TEMP/p5r-stdalloc-forward"
           "$RUNNER_TEMP/p5r-stdalloc-forward"
+      - name: Check filesystem transactions and exact path behavior
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_fs build/t_fs_case
+          TMPDIR="$RUNNER_TEMP" dm/host/tests/build/t_fs
+          TMPDIR="$RUNNER_TEMP" dm/host/tests/build/t_fs_case
       - name: Run synthetic compute on an available Metal device
         run: |
           set +e
@@ -120,7 +126,7 @@ jobs:
           set -euo pipefail
           xcrun clang -DDM_P5R_ONLY=1 -fobjc-arc -fblocks -Wall -Wextra -Werror -I dm/host \
             dm/host/tests/t_boot_probe.m dm/ios/p5r/boot_probe.m -framework Foundation -o "$RUNNER_TEMP/p5r-boot-probe-test"
-          for mode in checkpoint blocked timeout failure modules modules-failure; do
+          for mode in checkpoint blocked timeout failure modules modules-failure startup-return startup-timeout startup-gpu; do
             "$RUNNER_TEMP/p5r-boot-probe-test" "$mode" "$RUNNER_TEMP/p5r-probe-$mode"
           done
       - name: Run synthetic texture bindings on Metal 3 and 4
