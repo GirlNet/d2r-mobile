@@ -23,6 +23,10 @@ static inline unsigned nvn_handle_sampler_id(uint64_t handle) {
     return ((uint32_t)handle >> 20) & 0xfff;
 }
 
+static inline unsigned nvn_handle_texture_id(uint64_t handle) {
+    return (uint32_t)handle & 0xfffff;
+}
+
 static inline int nvn_apply_handles(void *table, int limit, int stage, int first,
                                     int count, const uint64_t *handles) {
     if (!table || !nvn_handle_range(stage, first, count, limit) || !count || !handles) return 0;

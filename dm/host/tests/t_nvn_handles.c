@@ -1,6 +1,6 @@
 // 合成句柄测试：验证组合/分离状态隔离、阶段隔离、边界与驱动表布局，不包含游戏内容。
 // Synthetic handles test combined/separate state isolation, stage isolation, bounds and driver table layout without game content.
-#include "../../gfx/nvn/nvn_handle_bindings.h"
+#include "../../gfx/nvn/nvn_refl.h"
 #include <limits.h>
 #include <stdio.h>
 
@@ -14,6 +14,7 @@ int main(void) {
     CHECK(nvn_combined_handle(0xfffff, 0xfff) == UINT64_MAX);
     CHECK(nvn_handle_sampler_id(combined) == 11);
     CHECK(nvn_handle_sampler_id(UINT64_MAX) == 0xfff);
+    CHECK(nvn_handle_texture_id(UINT64_MAX) == 0xfffff);
     CHECK(nvn_apply_handles(table, NVN_TEX_SLOTS, 1, 0, 1, &separate));
     CHECK(nvn_apply_handles(table, NVN_TEX_SLOTS, 1, NVN_COMBINED_TEX_FIRST, 1, &combined));
     CHECK(table[1][0] == separate && table[1][NVN_COMBINED_TEX_FIRST] == combined && !table[0][0]);
@@ -40,6 +41,24 @@ int main(void) {
     uint64_t zero = 0;
     CHECK(nvn_apply_handles(table, NVN_TEX_SLOTS, 1, NVN_COMBINED_TEX_FIRST, 1, &zero));
     CHECK(table[1][0] == separate && !table[1][NVN_COMBINED_TEX_FIRST]);
+    uint64_t images[NVN_IMAGE_SLOTS] = {0}; images[31] = 91;
+    nvn_rbind binding = {.kind = NVN_RB_TEX, .reg = 0};
+    CHECK(nvn_rbind_handle(&binding, table[1], samplers, images) == separate);
+    table[1][159] = combined;
+    for (unsigned kind = 0; kind <= NVN_RB_UBOP; kind++) {
+        binding.kind = kind; binding.reg = 159;
+        uint64_t expected = kind == NVN_RB_TEX || kind == NVN_RB_TBUF || kind == NVN_RB_SAMPT ? combined : 0;
+        CHECK(nvn_rbind_handle(&binding, table[1], samplers, images) == expected);
+        binding.reg = UINT16_MAX;
+        CHECK(!nvn_rbind_handle(&binding, table[1], samplers, images));
+    }
+    binding.kind = NVN_RB_IMG; binding.reg = 31;
+    CHECK(nvn_rbind_handle(&binding, table[1], samplers, images) == 91);
+    binding.reg = 32; CHECK(!nvn_rbind_handle(&binding, table[1], samplers, images));
+    binding.kind = NVN_RB_SAMP; binding.reg = 0;
+    CHECK(nvn_rbind_handle(&binding, table[1], samplers, images) == samplers[0]);
+    CHECK(!nvn_rbind_handle(&binding, table[1], NULL, images));
+    CHECK(!nvn_rbind_handle(NULL, table[1], samplers, images));
     puts("NVN HANDLES OK: combined/separate isolation, stages, invalid ranges, driver bytes, unbind");
     return 0;
 }

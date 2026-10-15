@@ -25,6 +25,22 @@ typedef struct {
     uint8_t dtt, dpf;        // 贴图槽未绑时的哑贴图：MTLTextureType 数值、像素类 | Dummy texture when the texture slot is unbound: MTLTextureType value, pixel class
     uint16_t reg, aid;       // D3D 寄存器号、参数缓冲内序号 | D3D register number, index within the argument buffer
 } nvn_rbind;
+
+// 反射绑定选择原始句柄；组合槽已经由解析器映射到独立区间，非法槽或非资源绑定返回零。
+// Select a raw handle for a reflection binding; the parser maps combined slots into an independent range, and invalid slots/non-resource bindings return zero.
+static inline uint64_t nvn_rbind_handle(const nvn_rbind *binding, const uint64_t *textures,
+                                       const uint64_t *samplers, const uint64_t *images) {
+    if (!binding) return 0;
+    const uint64_t *table; unsigned limit;
+    switch (binding->kind) {
+        case NVN_RB_TEX: case NVN_RB_TBUF: case NVN_RB_SAMPT:
+            table = textures; limit = NVN_TEX_SLOTS; break;
+        case NVN_RB_SAMP: table = samplers; limit = NVN_SEPARATE_TEX_SLOTS; break;
+        case NVN_RB_IMG: table = images; limit = NVN_IMAGE_SLOTS; break;
+        default: return 0;
+    }
+    return table && binding->reg < limit ? table[binding->reg] : 0;
+}
 typedef struct {
     int nb, abi, nv;         // 绑定数、参数缓冲槽、顶点输入数 | Binding count, argument buffer slot, vertex input count
     nvn_rbind b[NVN_REFL_MAXB];
