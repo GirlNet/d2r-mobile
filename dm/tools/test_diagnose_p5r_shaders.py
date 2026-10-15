@@ -53,7 +53,9 @@ class DiagnosticTests(unittest.TestCase):
                 (output / (job['key'] + '.spv')).write_bytes(compute_spirv(job['local']) if job['stage'] == 'cs' else b'synthetic SPIR-V')
                 (output / (job['key'] + '.res.json')).write_text(json.dumps(resources(job)), encoding='utf-8')
         elif '--output' in command:
-            Path(command[-1]).write_text(MSL, encoding='utf-8')
+            stage = next(j['stage'] for j in json.loads((Path(command[-1]).parents[1] / 'jobs.json').read_text()))
+            prefix = {'vs': 'vp', 'ps': 'fp', 'cs': 'cp'}[stage]
+            Path(command[-1]).write_text(MSL + f'\nstruct spvDescriptorSetBuffer0\n{{\ntexture2d<float> {prefix}_t_tcb_8 [[id(0)]];\nsampler {prefix}_t_tcb_8Smplr [[id(1)]];\n}};\n', encoding='utf-8')
         elif '-o' in command:
             Path(command[-1]).write_bytes(b'synthetic compiled output')
 
@@ -74,6 +76,18 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual([x['sdk'] for x in report['shaders'][0]['metal']], ['macosx', 'iphoneos'])
         self.assertEqual(report['tools']['translator']['source_sha16'], '0123456789abcdef')
         self.assertFalse(any('_b.' in p.name for p in (self.root / 'out').rglob('*')))
+        self.assertEqual(report['summary']['reflection_plans_with_complete_binding_coverage'], 1)
+        plan_meta = report['shaders'][0]['reflection_plan']; plan_path = Path(plan_meta['path'])
+        self.assertEqual(plan_meta['sha256'], hashlib.sha256(plan_path.read_bytes()).hexdigest())
+        plan = json.loads(plan_path.read_text())
+        self.assertFalse(plan['runtime_ready'])
+        self.assertTrue(plan['diagnostic_only'])
+        self.assertEqual(plan['bindings'][0]['kind'], 'tex_combined')
+        self.assertTrue(plan['source']['control_sha256'].startswith(self.jobs[0]['key']))
+        self.assertEqual(len(plan['artifacts']), 3)
+        for name, digest in plan['artifacts'].items():
+            directory = 'msl' if name.endswith('.metal') else 'spirv'
+            self.assertEqual(digest, hashlib.sha256((self.root / 'out' / directory / name).read_bytes()).hexdigest())
 
     def test_extraction_is_not_modified(self):
         before = {p: p.read_bytes() for p in self.preparation.rglob('*') if p.is_file()}
@@ -179,13 +193,24 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(report['summary']['passed'], 1)
         self.assertTrue(report['errors'])
 
+    def test_unsupported_msl_member_stops_plan_and_metal_compilation(self):
+        def runner(command, log, timeout=120):
+            self.runner(command, log, timeout)
+            if '--output' in command:
+                Path(command[-1]).write_text('struct spvDescriptorSetBuffer0 {\nfloat unknown;\n};')
+        report = self.run_diagnostic(runner, sdks=('iphoneos',))
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('member declaration', report['shaders'][0]['error'])
+        self.assertEqual(list((self.root / 'out' / 'reflection-plans').iterdir()), [])
+        self.assertFalse((self.root / 'out' / 'metal-iphoneos').exists())
+
     def test_metal_failure_preserves_completed_stages(self):
         def runner(command, log, timeout=120):
             if 'metallib' in command: raise RuntimeError('synthetic link failure')
             self.runner(command, log, timeout)
         report = self.run_diagnostic(runner, sdks=('iphoneos',))
         self.assertEqual(report['status'], 'failed')
-        self.assertEqual(report['shaders'][0]['completed'], ['translated', 'spirv_validated', 'msl_generated'])
+        self.assertEqual(report['shaders'][0]['completed'], ['translated', 'spirv_validated', 'msl_generated', 'reflection_planned'])
 
     def test_resource_identity_and_packed_handle_validation(self):
         job = self.jobs[0]

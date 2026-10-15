@@ -12,6 +12,8 @@ on:
       - 'dm/gfx/tools/dmsh_chain.py'
       - 'dm/tools/diagnose_p5r_shaders.py'
       - 'dm/tools/test_diagnose_p5r_shaders.py'
+      - 'dm/tools/p5r_reflection.py'
+      - 'dm/tools/test_p5r_reflection.py'
       - 'dm/tools/nvn_handle_layout.py'
       - 'dm/tools/test_nvn_handle_layout.py'
       - 'dm/tools/test_shader_buffer_reflection.py'
@@ -94,6 +96,7 @@ jobs:
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/verify -p test_equiv_compare.py -v

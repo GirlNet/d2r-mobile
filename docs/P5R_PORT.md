@@ -16,6 +16,7 @@ Status: **experimental runtime adaptation in progress; P5R does not yet run on i
 - NVN combined-texture binding now implements `GetTextureHandle`, `GetTexelFetchHandle`, `BindTexture` and `BindTextures`, plus the single separate-texture overload. Combined and separate slots retain independent state. Reflection accepts explicit combined texture/sampler/buffer-texture kinds; Metal argument encoding, driver tables and resource-read tracking include them. Handle tags are excluded when extracting sampler IDs.
 - Compute diagnostic jobs now take their workgroup dimensions from the supported NVN 11 control, rather than defaulting to one thread. Extraction schema 2 saves hashed controls; diagnostic loading checks dimensions against them, then verifies SPIR-V's literal LocalSize before MSL conversion. Runtime compute reflection rejects missing, fractional, zero, overflowing or unsupported dimensions. The preparation limit is 1024 threads; this does not attest to GPU execution or validate local/shared memory configuration.
 - `dmsh_build.py` now interprets Ryujinx's buffer Write flag as bit 0. Previously writable storage buffers could be reflected as read-only. The shader cache version changes with this fix: rebuild route B shader libraries/reflection and regenerate `c1_full.tsv` through the existing preparation workflow. Old libraries are not accepted; an old guard table uses conservative exclusive constant buffers.
+- `p5r_reflection.py` produces diagnostic reflection plans from MSL argument members and translator descriptors. Storage buffers match explicit translator slots, independently of descriptor ordering or Metal argument ids. Each binding records its source, candidate NVN slot, write access and outstanding verification; missing descriptors and unsupported members remain visible. Runtime loading rejects diagnostic/unverified plans, and P5R reflection requires explicit readiness markers.
 - `.github/workflows/p5r-runtime-tests.yml`: macOS compilation checks, SDK bootstrap C tests, audio/control/combined-handle tests, iOS ARM64 component compilation and Python tool tests plus a native macOS/iOS synthetic Metal compilation test; uses source and synthetic data only and does not build a game package. Literal scanning supports both older Python and Python 3.14 f-string tokenization.
 
 Static symbol providers include conditional declarations, stubs and functions inside the original Switch SDK. A matching name is not evidence that the host service or driver works. The inspector currently requires the dynamic-table descriptors in the NSO header and supports LZ4/uncompressed segments, not Zbic.
@@ -42,6 +43,7 @@ python -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
 python -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
 python -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
 python -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
+python -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
 ```
 
 Prepare embedded shader diagnostics (output directory must not exist):
@@ -59,6 +61,8 @@ python dm/tools/diagnose_p5r_shaders.py "E:\p5r-work\shaders" "E:\p5r-work\diagn
 ```
 
 Use a runtime matching the translator's .NET target; set `DOTNET_ROOT` to a separately installed runtime if required. On a Mac with Apple's Metal compiler, add `--metal-sdk macosx --metal-sdk iphoneos` to compile diagnostic libraries for both targets. Xcode may require the additional [Metal toolchain component](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components). Libraries remain diagnostic: the pipeline does not generate runtime reflection, shader maps or `b-<chain>` caches. Compilation alone does not verify NVN bindings or GPU output. CI compiles a synthetic kernel for both targets; game-derived shaders stay local.
+
+The pipeline now also writes `reflection-plans/<key>.plan.json`. Plans link hashed controls, code and constants to hashed SPIR-V, translator descriptors and MSL. `binding_coverage_complete` means every reported descriptor has a matching supported MSL member and every member has a candidate binding; it does not verify resource types, buffer mappings, translation state or GPU output. All plans retain `diagnostic_only=true`, `resource_facts_verified=false` and `runtime_ready=false`; they are not runtime shader packages. The report keeps counts of missing/unresolved and unverified bindings for follow-up work.
 
 ## Remaining work before a playable build
 

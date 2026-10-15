@@ -11,6 +11,7 @@ import subprocess
 import struct
 import sys
 from nvn_handle_layout import decode_handle
+from p5r_reflection import reflection_plan
 from prepare_p5r_shaders import CONTROL_SIZE, HEADER_FIELDS, STAGES, compute_workgroup, word
 
 
@@ -182,6 +183,7 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
     output.mkdir(parents=True, exist_ok=False)
     spv = output / 'spirv'; spv.mkdir()
     msl_dir = output / 'msl'; msl_dir.mkdir()
+    reflection_dir = output / 'reflection-plans'; reflection_dir.mkdir()
     jobs_path = output / 'jobs.json'; save_json(jobs_path, jobs)
     report = dict(schema_version=1, status='running', diagnostic_only=True,
                   source_sha256=manifest['source_sha256'], build_id=manifest['build_id'],
@@ -226,6 +228,21 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                 if not msl.is_file() or not msl.stat().st_size:
                     raise ValueError('SPIRV-Cross did not produce MSL')
                 row['completed'].append('msl_generated')
+                plan = reflection_plan(job, resource, msl.read_bytes().decode('utf-8'))
+                plan['source'] = next({field: record[field] for field in
+                                     ('control_sha256', 'code_sha256', 'c1_sha256')}
+                                    for record in manifest['shaders'] if record['key'] == key)
+                plan['artifacts'] = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                     for path in (binary, spv / (key + '.res.json'), msl)}
+                plan_path = reflection_dir / (key + '.plan.json'); save_json(plan_path, plan)
+                row['reflection_plan'] = dict(path=str(plan_path),
+                    sha256=hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                    binding_coverage_complete=plan['binding_coverage_complete'],
+                    bindings=len(plan['bindings']),
+                    missing_descriptors=len(plan['missing_descriptors']),
+                    unresolved=sum(b['kind'] == 'unresolved' for b in plan['bindings']),
+                    unverified=sum(bool(b['blockers']) for b in plan['bindings']), runtime_ready=False)
+                row['completed'].append('reflection_planned')
                 row['metal'] = []
                 for sdk in sdks:
                     row['metal'].append(compile_metal(msl, output / ('metal-' + sdk), sdk, xcrun, runner))
@@ -240,7 +257,11 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                                  shaders_outside_d2r_texture_layout=sum(any(not h['d2r_texture_range_match']
                                      for h in r.get('audit', {}).get('handles', [])) for r in report['shaders']),
                                  shaders_with_unresolved_handles=sum(any(h['handle_source'] is None
-                                     for h in r.get('audit', {}).get('handles', [])) for r in report['shaders']))
+                                     for h in r.get('audit', {}).get('handles', [])) for r in report['shaders']),
+                                 reflection_plans=sum('reflection_plan' in r for r in report['shaders']),
+                                 reflection_plans_with_complete_binding_coverage=sum(
+                                     r.get('reflection_plan', {}).get('binding_coverage_complete', False)
+                                     for r in report['shaders']))
         report['status'] = 'diagnostic_passed' if report['summary']['passed'] == len(jobs) and not report['errors'] else 'failed'
     except (ValueError, OSError, RuntimeError) as error:
         report['errors'].append(str(error)); report['status'] = 'failed'

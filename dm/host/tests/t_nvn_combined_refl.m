@@ -11,6 +11,16 @@ static NSDictionary *binding(NSString *kind, int reg, int aid) {
 
 int main(void) { @autoreleasepool {
     nvn_refl reflection; char err[160] = "";
+    for (NSDictionary *markers in @[@{@"diagnostic_only":@YES}, @{@"resource_facts_verified":@NO},
+                                    @{@"runtime_ready":@NO}, @{@"profile":@"p5r"},
+                                    @{@"diagnostic_only":@"false"}, @{@"resource_facts_verified":[NSNull null]}]) {
+        NSMutableDictionary *plan = [@{@"route":@"B", @"bindings":@[]} mutableCopy];
+        [plan addEntriesFromDictionary:markers];
+        CHECK(nvn_refl_from_json(plan, &reflection, err, sizeof err));
+        CHECK(reflection.nb == 0);
+    }
+    CHECK(!nvn_refl_from_json(@{@"route":@"B", @"bindings":@[], @"profile":@"p5r", @"diagnostic_only":@NO,
+                               @"resource_facts_verified":@YES, @"runtime_ready":@YES}, &reflection, err, sizeof err));
     NSArray *bindings = @[binding(@"tex", 0, 0), binding(@"tex_combined", 0, 1),
                           binding(@"samp_combined", 0, 2), binding(@"tbuf_combined", 31, 3)];
     CHECK(!nvn_refl_from_json(@{@"route":@"B", @"bindings":bindings}, &reflection, err, sizeof err));

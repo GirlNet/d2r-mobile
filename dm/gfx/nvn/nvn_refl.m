@@ -24,6 +24,14 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
     memset(o, 0, sizeof *o);
     #define FAIL(...) do { snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
     if (![j[@"route"] isEqual:@"B"]) FAIL("不是 B 反射（route ≠ B；A 路线 / PC 链反射已退役）");
+    // 诊断草案具有相似绑定字段，但未经验证；保留无这些标记的旧版 D2R 反射兼容性。
+    // Diagnostic plans have similar binding fields but are unverified; retain compatibility with legacy D2R reflections lacking these markers.
+    if ((j[@"diagnostic_only"] && ![j[@"diagnostic_only"] isEqual:@NO]) ||
+        (j[@"resource_facts_verified"] && ![j[@"resource_facts_verified"] isEqual:@YES]) ||
+        (j[@"runtime_ready"] && ![j[@"runtime_ready"] isEqual:@YES])) FAIL("Diagnostic or unverified reflection is not loadable");
+    if ([j[@"profile"] isEqual:@"p5r"] &&
+        (![j[@"diagnostic_only"] isEqual:@NO] || ![j[@"resource_facts_verified"] isEqual:@YES] ||
+         ![j[@"runtime_ready"] isEqual:@YES])) FAIL("Missing verified P5R reflection markers");
     {   // Switch 原版翻译：种类与 NVN 槽号已由 dmsh_build.py 从 MSL 成员名解出 | Translated original Switch shaders: kind and NVN slot number are already parsed from the MSL member names by dmsh_build.py
         NSArray *bs = j[@"bindings"];
         if (![bs isKindOfClass:[NSArray class]]) FAIL("缺 bindings");

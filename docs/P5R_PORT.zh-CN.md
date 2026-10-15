@@ -16,6 +16,7 @@ English: [P5R_PORT.md](P5R_PORT.md)
 - NVN 组合纹理绑定已实现 `GetTextureHandle`、`GetTexelFetchHandle`、`BindTexture`、`BindTextures`，并补齐单个分离纹理重载。组合槽与分离槽独立保存状态；反射接受显式的组合纹理/采样器/缓冲纹理种类，Metal 参数编码、驱动表和资源读取跟踪均覆盖组合槽。取采样器编号时排除句柄标记位。
 - 计算诊断作业现在从受支持的 NVN 11 控制块提取线程组尺寸，不再缺省为单线程。提取清单升级为 schema 2 并保存带散列的控制块；诊断加载核对尺寸后，在转换 MSL 前再次核对 SPIR-V 的 LocalSize。运行时计算反射拒绝缺失、小数、零、溢出及不支持的尺寸。准备流程上限为 1024 个线程，不代表 GPU 执行或局部/共享内存配置已验证。
 - `dmsh_build.py` 修正 Ryujinx 缓冲 Write 标志为第 0 位；此前可写存储缓冲可能被反射成只读。修正后着色器缓存版本改变：需要按原准备流程重建 B 路线的库/反射并重新生成 `c1_full.tsv`。旧库不会被接受；旧的保护表会触发保守的独占常数缓冲。
+- `p5r_reflection.py` 根据 MSL 参数成员和翻译器描述符生成诊断反射草案。存储缓冲按明确的翻译器槽对应，不依赖描述符顺序或 Metal 参数编号。每个绑定记录来源、候选 NVN 槽、写权限与待验证事项；缺失描述符和不支持的成员会明确保留。运行时拒绝加载诊断或未验证草案，P5R 反射还必须具有明确的就绪标记。
 - `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频/控制块/组合句柄测试、iOS ARM64 组件编译与 Python 工具测试，另有 macOS/iOS 合成 Metal 原生编译测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。
 
 静态依赖候选包括条件编译声明、占位实现与原版 Switch SDK 内部函数。名字匹配不代表宿主服务或驱动可用。检查器目前要求 NSO 头带动态符号表描述，支持 LZ4 与未压缩段，不支持 Zbic。
@@ -42,6 +43,7 @@ python -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
 python -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
 python -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
 python -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
+python -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
 ```
 
 内嵌着色器诊断准备（输出目录必须尚不存在）：
@@ -59,6 +61,8 @@ python dm/tools/diagnose_p5r_shaders.py "E:\p5r-work\shaders" "E:\p5r-work\diagn
 ```
 
 使用与翻译器 .NET 目标相符的运行时；若另行安装，可设置 `DOTNET_ROOT`。在具有苹果 Metal 编译器的 Mac 上，加 `--metal-sdk macosx --metal-sdk iphoneos` 可以编译两个目标的诊断库。Xcode 可能需要额外安装 [Metal 工具链组件](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components)。这些库仍是诊断产物：流程不生成运行时反射、映射表或 `b-<chain>` 缓存；编译通过不代表 NVN 绑定或 GPU 输出正确。CI 使用合成内核测试两个目标，游戏衍生着色器保留在本地。
+
+流水线现在还写出 `reflection-plans/<key>.plan.json`，以散列关联控制块、代码、常数段及 SPIR-V、翻译器描述符和 MSL。`binding_coverage_complete` 表示每个已报告描述符都有受支持的 MSL 成员对应，且每个成员都有候选绑定；不代表资源类型、缓冲映射、翻译状态或 GPU 输出已经验证。所有草案均保留 `diagnostic_only=true`、`resource_facts_verified=false`、`runtime_ready=false`，不能作为运行时着色器包。报告统计缺失/未解析及未验证绑定，供后续处理。
 
 ## 可玩版本之前仍需完成
 
