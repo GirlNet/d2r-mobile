@@ -349,4 +349,12 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmAppShareLog", "分享日志…", "Share Logs…" },
     { "dmAppShareInfo", "版本信息", "Version Info" },
     { "dmAppShareFail", "日志打包失败", "Could Not Pack the Logs" },
+    { "dmP5RCancel", "取消", "Cancel" },
+    { "dmP5RAccept", "确定", "OK" },
+    { "dmP5RLaunch", "启动 P5R", "Start P5R" },
+    { "dmP5RReady", "P5R 实验性运行时。请连接手柄。", "P5R experimental runtime. Connect a controller." },
+    { "dmP5RGraphicsPending", "实验性 P5R 包已生成；图形资源尚未验证，暂不能启动游戏。", "Experimental P5R package prepared. Graphics resources remain unverified; game launch is unavailable." },
+    { "dmP5RShell", "这是不含游戏内容的 P5R 宿主壳。请用自己的游戏文件完成本地打包。", "This P5R host shell contains no game content. Complete local packaging with your own game files." },
+    { "dmP5RRomfsMissing", "请将自己的 P5R romfs 文件夹放入本 App 的文稿目录。", "Place your own P5R romfs folder in this app's Documents directory." },
+    { "dmP5RStartFailed", "无法创建游戏线程，请查看 p5r-runtime.log。", "Could not create the game thread. See p5r-runtime.log." },
 };

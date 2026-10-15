@@ -7,6 +7,9 @@ on:
     paths:
       - '.github/workflows/p5r-runtime-tests.yml'
       - 'dm/host/**'
+      - 'dm/ios/p5r/**'
+      - 'dm/tools/p5r_pack.py'
+      - 'dm/tools/test_p5r_pack.py'
       - 'dm/gfx/nvn/**'
       - 'dm/gfx/tools/dmsh_build.py'
       - 'dm/gfx/tools/dmsh_chain.py'
@@ -31,6 +34,25 @@ on:
 permissions:
   contents: read
 jobs:
+  ios-shell:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Link and package the complete game-free P5R host
+        run: python3 dm/ios/p5r/build_shell.py "$RUNNER_TEMP/p5r-shell"
+      - name: Retain unsigned shell and build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p5r-ios-shell
+          path: |
+            ${{ runner.temp }}/p5r-shell/*.ipa
+            ${{ runner.temp }}/p5r-shell/build-report.json
+            ${{ runner.temp }}/p5r-shell/logs
+          retention-days: 7
   macos-components:
     runs-on: macos-26
     timeout-minutes: 15

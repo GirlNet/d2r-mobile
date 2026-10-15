@@ -8,7 +8,11 @@
 
 static _Atomic int g_profile;
 int dm_guest_profile_select(const char *name) {
+#ifdef DM_P5R_ONLY
+    int value = !name || !*name || !strcmp(name, "p5r") ? 2 : 0;
+#else
     int value = !name || !*name || !strcmp(name, "d2r") ? 1 : !strcmp(name, "p5r") ? 2 : 0;
+#endif
     if (!value) return 0;
     int expected = 0;
     return atomic_compare_exchange_strong(&g_profile, &expected, value) || expected == value;

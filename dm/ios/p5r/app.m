@@ -1,0 +1,145 @@
+// P5R 专用 UIKit/Metal 前端：真实宿主入口、原生文本输入和直接手柄状态；资源就绪由本地包清单控制。
+// Dedicated P5R UIKit/Metal front end: real host entry, native text input and direct controller state; local package metadata controls resource readiness.
+#import <UIKit/UIKit.h>
+#import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
+#import <GameController/GameController.h>
+#include "dm.h"
+#include "hle.h"
+#include "front.h"
+#include "dm_input.h"
+#include "dm_i18n.h"
+#include <unistd.h>
+
+static CAMetalLayer *metalLayer;
+static UIViewController *controller;
+static int started;
+static void *runHost(void *unused);
+int dm_main(int argc, char **argv);
+static NSString *text(const char *key) { return @(dm_ui(key)); }
+void *front_metal_layer(void) { return (__bridge void *)metalLayer; }
+uint64_t front_game_res(int docked) { return (uint64_t)(docked ? 900 : 720) << 32 | (docked ? 1600 : 1280); }
+void front_run(void (*guest)(void)) { guest(); }
+void front_save_failed(int error) { LOG("P5R save transaction failed: %d", error); }
+int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int cap) {
+    if (!controller || !out || cap < 1 || NSThread.isMainThread) return -1;
+    (void)guide; (void)max_chars;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0); __block int accepted = 0;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:title ? @(title) : @"" message:sub ? @(sub) : @"" preferredStyle:UIAlertControllerStyleAlert];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *field) { field.text = initial ? @(initial) : @""; }];
+        [alert addAction:[UIAlertAction actionWithTitle:text("dmP5RCancel") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) { (void)action; dispatch_semaphore_signal(done); }]];
+        [alert addAction:[UIAlertAction actionWithTitle:text("dmP5RAccept") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action; const char *value = alert.textFields.firstObject.text.UTF8String ?: "";
+            if (strlen(value) < (size_t)cap) { memcpy(out, value, strlen(value) + 1); accepted = 1; }
+            dispatch_semaphore_signal(done);
+        }]];
+        [controller presentViewController:alert animated:YES completion:nil];
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER); return accepted;
+}
+
+@interface P5RMetalView : UIView @end
+@implementation P5RMetalView
++ (Class)layerClass { return CAMetalLayer.class; }
+@end
+
+@interface P5RController : UIViewController
+@property UILabel *status;
+@property UIButton *launch;
+@property CADisplayLink *poll;
+@property NSDictionary *package;
+@end
+@implementation P5RController
+- (void)viewDidLoad {
+    [super viewDidLoad]; self.view.backgroundColor = UIColor.blackColor;
+    P5RMetalView *canvas = [P5RMetalView new]; canvas.frame = self.view.bounds;
+    canvas.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    metalLayer = (CAMetalLayer *)canvas.layer; metalLayer.device = MTLCreateSystemDefaultDevice();
+    metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm; metalLayer.framebufferOnly = YES;
+    [self.view addSubview:canvas];
+    self.status = [UILabel new]; self.status.textColor = UIColor.whiteColor; self.status.numberOfLines = 0;
+    self.status.textAlignment = NSTextAlignmentCenter; self.status.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.status];
+    self.launch = [UIButton buttonWithType:UIButtonTypeSystem]; self.launch.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.launch setTitle:text("dmP5RLaunch") forState:UIControlStateNormal];
+    [self.launch addTarget:self action:@selector(startGuest) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.launch];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.status.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [self.status.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor constant:-25],
+        [self.status.widthAnchor constraintLessThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.widthAnchor constant:-40],
+        [self.launch.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [self.launch.topAnchor constraintEqualToAnchor:self.status.bottomAnchor constant:20]]];
+    NSString *path = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/p5r-package.json"];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    self.package = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    BOOL ready = [self.package[@"runtime_ready"] isEqual:@YES];
+    self.status.text = text(ready ? "dmP5RReady" : self.package ? "dmP5RGraphicsPending" : "dmP5RShell");
+    self.launch.enabled = ready;
+    self.poll = [CADisplayLink displayLinkWithTarget:self selector:@selector(pollController)];
+    [self.poll addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews]; CGSize size = self.view.bounds.size;
+    metalLayer.drawableSize = CGSizeMake(size.width * UIScreen.mainScreen.scale, size.height * UIScreen.mainScreen.scale);
+}
+- (void)pollController {
+    GCExtendedGamepad *pad = GCController.controllers.firstObject.extendedGamepad;
+    if (!pad || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) { dm_pad_set(0,0,0,0,0); return; }
+    uint64_t buttons = 0;
+    // 系统字段按位置命名；这里按 Switch 位置输出，右 A、下 B、上 X、左 Y。
+    // System fields name positions; publish Switch positions: right A, bottom B, top X, left Y.
+    GCControllerButtonInput *inputs[] = {pad.buttonB,pad.buttonA,pad.buttonY,pad.buttonX,pad.leftThumbstickButton,pad.rightThumbstickButton,
+        pad.leftShoulder,pad.rightShoulder,pad.leftTrigger,pad.rightTrigger,pad.buttonMenu,pad.buttonOptions,
+        pad.dpad.left,pad.dpad.up,pad.dpad.right,pad.dpad.down};
+    for (int i = 0; i < 16; i++) if (inputs[i].pressed) buttons |= UINT64_C(1) << i;
+    dm_pad_set(buttons, pad.leftThumbstick.xAxis.value * 32767, pad.leftThumbstick.yAxis.value * 32767,
+               pad.rightThumbstick.xAxis.value * 32767, pad.rightThumbstick.yAxis.value * 32767);
+}
+- (void)startGuest {
+    if (started || ![self.package[@"runtime_ready"] isEqual:@YES]) return;
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *romfs = [documents stringByAppendingPathComponent:@"romfs"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:[romfs stringByAppendingPathComponent:@"CPK/ALL_ASIA.CPK"]]) {
+        self.status.text = text("dmP5RRomfsMissing"); return;
+    }
+    started = 1; self.status.hidden = self.launch.hidden = YES;
+    NSString *save = [documents stringByAppendingPathComponent:@"save-p5r"], *temporary = [documents stringByAppendingPathComponent:@"temp-p5r"];
+    for (NSString *directory in @[save, temporary]) [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
+    setenv("DM_GUEST_PROFILE", "p5r", 1); setenv("DM_ROMFS", romfs.fileSystemRepresentation, 1);
+    setenv("DM_SAVE", save.fileSystemRepresentation, 1); setenv("DM_TEMP", temporary.fileSystemRepresentation, 1);
+    setenv("DM_NVN_SHMAP", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/shader_map.tsv"].fileSystemRepresentation, 1);
+    setenv("DM_MSL_DIR", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 1);
+    chdir(documents.fileSystemRepresentation);
+    freopen([documents stringByAppendingPathComponent:@"p5r-runtime.log"].fileSystemRepresentation, "a", stderr);
+    pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 8 << 20);
+    pthread_t thread; if (pthread_create(&thread, &attr, runHost, NULL)) { started = 0; self.status.hidden = NO; self.status.text = text("dmP5RStartFailed"); }
+    else pthread_detach(thread);
+    pthread_attr_destroy(&attr);
+}
+static void *runHost(void *unused) {
+    (void)unused; @autoreleasepool {
+        char *args[] = {"p5r-host", strdup([NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm"].fileSystemRepresentation), "main", "sdk", "subsdk0", NULL};
+        dm_main(5, args); free(args[1]);
+    } return NULL;
+}
+@end
+
+@interface P5RApp : UIResponder <UIApplicationDelegate>
+@property UIWindow *window;
+@end
+@implementation P5RApp
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
+    (void)application; (void)options; self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    controller = [P5RController new]; self.window.rootViewController = controller; [self.window makeKeyAndVisible]; return YES;
+}
+- (void)applicationWillResignActive:(UIApplication *)application {
+    (void)application; dm_pad_set(0,0,0,0,0);
+    if (started) { guest_clock_freeze_for(1, 1); dm_audio_suspend(1); dm_gfx_suspend(1); }
+}
+- (void)applicationDidBecomeActive:(UIApplication *)application {
+    (void)application; if (started) { dm_gfx_suspend(0); dm_audio_suspend(0); guest_clock_freeze_for(1, 0); }
+}
+@end
+int main(int argc, char **argv) { @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(P5RApp.class)); } }

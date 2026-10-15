@@ -69,7 +69,7 @@ static void guest_main(void) {
     // rtld 传入的三个回调：A 只置 rtld 标志（略）、B = 各模块 DT_INIT（nnMain 前）、C = 析构（不做）
     // Copy Start step by step: _init_libc1 = __nnmusl_init_locks (initializes the stdio etc. locks as recursive locks; skipping it self-deadlocks on nested locking in putc) + __init_ssp.
     // The three callbacks passed in by rtld: A only sets an rtld flag (skipped), B = each module's DT_INIT (before nnMain), C = destructors (not done)
-    const dm_guest_boot_ops ops = {guest_sym, run_module_inits, bootstrap_phase, d2r_before_main};
+    const dm_guest_boot_ops ops = {guest_sym, run_module_inits, bootstrap_phase, dm_guest_d2r() ? d2r_before_main : NULL};
     const char *missing = NULL;
     if (!dm_guest_sdk_bootstrap(&ops, hmain, 0, g_argc, g_argv, &missing)) die("SDK bootstrap failed: %s", missing ? missing : "invalid arguments");
     LOG("nnMain returned");

@@ -37,6 +37,10 @@ static void *lookup(const char *name) {
 int main(int argc, char **argv) {
     assert(argc == 2);
     assert(!dm_guest_profile_select("unknown"));
+#ifdef DM_P5R_ONLY
+    assert(!dm_guest_profile_select("d2r"));
+    assert(dm_guest_profile_select(NULL));
+#endif
     assert(dm_guest_profile_select(argv[1]));
     assert(dm_guest_profile_select(argv[1]));
     int p5r = !strcmp(argv[1], "p5r");
