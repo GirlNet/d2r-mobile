@@ -8,6 +8,12 @@
 static int trace[32], count, absent = -1, resolved;
 static uint64_t seen_handle, seen_area;
 static int seen_argc;
+static const char *stop_entry;
+static int checkpoints;
+static int checkpoint(const char *entry, int completed) {
+    checkpoints++;
+    return completed || !stop_entry || strcmp(entry,stop_entry);
+}
 static char **seen_argv;
 static void note(int value) { assert(count < 32); trace[count++] = value; }
 static void libc0(void) { note(0); }
@@ -48,7 +54,7 @@ int main(int argc, char **argv) {
     assert(!strcmp(dm_guest_argument_name(), p5r ? "P5R" : "D2R"));
     assert(!dm_guest_profile_select(p5r ? "d2r" : "p5r"));
     char *game_argv[] = {(char *)dm_guest_argument_name(), "test argument", NULL};
-    const dm_guest_boot_ops ops = {lookup, modules, phase, before};
+    const dm_guest_boot_ops ops = {lookup, modules, phase, before, NULL};
     const char *missing = NULL;
     for (absent = 0; absent < 9; absent++) {
         count = resolved = 0;
@@ -64,6 +70,20 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 11; i++) assert(trace[i] == i);
     if (!p5r) assert(trace[11] == 11);
     assert(trace[count - 1] == 12);
+    dm_guest_boot_ops probe = ops; probe.checkpoint = checkpoint;
+    for (int step = 0; step < 6; step++) {
+        stop_entry = names[step]; count = checkpoints = 0;
+        assert(dm_guest_sdk_bootstrap(&probe,0,0,2,game_argv,&missing) == DM_BOOT_STOPPED);
+        assert(count == step && checkpoints == step * 2 + 1 && !missing);
+    }
+    stop_entry = "module_initializers"; count = checkpoints = 0;
+    assert(dm_guest_sdk_bootstrap(&probe,0,0,2,game_argv,&missing) == DM_BOOT_STOPPED);
+    assert(count == 7 && checkpoints == 13 && !missing);
+    for (int i = 0; i < count; i++) assert(trace[i] == i);
+    absent = 8; count = checkpoints = 0;
+    assert(dm_guest_sdk_bootstrap(&probe,0,0,2,game_argv,&missing) == DM_BOOT_FAILED);
+    assert(!count && !checkpoints && !strcmp(missing,"nnMain"));
+    absent = -1;
     count = 0;
     assert(!dm_guest_sdk_bootstrap(NULL, 0, 0, 2, game_argv, &missing));
     assert(!dm_guest_sdk_bootstrap(&ops, 0, 0, 0, game_argv, &missing));

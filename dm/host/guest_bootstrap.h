@@ -8,7 +8,12 @@ typedef struct {
     void (*module_inits)(void);
     void (*phase)(int phase);
     void (*d2r_before_main)(void);
+    int (*checkpoint)(const char *entry, int completed);
 } dm_guest_boot_ops;
+
+// 检查点返回零时，在下一步执行前停止；不把诊断停止报告成 nnMain 已返回。
+// A zero checkpoint result stops before the next step; a diagnostic stop is not reported as nnMain returning.
+enum { DM_BOOT_FAILED = 0, DM_BOOT_COMPLETE = 1, DM_BOOT_STOPPED = 2 };
 
 int dm_guest_profile_select(const char *name);
 int dm_guest_profile_p5r(void);

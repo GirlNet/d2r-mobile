@@ -3,6 +3,7 @@
 #include "dm.h"
 #include "front.h"
 #include "guest_bootstrap.h"
+#include "boot_probe.h"
 #include <stdatomic.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
@@ -61,7 +62,9 @@ static void bootstrap_phase(int phase) {
     else dm_prof_mark("③ 各模块 init_array");
 }
 static void guest_main(void) {
+    dm_boot_probe_note("guest_thread_init", "begin");
     guest_thread_init();
+    dm_boot_probe_note("guest_thread_init_complete", "initializing the SDK main-thread handle");
     if (dm_guest_d2r()) { void inflate_bench_maybe(void); inflate_bench_maybe(); }
     crash_sample_self();   // DM_SAMPLE 采样（诊断用） | DM_SAMPLE sampling (for diagnostics)
     uint32_t hmain = svc_thread_main_init();   // 主线程句柄供通用 SDK 初始化使用 | Main-thread handle for generic SDK initialization
@@ -69,9 +72,15 @@ static void guest_main(void) {
     // rtld 传入的三个回调：A 只置 rtld 标志（略）、B = 各模块 DT_INIT（nnMain 前）、C = 析构（不做）
     // Copy Start step by step: _init_libc1 = __nnmusl_init_locks (initializes the stdio etc. locks as recursive locks; skipping it self-deadlocks on nested locking in putc) + __init_ssp.
     // The three callbacks passed in by rtld: A only sets an rtld flag (skipped), B = each module's DT_INIT (before nnMain), C = destructors (not done)
-    const dm_guest_boot_ops ops = {guest_sym, run_module_inits, bootstrap_phase, dm_guest_d2r() ? d2r_before_main : NULL};
+    const dm_guest_boot_ops ops = {guest_sym, run_module_inits, bootstrap_phase, dm_guest_d2r() ? d2r_before_main : NULL,
+                                  dm_guest_d2r() ? NULL : dm_boot_probe_checkpoint};
     const char *missing = NULL;
-    if (!dm_guest_sdk_bootstrap(&ops, hmain, 0, g_argc, g_argv, &missing)) die("SDK bootstrap failed: %s", missing ? missing : "invalid arguments");
+    int result = dm_guest_sdk_bootstrap(&ops, hmain, 0, g_argc, g_argv, &missing);
+    if (result == DM_BOOT_STOPPED) { LOG("P5R SDK diagnostic stopped before module initialization"); return; }
+    if (!result) {
+        if (dm_boot_probe_active()) { dm_boot_probe_failure(missing ? missing : "invalid bootstrap arguments"); return; }
+        die("SDK bootstrap failed: %s", missing ? missing : "invalid arguments");
+    }
     LOG("nnMain returned");
 }
 
@@ -132,7 +141,9 @@ static void host_preload(int argc, char **argv) {
     for (; i < argc && strcmp(argv[i], "--") && n < MAX_MOD; i++) names[n++] = argv[i];
     if (i < argc && !strcmp(argv[i], "--")) for (i++; i < argc && g_argc < 63; i++) g_argv[g_argc++] = argv[i];
     if (!n) { names[n++] = "main"; names[n++] = "sdk"; if (!dm_guest_d2r()) names[n++] = "subsdk0"; }
+    dm_boot_probe_note("load_modules", "begin");
     load_modules(argv[1], names, n);
+    dm_boot_probe_note("load_modules_complete", "mapping, symbols, relocations and host gates installed");
     uint64_t ta = now_ns();
     if (dm_guest_d2r()) {
         probe_install();

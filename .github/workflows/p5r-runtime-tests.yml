@@ -103,6 +103,14 @@ jobs:
             exit 0
           fi
           exit "$result"
+      - name: Check initialization probe persistence and stop boundaries
+        run: |
+          set -euo pipefail
+          xcrun clang -DDM_P5R_ONLY=1 -fobjc-arc -fblocks -Wall -Wextra -Werror -I dm/host \
+            dm/host/tests/t_boot_probe.m dm/ios/p5r/boot_probe.m -framework Foundation -o "$RUNNER_TEMP/p5r-boot-probe-test"
+          for mode in checkpoint blocked timeout failure; do
+            "$RUNNER_TEMP/p5r-boot-probe-test" "$mode" "$RUNNER_TEMP/p5r-probe-$mode"
+          done
       - name: Run synthetic texture bindings on Metal 3 and 4
         run: |
           set +e

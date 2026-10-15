@@ -10,6 +10,8 @@
 #include "dm_input.h"
 #include "dm_i18n.h"
 #include "../../gfx/nvn/nvn_texture_selftest.h"
+#include "boot_probe.h"
+#include <fcntl.h>
 #include <unistd.h>
 
 static CAMetalLayer *metalLayer;
@@ -52,6 +54,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 @property UILabel *gpuStatus;
 @property UIStackView *menu;
 @property BOOL testingGpu;
+@property UIButton *bootProbe;
+@property BOOL probingBoot;
+@property NSString *probeDirectory;
+@property double probePollTime;
 @property CADisplayLink *poll;
 @property NSDictionary *package;
 @end
@@ -74,7 +80,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     self.gpuStatus = [UILabel new]; self.gpuStatus.textColor = UIColor.lightGrayColor;
     self.gpuStatus.font = [UIFont systemFontOfSize:13]; self.gpuStatus.numberOfLines = 0;
     self.gpuStatus.textAlignment = NSTextAlignmentCenter;
-    self.menu = [[UIStackView alloc] initWithArrangedSubviews:@[self.status,self.launch,self.gpuTest,self.gpuStatus]];
+    self.bootProbe = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.bootProbe setTitle:text("dmP5RBootProbe") forState:UIControlStateNormal];
+    [self.bootProbe addTarget:self action:@selector(probeBoot) forControlEvents:UIControlEventTouchUpInside];
+    self.menu = [[UIStackView alloc] initWithArrangedSubviews:@[self.status,self.launch,self.gpuTest,self.bootProbe,self.gpuStatus]];
     self.menu.axis = UILayoutConstraintAxisVertical; self.menu.spacing = 12;
     self.menu.translatesAutoresizingMaskIntoConstraints = NO; [self.view addSubview:self.menu];
     [NSLayoutConstraint activateConstraints:@[
@@ -82,6 +91,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         [self.menu.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
         [self.menu.widthAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.widthAnchor constant:-40],
         [self.launch.heightAnchor constraintGreaterThanOrEqualToConstant:44],
+        [self.bootProbe.heightAnchor constraintGreaterThanOrEqualToConstant:44],
         [self.gpuTest.heightAnchor constraintGreaterThanOrEqualToConstant:44]]];
     NSString *path = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/p5r-package.json"];
     NSData *data = [NSData dataWithContentsOfFile:path];
@@ -89,6 +99,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     BOOL ready = [self.package[@"runtime_ready"] isEqual:@YES];
     self.status.text = text(ready ? "dmP5RReady" : self.package ? "dmP5RGraphicsPending" : "dmP5RShell");
     self.launch.enabled = ready;
+    self.bootProbe.enabled = [self.package[@"game_content_included"] isEqual:@YES];
     self.poll = [CADisplayLink displayLinkWithTarget:self selector:@selector(pollController)];
     [self.poll addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
@@ -97,6 +108,13 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     metalLayer.drawableSize = CGSizeMake(size.width * UIScreen.mainScreen.scale, size.height * UIScreen.mainScreen.scale);
 }
 - (void)pollController {
+    if (self.probingBoot && CACurrentMediaTime() - self.probePollTime > .5) {
+        self.probePollTime = CACurrentMediaTime();
+        NSData *data = [NSData dataWithContentsOfFile:[self.probeDirectory stringByAppendingPathComponent:@"boot-report.json"]];
+        NSDictionary *report = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        if (report && ![report[@"status"] isEqual:@"running"])
+            self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RBootStopped"),self.probeDirectory.lastPathComponent];
+    }
     GCExtendedGamepad *pad = GCController.controllers.firstObject.extendedGamepad;
     if (!pad || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) { dm_pad_set(0,0,0,0,0); return; }
     uint64_t buttons = 0;
@@ -130,9 +148,39 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     else pthread_detach(thread);
     pthread_attr_destroy(&attr);
 }
+- (void)probeBoot {
+    if (started || self.testingGpu || ![self.package[@"game_content_included"] isEqual:@YES]) return;
+    NSString *guest = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/Guest.framework/Guest"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:guest]) { self.gpuStatus.text = text("dmP5RBootMissing"); return; }
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    NSString *directory = [documents stringByAppendingPathComponent:[@"p5r-boot-probe-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    if (!dm_boot_probe_begin(directory.fileSystemRepresentation)) { self.gpuStatus.text = text("dmP5RBootReportFailed"); return; }
+    started = 1; self.probingBoot = YES; self.probeDirectory = directory;
+    self.launch.enabled = self.gpuTest.enabled = self.bootProbe.enabled = NO;
+    self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RBootRunning"),directory.lastPathComponent];
+    int log = open([directory stringByAppendingPathComponent:@"runtime.log"].fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL,0600);
+    if (log < 0) { dm_boot_probe_failure("cannot create runtime.log"); return; }
+    int redirected = dup2(log,STDERR_FILENO); close(log);
+    if (redirected < 0) { dm_boot_probe_failure("cannot redirect runtime.log"); return; }
+    setenv("DM_GUEST_PROFILE","p5r",1); setenv("DM_BOOTPROF","1",1); setenv("DM_IMPORTS","1",1);
+    if (chdir(directory.fileSystemRepresentation)) { dm_boot_probe_failure("cannot enter isolated diagnostic directory"); return; }
+    setenv("DM_ROMFS",[documents stringByAppendingPathComponent:@"romfs"].fileSystemRepresentation,1);
+    for (NSString *name in @[@"save",@"temp"]) {
+        NSString *path = [directory stringByAppendingPathComponent:name];
+        if (![NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:NO attributes:nil error:nil]) {
+            dm_boot_probe_failure("cannot create isolated save/temp directories"); return;
+        }
+        setenv([name isEqual:@"save"] ? "DM_SAVE":"DM_TEMP",path.fileSystemRepresentation,1);
+    }
+    pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr,8<<20);
+    pthread_t thread; int error = pthread_create(&thread,&attr,runHost,NULL); pthread_attr_destroy(&attr);
+    if (error) dm_boot_probe_failure("cannot create diagnostic host thread");
+    else pthread_detach(thread);
+}
 - (void)testGpu {
     if (started || self.testingGpu) return;
     self.testingGpu = YES; self.launch.enabled = self.gpuTest.enabled = NO;
+    self.bootProbe.enabled = NO;
     self.gpuStatus.text = text("dmP5RGpuRunning");
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
         int result = nvn_texture_selftest();
@@ -149,6 +197,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         BOOL saved = data && [data writeToFile:path options:NSDataWritingAtomic error:&error];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.testingGpu = NO; self.gpuTest.enabled = YES;
+            self.bootProbe.enabled = [self.package[@"game_content_included"] isEqual:@YES];
             self.launch.enabled = [self.package[@"runtime_ready"] isEqual:@YES];
             if (!saved) self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RGpuSaveFailed"),result];
             else if (result == 0) self.gpuStatus.text = text("dmP5RGpuPassed");
@@ -176,10 +225,10 @@ static void *runHost(void *unused) {
 }
 - (void)applicationWillResignActive:(UIApplication *)application {
     (void)application; dm_pad_set(0,0,0,0,0);
-    if (started) { guest_clock_freeze_for(1, 1); dm_audio_suspend(1); dm_gfx_suspend(1); }
+    if (started && !dm_boot_probe_active()) { guest_clock_freeze_for(1, 1); dm_audio_suspend(1); dm_gfx_suspend(1); }
 }
 - (void)applicationDidBecomeActive:(UIApplication *)application {
-    (void)application; if (started) { dm_gfx_suspend(0); dm_audio_suspend(0); guest_clock_freeze_for(1, 0); }
+    (void)application; if (started && !dm_boot_probe_active()) { dm_gfx_suspend(0); dm_audio_suspend(0); guest_clock_freeze_for(1, 0); }
 }
 @end
 int main(int argc, char **argv) { @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(P5RApp.class)); } }

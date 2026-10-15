@@ -57,6 +57,7 @@
 #include "nvn_hmap.h"
 #include "nvn_shader_control.h"
 #include "../../host/dm.h"
+#include "../../host/boot_probe.h"
 #import <CommonCrypto/CommonDigest.h>
 #include <stdarg.h>
 #include <mach-o/dyld.h>
@@ -319,6 +320,7 @@ static void udc_selftest(void) {
     }
 }
 void mtl_init(void) {
+    dm_boot_probe_block("gpu_initialization", "mtl_init: no guest GPU work is permitted in the SDK probe");
     if (g_dev) return;
     const char *link = getenv("DM_PRESENT_LINK");
     g_dm_present_link = link ? atoi(link) : 1; if (g_dm_present_link < 0 || g_dm_present_link > 2) g_dm_present_link = 1;   // 缺省 1（真机同进程交替：负载超一拍时长帧 15% → 0、帧间隔变匀；稳 60 时与 0 无差别）；DM_PRESENT_LINK=0 关   // 1 = 60 Hz 节拍每拍出图；2 = 120 Hz 节拍、游戏隔拍出一帧（落后时下一个 8.33 ms 拍就能上屏） | Default 1 (real-device same-process alternation: when load exceeds one display-link period, long frames 15% → 0 and frame intervals even out; no difference from 0 at a steady 60); DM_PRESENT_LINK=0 turns it off   // 1 = present on every tick of a 60 Hz display link; 2 = 120 Hz display link, the game presents a frame every other display-link tick (when behind, it can present on the next 8.33 ms display-link tick)

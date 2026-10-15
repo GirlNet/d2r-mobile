@@ -35,18 +35,24 @@ int dm_guest_sdk_bootstrap(const dm_guest_boot_ops *ops, uint64_t main_handle,
         entries[i] = ops->symbol(names[i]);
         if (!entries[i]) { if (missing_symbol) *missing_symbol = names[i]; return 0; }
     }
-    ((void (*)(void))entries[0])();
-    ((void (*)(uint64_t, uint64_t))entries[1])(main_handle, argument_area);
-    ((void (*)(void))entries[2])();
-    ((void (*)(void))entries[3])();
-    ((void (*)(void))entries[4])();
-    ((void (*)(void))entries[5])();
+    #define STEP(NAME, CALL) do { \
+        if (ops->checkpoint && !ops->checkpoint((NAME), 0)) return DM_BOOT_STOPPED; \
+        CALL; \
+        if (ops->checkpoint && !ops->checkpoint((NAME), 1)) return DM_BOOT_STOPPED; \
+    } while (0)
+    STEP(names[0], ((void (*)(void))entries[0])());
+    STEP(names[1], ((void (*)(uint64_t, uint64_t))entries[1])(main_handle, argument_area));
+    STEP(names[2], ((void (*)(void))entries[2])());
+    STEP(names[3], ((void (*)(void))entries[3])());
+    STEP(names[4], ((void (*)(void))entries[4])());
+    STEP(names[5], ((void (*)(void))entries[5])());
     if (ops->phase) ops->phase(1);
-    ops->module_inits();
+    STEP("module_initializers", ops->module_inits());
     if (ops->phase) ops->phase(2);
-    ((void (*)(int))entries[6])(argc);
-    ((void (*)(char **))entries[7])(argv);
+    STEP(names[6], ((void (*)(int))entries[6])(argc));
+    STEP(names[7], ((void (*)(char **))entries[7])(argv));
     if (!dm_guest_profile_p5r() && ops->d2r_before_main) ops->d2r_before_main();
-    ((void (*)(void))entries[8])();
+    STEP(names[8], ((void (*)(void))entries[8])());
+    #undef STEP
     return 1;
 }

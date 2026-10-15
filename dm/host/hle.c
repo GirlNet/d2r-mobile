@@ -1,6 +1,7 @@
 // 导入解析（已实现接宿主、其余接记名桩）与宿主门分派。
 // Import resolution (implemented ones go to the host, the rest go to named stubs) and host gate dispatch.
 #include "dm.h"
+#include "boot_probe.h"
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include <dlfcn.h>
@@ -17,6 +18,7 @@ static uint8_t g_stub_seen[MAX_STUB];
 extern uint64_t unimpl_stubs[MAX_STUB];   // 每桩 8 字节 | 8 bytes per stub
 
 uint64_t unimpl_c(unsigned idx, uint64_t *regs) {
+    dm_boot_probe_block("unresolved_import", g_stub_name[idx]);
     if (!dm_guest_d2r()) die("P5R unresolved import: %s", g_stub_name[idx]);
     if (!g_stub_seen[idx]++)
         LOG("UNIMPL %s (x0=%#llx x1=%#llx x2=%#llx)", g_stub_name[idx], regs[0], regs[1], regs[2]);

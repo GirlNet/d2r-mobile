@@ -3,6 +3,7 @@
 // Multi-module loading (playing the role of Horizon's rtld): mapping, claiming thread slots, gate registration, cross-module relocation, take-over by name, segment permissions.
 // The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
 #include "dm.h"
+#include "boot_probe.h"
 #include <TargetConditionals.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -370,11 +371,13 @@ void load_modules(const char *dir, const char **names, int n) {
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];
         strlcpy(m->name, names[i], sizeof m->name);
+        dm_boot_probe_note("module_layout", names[i]);
         read_layout(m, dir);
     }
     create_keys();
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];
+        dm_boot_probe_note("module_map", names[i]);
         t = now_ns(); map_image(m, dir); tm += now_ns() - t;   // 返回时代码区已是只读+执行，此后装载器只写 data | On return the code area is already read-only+execute; from here on the loader only writes data
         if (!i) tsd_check();
         t = now_ns(); parse_dynamic(m); tp += now_ns() - t;
