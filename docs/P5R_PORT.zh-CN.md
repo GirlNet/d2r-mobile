@@ -46,6 +46,7 @@ python -m unittest discover -s dm/i18n -p test_scan_literals.py -v
 python -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
 python -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
 python -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
+python dm/gfx/tools/dmsh_chain.py --header
 python -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
 python -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
 python -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v

@@ -44,6 +44,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Generate shader cache version from this checkout
+        run: python3 dm/gfx/tools/dmsh_chain.py --header
       - name: Link and package the complete game-free P5R host
         run: |
           set -euo pipefail
@@ -68,6 +70,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Generate shader cache version from this checkout
+        run: python3 dm/gfx/tools/dmsh_chain.py --header
       - name: Check changed host sources
         run: |
           set -euo pipefail

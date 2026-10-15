@@ -2,9 +2,12 @@
 # Exercise the real packaging reflection function with synthetic MSL/resources, checking Ryujinx's Write bit and sorted slot mapping.
 import ast
 import hashlib
+import os
 from pathlib import Path
 import re
+import tempfile
 import unittest
+from unittest.mock import patch
 
 
 def reflection_function():
@@ -62,7 +65,7 @@ class BufferReflectionTests(unittest.TestCase):
         self.assertIsNone(result[0]['reg'])
         self.assertFalse(result[0]['rw'])
 
-    def test_checked_in_chain_matches_canonical_sources(self):
+    def test_active_chain_matches_canonical_sources(self):
         root = Path(__file__).resolve().parents[1] / 'gfx'
         tree = ast.parse((root / 'tools' / 'dmsh_chain.py').read_text(encoding='utf-8'))
         files = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
@@ -72,6 +75,22 @@ class BufferReflectionTests(unittest.TestCase):
             digest.update(name.encode() + b'\0' + (root / name).read_text(encoding='utf-8').encode() + b'\0')
         digest.update(b'debug=True reduced=True')
         self.assertIn('"' + digest.hexdigest()[:12] + '"', (root / 'nvn' / 'dmsh_chain.h').read_text(encoding='utf-8'))
+
+    def test_cache_version_ignores_checkout_line_endings_but_tracks_source_changes(self):
+        path = Path(__file__).resolve().parents[1] / 'gfx/tools/dmsh_chain.py'
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('version', 'options')]
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, XLATE_DEBUG='1', XLATE_REDUCED='1'):
+            namespace = dict(os=os, hashlib=hashlib, GFX=directory, FILES=['fixture.cs'])
+            exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
+            fixture = Path(directory) / 'fixture.cs'
+            fixture.write_bytes(b'alpha\nbeta\n')
+            expected = hashlib.sha256(b'fixture.cs\0alpha\nbeta\n\0debug=True reduced=True').hexdigest()[:12]
+            self.assertEqual(namespace['version'](), expected)
+            fixture.write_bytes(b'alpha\r\nbeta\r\n')
+            self.assertEqual(namespace['version'](), expected)
+            fixture.write_bytes(b'alpha\r\nchanged\r\n')
+            self.assertNotEqual(namespace['version'](), expected)
 
 
 if __name__ == '__main__': unittest.main()

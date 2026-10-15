@@ -31,7 +31,10 @@ def options():
 def version():
     h = hashlib.sha256()
     for f in FILES:
-        h.update(f.encode() + b'\0' + open(os.path.join(GFX, f), 'rb').read() + b'\0')
+        # Git 检出换行可不同；缓存版本按规范 LF 源码计算，避免 Windows/macOS 分叉。
+        # Git checkout line endings may differ; hash canonical LF sources so Windows/macOS agree.
+        with open(os.path.join(GFX, f), 'rb') as source:
+            h.update(f.encode() + b'\0' + source.read().replace(b'\r\n', b'\n') + b'\0')
     h.update(options().encode())
     return h.hexdigest()[:12]
 
@@ -70,8 +73,10 @@ if __name__ == '__main__':
         for b in bad: print('【红】翻译链工具与锁文件不符：' + b)
         sys.exit(1 if bad else 0)
     elif a == ['--header']:
-        open(HEADER, 'w').write('// 生成文件（dm/gfx/tools/dmsh_chain.py --header）：本源码树期望的 B 着色器库翻译链版本（缺省选项）；宿主只加载 <库目录>/b-<V>/\n'
-                                f'#define DMSH_CHAIN "{version()}"\n')
+        with open(HEADER, 'w', encoding='utf-8', newline='\n') as header:
+            header.write('// 生成文件（dm/gfx/tools/dmsh_chain.py --header）：本源码树期望的 B 着色器库翻译链版本（缺省选项）；宿主只加载 <库目录>/b-<V>/\n'
+                         '// Generated file (dm/gfx/tools/dmsh_chain.py --header): the translation chain version of the B shader library expected by this source tree (default options); the host only loads <library dir>/b-<V>/\n'
+                         f'#define DMSH_CHAIN "{version()}"\n')
         print(version())
     elif not a: print(version())
     else: sys.exit(__doc__ if __doc__ else '用法见文件头')
