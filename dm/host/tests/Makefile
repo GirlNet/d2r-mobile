@@ -95,7 +95,7 @@ $(B)/t_shader_control: t_shader_control.c ../../gfx/nvn/nvn_shader_control.h | $
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_shader_control.c
 $(B)/t_nvn_handles: t_nvn_handles.c ../../gfx/nvn/nvn_handle_bindings.h | $(B)
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_nvn_handles.c
-$(B)/t_nvn_combined_refl: t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h | $(B)
+$(B)/t_nvn_combined_refl: t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_shader_control.h | $(B)
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
 $(B)/t_hud_dead: t_hud_dead.c ../dm_hud.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_hud_dead.c

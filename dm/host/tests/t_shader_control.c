@@ -16,6 +16,11 @@ int main(void) {
         p[fields[i]] ^= 1;
     }
     if (nvn_control_hash_size(NULL, 0x24, 1) || nvn_control_hash_size(NULL, 0x24, 0)) return 1;
+    uint32_t group[3] = {32, 2, 1};
+    if (!nvn_compute_group_valid(group) || nvn_compute_group_valid(NULL)) return 1;
+    group[0] = 0; if (nvn_compute_group_valid(group)) return 1;
+    group[0] = 65536; if (nvn_compute_group_valid(group)) return 1;
+    group[0] = 1024; if (nvn_compute_group_valid(group)) return 1;
     puts("SHADER CONTROL OK: exact P5R span, unaligned header, bounds, unknown layout, D2R default");
     return 0;
 }

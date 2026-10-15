@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 #include <stdio.h>
 #include <string.h>
+#include "nvn_shader_control.h"
 
 // 哑贴图类型：与原 dummy_tex 同一套前缀判定（未绑贴图槽按 D3D 语义读出 0）
 // Dummy texture type: same prefix rules as the original dummy_tex (an unbound texture slot reads 0 per D3D semantics)
@@ -97,7 +98,16 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             for (NSDictionary *u in fe[@"outputs"]) { if (o->nfo >= 4) FAIL("fetch 输出超过 4 个"); o->fo_color[o->nfo++] = (uint8_t)[u[@"color"] intValue]; }
         }
         NSArray *tg = j[@"threadgroup_size"];
-        if ([tg isKindOfClass:[NSArray class]] && tg.count == 3) for (int i = 0; i < 3; i++) o->tg[i] = (uint16_t)[tg[i] intValue];
+        if ([j[@"stage"] isEqual:@"cs"]) {
+            if (![tg isKindOfClass:[NSArray class]] || tg.count != 3) FAIL("Missing compute workgroup");
+            uint32_t group[3];
+            for (int i = 0; i < 3; i++) {
+                if (![tg[i] isKindOfClass:[NSNumber class]] || [tg[i] doubleValue] != (double)[tg[i] unsignedIntValue]) FAIL("Invalid compute workgroup field");
+                group[i] = [tg[i] unsignedIntValue];
+            }
+            if (!nvn_compute_group_valid(group)) FAIL("Invalid or unsupported compute workgroup");
+            for (int i = 0; i < 3; i++) o->tg[i] = (uint16_t)group[i];
+        } else if ([tg isKindOfClass:[NSArray class]] && tg.count == 3) for (int i = 0; i < 3; i++) o->tg[i] = (uint16_t)[tg[i] intValue];
         return 0;
     }
     #undef FAIL

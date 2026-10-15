@@ -18,3 +18,11 @@ static inline size_t nvn_control_hash_size(const void *p, size_t header_bytes, i
         nvn_control_word(p, 20) != 0x848 || nvn_control_word(p, 32) != 0x850) return 0;
     return 0x850;
 }
+
+// 准备流程支持的计算线程组范围；不表示 GPU 执行已经验证。
+// Compute workgroup range supported by preparation; this does not attest to GPU execution.
+static inline int nvn_compute_group_valid(const uint32_t group[3]) {
+    if (!group) return 0;
+    for (int i = 0; i < 3; i++) if (!group[i] || group[i] > UINT16_MAX) return 0;
+    return (uint64_t)group[0] * group[1] * group[2] <= 1024;
+}

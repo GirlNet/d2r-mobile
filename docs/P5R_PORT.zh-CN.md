@@ -14,7 +14,9 @@ English: [P5R_PORT.md](P5R_PORT.md)
 - P5R 启动域跳过 D2R 的启动钩子、TACT 预取、物品/技能/光标输入链、存档预置与提交前扩展、固定地址堆统计和渲染比例修改，也不报告 D2R 的术士 DLC。未实现导入会中止并报告接口名。
 - 音频接管补齐带事件和不带事件的 `OpenDefaultAudioOut` 重载、默认设备名称查询，以及 `subsdk0` 导入的 `GetAudioOutPlayedSampleCount`。采样数按实际消耗的 PCM 帧累计，停止和空队列补零不计，跨缓冲保留半帧余数，重新打开时归零。可选接管表允许旧 SDK 没有这些符号；既有 D2R 必需接管检查仍保留。与真实 Switch 的完整行为一致性仍需验证。
 - NVN 组合纹理绑定已实现 `GetTextureHandle`、`GetTexelFetchHandle`、`BindTexture`、`BindTextures`，并补齐单个分离纹理重载。组合槽与分离槽独立保存状态；反射接受显式的组合纹理/采样器/缓冲纹理种类，Metal 参数编码、驱动表和资源读取跟踪均覆盖组合槽。取采样器编号时排除句柄标记位。
-- `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频/控制块/组合句柄测试、iOS ARM64 组件编译与 46 个 Python 工具测试，另有 macOS/iOS 合成 Metal 原生编译测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。
+- 计算诊断作业现在从受支持的 NVN 11 控制块提取线程组尺寸，不再缺省为单线程。提取清单升级为 schema 2 并保存带散列的控制块；诊断加载核对尺寸后，在转换 MSL 前再次核对 SPIR-V 的 LocalSize。运行时计算反射拒绝缺失、小数、零、溢出及不支持的尺寸。准备流程上限为 1024 个线程，不代表 GPU 执行或局部/共享内存配置已验证。
+- `dmsh_build.py` 修正 Ryujinx 缓冲 Write 标志为第 0 位；此前可写存储缓冲可能被反射成只读。修正后着色器缓存版本改变：需要按原准备流程重建 B 路线的库/反射并重新生成 `c1_full.tsv`。旧库不会被接受；旧的保护表会触发保守的独占常数缓冲。
+- `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频/控制块/组合句柄测试、iOS ARM64 组件编译与 Python 工具测试，另有 macOS/iOS 合成 Metal 原生编译测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。
 
 静态依赖候选包括条件编译声明、占位实现与原版 Switch SDK 内部函数。名字匹配不代表宿主服务或驱动可用。检查器目前要求 NSO 头带动态符号表描述，支持 LZ4 与未压缩段，不支持 Zbic。
 
@@ -39,6 +41,7 @@ python -m unittest discover -s dm/i18n -p test_scan_literals.py -v
 python -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
 python -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
 python -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
+python -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
 ```
 
 内嵌着色器诊断准备（输出目录必须尚不存在）：
@@ -49,7 +52,7 @@ python dm/tools/prepare_p5r_shaders.py "E:\games\P5R\ExeFS\main" "E:\p5r-work\sh
 
 `diagnostic-jobs.json` 可交给仓内 `dmsh_xlate` 做本地 SPIR-V 诊断。当前使用未验证的资源/渲染状态缺省值，关闭 AST 优化器并保持严格浮点；生成 SPIR-V 或通过结构校验都不代表反射信息正确、覆盖全部游戏着色器或完成 Metal 库。现有 `dmsh_build.py` 仍绑定 D2R 的映射和类型事实，不能直接用于这些作业。
 
-可复用的 `diagnose_p5r_shaders.py` 流程校验代码与附加常数段的 SHA-256 散列，翻译全部作业，运行 SPIR-V 验证，转换 MSL，并记录原始贴图句柄、常量/存储缓冲及未解决的绑定。各阶段保留日志；部分失败返回非零退出码并保留报告。输出必须是仓库和提取目录之外的新目录。旧的提取结果缺少常数散列，需要重新提取。
+可复用的 `diagnose_p5r_shaders.py` 流程校验代码、控制块与附加常数段的 SHA-256 散列，翻译全部作业，运行 SPIR-V 验证，转换 MSL，并记录原始贴图句柄、常量/存储缓冲及未解决的绑定。计算 LocalSize 必须与带散列的控制块一致。各阶段保留日志；部分失败返回非零退出码并保留报告。输出必须是仓库和提取目录之外的新目录。schema 1 提取结果需要重新生成；schema 2 新增 `control/` 目录及有来源依据的线程组尺寸。
 
 ```powershell
 python dm/tools/diagnose_p5r_shaders.py "E:\p5r-work\shaders" "E:\p5r-work\diagnostic" --translator "E:\tools\dmsh_xlate.exe" --spirv-val "E:\tools\spirv-val.exe" --spirv-cross "E:\tools\spirv-cross.exe"
@@ -79,4 +82,4 @@ python dm/tools/diagnose_p5r_shaders.py "E:\p5r-work\shaders" "E:\p5r-work\diagn
 
 随后使用 SPIRV-Cross 源码提交 `300681bbcb8365a8d1eacdacdbdd0249bbf1d6b1`，228 个文件均成功转换为 MSL 2.3 源码（参数缓冲、原生贴图缓冲、片元输出填充选项）。尚未将这些源码编译成苹果 Metal 库，也未验证 P5R 的贴图/采样器/常量缓冲绑定；不能当作可用的渲染资源。
 
-初次可复用流水线完成了全部 228 个本地着色器的诊断，并发现纹理句柄不在之前支持的分离纹理表中。后续 SDK 分析确认了独立的组合绑定 API 表；诊断解码器现在可报告对应的组合纹理/采样器来源，但不据此推断资源类型。未知常量缓冲库、未实现的句柄模式及资源数组仍标为未解决。计算配置、类型事实、常量/存储缓冲槽映射、运行时反射生成及 GPU 输出仍需验证，翻译成功尚不能产出可用的渲染库。
+初次可复用流水线完成了全部 228 个本地着色器的诊断，并发现纹理句柄不在之前支持的分离纹理表中。后续 SDK 分析确认了独立的组合绑定 API 表；诊断解码器现在可报告对应的组合纹理/采样器来源，但不据此推断资源类型。未知常量缓冲库、未实现的句柄模式及资源数组仍标为未解决。计算线程组尺寸后来已与 SDK 元数据读取和 SPIR-V 输出核对；局部/共享内存、类型事实、常量/存储缓冲槽映射、运行时反射生成及 GPU 输出仍需验证，翻译成功尚不能产出可用的渲染库。

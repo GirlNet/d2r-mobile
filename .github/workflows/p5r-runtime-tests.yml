@@ -8,10 +8,13 @@ on:
       - '.github/workflows/p5r-runtime-tests.yml'
       - 'dm/host/**'
       - 'dm/gfx/nvn/**'
+      - 'dm/gfx/tools/dmsh_build.py'
+      - 'dm/gfx/tools/dmsh_chain.py'
       - 'dm/tools/diagnose_p5r_shaders.py'
       - 'dm/tools/test_diagnose_p5r_shaders.py'
       - 'dm/tools/nvn_handle_layout.py'
       - 'dm/tools/test_nvn_handle_layout.py'
+      - 'dm/tools/test_shader_buffer_reflection.py'
       - 'dm/tools/prepare_p5r_shaders.py'
       - 'dm/tools/test_prepare_p5r_shaders.py'
       - 'dm/tools/inspect_exefs.py'
@@ -92,6 +95,7 @@ jobs:
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/verify -p test_equiv_compare.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/i18n -p test_scan_literals.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" dm/i18n/scan_literals.py

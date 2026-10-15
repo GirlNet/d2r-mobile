@@ -4,10 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import struct
 import tempfile
 import unittest
 
-from diagnose_p5r_shaders import audit_resources, compile_metal, diagnose, load_jobs
+from diagnose_p5r_shaders import audit_resources, compile_metal, diagnose, load_jobs, spirv_compute_workgroup
 from prepare_p5r_shaders import scan_segment, write_outputs
 from test_prepare_p5r_shaders import shader
 
@@ -18,6 +19,12 @@ kernel void synthetic(device uint* values [[buffer(0)]], uint id [[thread_positi
     values[id] = id;
 }
 '''
+
+
+def compute_spirv(group=(4, 2, 1)):
+    words = [0x07230203, 0x10000, 0, 2, 0, (5 << 16) | 15, 5, 1, 0x6e69616d, 0,
+             (6 << 16) | 16, 1, 17, *group]
+    return struct.pack('<' + 'I' * len(words), *words)
 
 
 def resources(job, handle=8):
@@ -43,7 +50,7 @@ class DiagnosticTests(unittest.TestCase):
         elif len(command) == 3:
             for job in json.loads(Path(command[1]).read_text(encoding='utf-8')):
                 output = Path(command[2])
-                (output / (job['key'] + '.spv')).write_bytes(b'synthetic SPIR-V')
+                (output / (job['key'] + '.spv')).write_bytes(compute_spirv(job['local']) if job['stage'] == 'cs' else b'synthetic SPIR-V')
                 (output / (job['key'] + '.res.json')).write_text(json.dumps(resources(job)), encoding='utf-8')
         elif '--output' in command:
             Path(command[-1]).write_text(MSL, encoding='utf-8')
@@ -90,6 +97,53 @@ class DiagnosticTests(unittest.TestCase):
         manifest = json.loads(path.read_text(encoding='utf-8')); manifest['shaders'][0].pop('c1_sha256')
         path.write_text(json.dumps(manifest), encoding='utf-8')
         with self.assertRaisesRegex(ValueError, 'rerun'): load_jobs(self.preparation)
+
+    def use_compute_job(self):
+        self.preparation = self.root / 'compute'
+        rows, rejected = scan_segment(shader(5))
+        write_outputs(self.preparation, dict(file_sha256='test', build_id='test'), rows, rejected)
+
+    def test_compute_dimensions_checked_through_spirv(self):
+        self.use_compute_job()
+        report = self.run_diagnostic()
+        self.assertEqual(report['status'], 'diagnostic_passed')
+        row = report['shaders'][0]
+        self.assertEqual(row['spirv_compute_workgroup'], [4, 2, 1])
+        self.assertTrue(row['audit']['compute_workgroup_verified'])
+        self.assertFalse(row['audit']['compute_configuration_verified'])
+
+    def test_compute_dimensions_or_control_tampering_rejected(self):
+        self.use_compute_job()
+        path = self.preparation / 'diagnostic-jobs.json'; original = path.read_text(encoding='utf-8')
+        jobs = json.loads(original); jobs[0]['local'] = [1, 1, 1]
+        path.write_text(json.dumps(jobs), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'workgroup'): self.run_diagnostic()
+        path.write_text(original, encoding='utf-8')
+        control = next((self.preparation / 'control').glob('*.bin')); data = bytearray(control.read_bytes()); data[0x748] ^= 1; control.write_bytes(data)
+        with self.assertRaisesRegex(ValueError, 'Control digest'): self.run_diagnostic()
+
+    def test_wrong_spirv_local_size_fails_before_msl(self):
+        self.use_compute_job()
+        def runner(command, log, timeout=120):
+            self.runner(command, log, timeout)
+            if len(command) == 3:
+                for path in Path(command[2]).glob('*.spv'): path.write_bytes(compute_spirv((1, 1, 1)))
+        report = self.run_diagnostic(runner)
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('LocalSize', report['shaders'][0]['error'])
+        self.assertEqual(list((self.root / 'out' / 'msl').iterdir()), [])
+
+    def test_spirv_local_size_structure_is_not_assumed(self):
+        path = self.root / 'compute.spv'
+        for blob in (b'bad', compute_spirv()[:20], compute_spirv() + b'\0' * 4,
+                     compute_spirv() + compute_spirv()[40:], compute_spirv()[:-4]):
+            path.write_bytes(blob)
+            with self.assertRaises(ValueError): spirv_compute_workgroup(path)
+
+    def test_schema_one_requires_new_extraction(self):
+        path = self.preparation / 'shader-preparation.json'; manifest = json.loads(path.read_text(encoding='utf-8')); manifest['schema_version'] = 1
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'rerun'): self.run_diagnostic()
 
     def test_code_path_escape_and_unknown_keys_rejected(self):
         path = self.preparation / 'diagnostic-jobs.json'

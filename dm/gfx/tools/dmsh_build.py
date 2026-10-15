@@ -350,7 +350,7 @@ def reflect(key, stage, msl, res):
             if stage == 'cs' and off is not None and 0x210 <= off < 0x310 and (off - 0x210) % 16 == 0:
                 e.update(kind='ubo_ptr', reg=(off - 0x210) // 16)   # 计算阶段 uniform 槽 r：地址在 c0[0x210 + 0x10 r]，经全局内存读（cs_lut_combine_c 读 cb10[66] 核对） | compute-stage uniform slot r: address at c0[0x210 + 0x10 r], read through global memory (checked against cs_lut_combine_c reading cb10[66])
             else: e['reg'] = (off - base) // 16 if off is not None and base is not None and 0 <= off - base < 0x100 and (off - base) % 16 == 0 else None
-            e['rw'] = bool(b and b['flags'] & 2)
+            e['rw'] = bool(b and b['flags'] & 1)   # BufferUsageFlags.Write 是第 0 位 | BufferUsageFlags.Write is bit 0.
     return binds
 
 DRV_FILL = {0: [(0x110, 0x210), (0x310, 0x410), (0x510, 0x610)],   # c0：存储缓冲地址表（顶点 / 计算 / 像素，各 16 槽 × 0x10） | c0: storage buffer address tables (vertex / compute / pixel, 16 slots × 0x10 each)

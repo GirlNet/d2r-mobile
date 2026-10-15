@@ -19,6 +19,19 @@ HEADER_FIELDS = {4: 1, 8: 15, 12: 0x120, 16: 11, 20: 0x848, 32: CONTROL_SIZE}
 STAGES = {0: 'vs', 1: 'ps', 5: 'cs'}
 
 
+def compute_workgroup(control):
+    if len(control) != CONTROL_SIZE or any(word(control, off) != value for off, value in HEADER_FIELDS.items()):
+        raise ValueError('Unsupported compute control layout')
+    if word(control, 0) != 0x98761234 or word(control, 0x714) != 5:
+        raise ValueError('Expected an NVN 11 compute control')
+    # SDK 计算元数据访问器返回这三个 uint32 字段；1024 是本准备流程的线程数上限。
+    # The SDK compute metadata accessor returns these three uint32 fields; 1024 is this preparation pipeline's thread-count limit.
+    group = [word(control, off) for off in (0x748, 0x74c, 0x750)]
+    if any(not 0 < n <= 0xffff for n in group) or group[0] * group[1] * group[2] > 1024:
+        raise ValueError('Invalid or unsupported compute workgroup')
+    return group
+
+
 def word(data, offset):
     if offset < 0 or offset + 4 > len(data):
         raise ValueError('Truncated shader field')
@@ -60,7 +73,8 @@ def scan_segment(data, memory_offset=0):
                             key=hashlib.sha256(control).hexdigest()[:16], control_sha256=hashlib.sha256(control).hexdigest(),
                             control_size=CONTROL_SIZE, stage=stage, code_size=code_size, c1_size=len(c1),
                             code_sha256=hashlib.sha256(code[prefix:]).hexdigest(),
-                            c1_sha256=hashlib.sha256(c1).hexdigest(), code=code[prefix:], c1=c1))
+                            c1_sha256=hashlib.sha256(c1).hexdigest(), code=code[prefix:], c1=c1,
+                            control=control, compute_workgroup=compute_workgroup(control) if stage == 'cs' else None))
         occupied_end = code_start + total_size
     return records, rejected
 
@@ -93,16 +107,19 @@ def write_outputs(workspace, inventory, records, rejected):
     # Outputs contain game-derived code; use a new directory outside the repo and refuse existing outputs.
     workspace.mkdir(parents=True, exist_ok=False)
     code_dir = workspace / 'code'; code_dir.mkdir()
+    control_dir = workspace / 'control'; control_dir.mkdir()
     jobs, rows = [], []
     for record in records:
         code_path = code_dir / (record['key'] + '.bin')
         if not code_path.exists():
             code_path.write_bytes(record['code'])
+        (control_dir / (record['key'] + '.bin')).write_bytes(record['control'])
         jobs.append(dict(key=record['key'], stage=record['stage'], code=str(code_path.resolve()),
                          c1=record['c1'].hex(), tex={}, img={}, attr={}, fout={}, debug=True, reduced=False,
                          diagnostic_only=True, resource_facts_verified=False))
-        rows.append({k: v for k, v in record.items() if k not in ('code', 'c1')})
-    manifest = dict(schema_version=1, status='extracted_for_diagnostic_translation', source_sha256=inventory['file_sha256'],
+        if record['stage'] == 'cs': jobs[-1]['local'] = record['compute_workgroup']
+        rows.append({k: v for k, v in record.items() if k not in ('code', 'c1', 'control')})
+    manifest = dict(schema_version=2, status='extracted_for_diagnostic_translation', source_sha256=inventory['file_sha256'],
                     build_id=inventory['build_id'], shaders=rows, rejected_magic_addresses=rejected,
                     translation_ready=False, graphics_verified=False, runnable_verified=False,
                     caveat='Embedded shaders only. Jobs use unverified resource/state defaults; SPIR-V is diagnostic, not a validated shader library.')

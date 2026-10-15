@@ -6,7 +6,7 @@ import struct
 import tempfile
 import unittest
 
-from prepare_p5r_shaders import CONTROL_SIZE, HEADER_FIELDS, scan_segment, write_outputs
+from prepare_p5r_shaders import CONTROL_SIZE, HEADER_FIELDS, compute_workgroup, scan_segment, write_outputs
 
 
 def shader(stage=1, constants=0):
@@ -18,6 +18,8 @@ def shader(stage=1, constants=0):
     if stage != 5:
         struct.pack_into('<I', code, 0, 0x12345678)
         struct.pack_into('<I', code, 0x30, (1 if stage == 0 else 5) << 10)
+    else:
+        struct.pack_into('<3I', control, 0x748, 4, 2, 1)
     for off, value in [(0x700, len(code)), (0x704, len(code) + constants),
                        (0x708, 0 if stage == 5 else 0x30), (0x714, stage)]:
         struct.pack_into('<I', control, off, value)
@@ -39,6 +41,21 @@ class ShaderPreparationTests(unittest.TestCase):
     def test_compute_has_no_graphics_prefix(self):
         rows, _ = scan_segment(shader(5))
         self.assertEqual((rows[0]['stage'], len(rows[0]['code'])), ('cs', 0x100))
+        self.assertEqual(rows[0]['compute_workgroup'], [4, 2, 1])
+
+    def test_invalid_compute_workgroups_rejected(self):
+        for group in [(0, 1, 1), (1, 0, 1), (1, 1, 0), (65536, 1, 1), (32, 64, 1)]:
+            data = shader(5); struct.pack_into('<3I', data, 0x748, *group)
+            with self.assertRaises(ValueError): scan_segment(data)
+        self.assertEqual(compute_workgroup(shader(5)[:CONTROL_SIZE]), [4, 2, 1])
+
+    def test_compute_job_keeps_hashed_control_and_dimensions(self):
+        rows, rejected = scan_segment(shader(5))
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'out'
+            manifest = write_outputs(output, dict(file_sha256='test', build_id='test'), rows, rejected)
+            self.assertEqual(manifest['schema_version'], 2)
+            self.assertEqual((output / 'control' / (rows[0]['key'] + '.bin')).read_bytes(), shader(5)[:CONTROL_SIZE])
 
     def test_unknown_layout_is_rejected(self):
         data = shader(); struct.pack_into('<I', data, 16, 12)

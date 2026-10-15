@@ -23,6 +23,11 @@ int main(void) { @autoreleasepool {
             CHECK(nvn_refl_from_json(@{@"route":@"B", @"bindings":@[binding(kind, reg.intValue, 0)]}, &reflection, err, sizeof err));
     for (NSNumber *aid in @[@(-1), @(NVN_REFL_MAXB)])
         CHECK(nvn_refl_from_json(@{@"route":@"B", @"bindings":@[binding(@"tex_combined", 0, aid.intValue)]}, &reflection, err, sizeof err));
+    CHECK(!nvn_refl_from_json(@{@"route":@"B", @"stage":@"cs", @"bindings":@[], @"threadgroup_size":@[@32,@2,@1]}, &reflection, err, sizeof err));
+    CHECK(reflection.tg[0] == 32 && reflection.tg[1] == 2 && reflection.tg[2] == 1);
+    for (id group in @[[NSNull null], @[], @[@0,@1,@1], @[@1,@0,@1], @[@1,@1,@0], @[@65536,@1,@1], @[@1024,@2,@1], @[@(-1),@1,@1], @[@1.5,@1,@1], @[@"32",@1,@1]])
+        CHECK(nvn_refl_from_json(@{@"route":@"B", @"stage":@"cs", @"bindings":@[], @"threadgroup_size":group}, &reflection, err, sizeof err));
+    CHECK(nvn_refl_from_json(@{@"route":@"B", @"stage":@"cs", @"bindings":@[]}, &reflection, err, sizeof err));
     puts("NVN COMBINED REFLECTION OK: independent slots, sampler source, upper bound, invalid arguments");
     return 0;
 } }

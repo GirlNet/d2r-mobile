@@ -8,8 +8,10 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import struct
 import sys
 from nvn_handle_layout import decode_handle
+from prepare_p5r_shaders import CONTROL_SIZE, HEADER_FIELDS, STAGES, compute_workgroup, word
 
 
 MSL_OPTIONS = ['--msl', '--msl-version', '20300', '--msl-argument-buffers',
@@ -30,8 +32,8 @@ def save_json(path, value):
 def load_jobs(preparation):
     manifest = read_json(preparation / 'shader-preparation.json')
     jobs = read_json(preparation / 'diagnostic-jobs.json')
-    if manifest.get('schema_version') != 1 or manifest.get('translation_ready') is not False:
-        raise ValueError('Expected a diagnostic extraction manifest, not runtime assets')
+    if manifest.get('schema_version') != 2 or manifest.get('translation_ready') is not False:
+        raise ValueError('Expected diagnostic extraction schema 2; rerun prepare_p5r_shaders.py')
     records = {}
     for row in manifest['shaders']:
         key = row['key']
@@ -48,6 +50,16 @@ def load_jobs(preparation):
         if key not in records or key in unique:
             raise ValueError('Unknown or duplicate diagnostic job')
         row = records[key]
+        control_path = (preparation / 'control' / (key + '.bin')).resolve()
+        if not control_path.is_relative_to(preparation):
+            raise ValueError('Control must stay within the extraction directory')
+        control = control_path.read_bytes()
+        if len(control) != CONTROL_SIZE or hashlib.sha256(control).hexdigest() != row['control_sha256']:
+            raise ValueError(f'Control digest mismatch: {key}')
+        if (row['control_sha256'][:16] != key or word(control, 0) != 0x98761234
+                or any(word(control, off) != value for off, value in HEADER_FIELDS.items())
+                or STAGES.get(word(control, 0x714)) != job['stage']):
+            raise ValueError(f'Control layout or stage mismatch: {key}')
         code = Path(job['code']).resolve()
         if not code.is_relative_to(preparation) or code == preparation:
             raise ValueError('Code must stay within the extraction directory')
@@ -65,12 +77,38 @@ def load_jobs(preparation):
         if (job.get('diagnostic_only') is not True or job.get('resource_facts_verified') is not False
                 or job.get('debug') is not True or job.get('reduced') is not False):
             raise ValueError('Expected diagnostic jobs with strict floating point and AST optimization disabled')
-        if any(job.get(field) for field in ('tex', 'img', 'attr', 'fout', 'local', 'shared')):
+        if any(job.get(field) for field in ('tex', 'img', 'attr', 'fout', 'shared')):
             raise ValueError('This pipeline accepts extracted diagnostic defaults only')
+        expected_group = compute_workgroup(control) if job['stage'] == 'cs' else None
+        if job.get('local') != expected_group or row.get('compute_workgroup') != expected_group:
+            raise ValueError(f'Compute workgroup does not match the hashed control: {key}')
         unique[key] = dict(job, code=str(code))
     if unique.keys() != records.keys():
         raise ValueError('Manifest/job coverage mismatch')
     return manifest, list(unique.values())
+
+
+def spirv_compute_workgroup(path):
+    blob = path.read_bytes()
+    if len(blob) < 20 or len(blob) % 4 or blob[:4] != bytes.fromhex('03022307'):
+        raise ValueError('Invalid SPIR-V header')
+    words = struct.unpack('<' + 'I' * (len(blob) // 4), blob)
+    entries, modes = [], []
+    offset = 5
+    while offset < len(words):
+        size, opcode = words[offset] >> 16, words[offset] & 0xffff
+        if not size or offset + size > len(words):
+            raise ValueError('Invalid SPIR-V instruction size')
+        instruction = words[offset:offset + size]
+        if opcode == 15 and size >= 4 and instruction[1] == 5:
+            entries.append(instruction[2])
+        if opcode == 16 and size == 6 and instruction[2] == 17:
+            modes.append((instruction[1], list(instruction[3:6])))
+        offset += size
+    matching = [group for entry, group in modes if entry in entries]
+    if len(entries) != 1 or len(matching) != 1:
+        raise ValueError('Expected one compute entry point and literal LocalSize mode')
+    return matching[0]
 
 
 def run_command(command, log, timeout=120):
@@ -110,8 +148,10 @@ def audit_resources(job, resource):
                 constant_buffers=resource['cbufs'], storage_buffers=resource['sbufs'],
                 handles=handles, translator_notes=resource['notes'],
                 compute_configuration_verified=False if job['stage'] == 'cs' else None,
+                compute_workgroup=job.get('local'),
+                compute_workgroup_verified=bool(job.get('local')) if job['stage'] == 'cs' else None,
                 blockers=['P5R resource types, constant/storage-buffer slots and render state require independent evidence']
-                + (['Compute workgroup, local and shared memory use diagnostic defaults'] if job['stage'] == 'cs' else []))
+                + (['Compute local and shared memory remain unverified'] if job['stage'] == 'cs' else []))
 
 
 def compile_metal(msl, directory, sdk, xcrun='xcrun', runner=run_command):
@@ -176,6 +216,11 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                 row['completed'].append('translated')
                 runner([validator, '--target-env', 'vulkan1.2', binary], output / (key + '-validation.log'))
                 row['completed'].append('spirv_validated')
+                if job['stage'] == 'cs':
+                    row['spirv_compute_workgroup'] = spirv_compute_workgroup(binary)
+                    if row['spirv_compute_workgroup'] != job['local']:
+                        raise ValueError('SPIR-V LocalSize does not match the extracted control')
+                    row['completed'].append('compute_workgroup_validated')
                 msl = msl_dir / (key + '.metal')
                 runner([cross, binary, *MSL_OPTIONS, '--output', msl], output / (key + '-msl.log'))
                 if not msl.is_file() or not msl.stat().st_size:
