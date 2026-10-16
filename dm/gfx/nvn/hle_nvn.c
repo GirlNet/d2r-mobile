@@ -122,33 +122,67 @@ HLE_FORCE("nvnBootstrapLoader", "NVN 图形接口整块换成宿主空设备（�
 // ---------- Device ----------
 NVN(nvnDeviceBuilderSetDefaults, void, NVNdeviceBuilder *b) { memset(b, 0, sizeof(dev_builder_t)); }
 NVN(nvnDeviceBuilderSetFlags, void, NVNdeviceBuilder *b, int f) { ((dev_builder_t *)b)->flags = f; }
+static pthread_mutex_t g_fast_clear_lock = PTHREAD_MUTEX_INITIALIZER;
 NVN(nvnDeviceInitialize, NVNboolean, NVNdevice *d, const NVNdeviceBuilder *b) {
+    if (!d || !b) return 0;
+    pthread_mutex_lock(&g_fast_clear_lock);
     dev_t_ *o = (dev_t_ *)d; memset(o, 0, sizeof *o);
     o->magic = MAGIC('D', 'E', 'V', 0); o->flags = ((const dev_builder_t *)b)->flags;
+    pthread_mutex_unlock(&g_fast_clear_lock);
     OLOG("DeviceInitialize %p flags=%#x", (void *)d, o->flags);
     return 1;
 }
-// Metal 后端没有 NVN 的快速清除注册表：显式返回未注册，保留普通 Clear 命令的路径。
-// 这些调用不创建 GPU 对象、不提交工作，也不修改设备或输入颜色；不能伪报注册成功。
-// The Metal backend has no NVN fast-clear registration table: explicitly decline registration and retain ordinary Clear commands.
-// These calls create no GPU objects, submit no work and change neither the device nor input colors; never report a successful registration.
-static NVNboolean fast_clear_unavailable(const char *name) {
-    if (dm_boot_probe_active()) dm_boot_probe_note("nvn_fast_clear_unavailable", name);
-    return 0;
+// 注册成功必须有设备内的真实记录；重复项复用，满表或无效输入不修改原记录。
+// 按颜色类型和格式保留原始位；深度仅接受有限的 [0,1] 值。全局锁保护多线程注册与设备重建。
+// Successful registration requires a real per-device record; reuse duplicates and preserve records on full tables or invalid input.
+// Retain raw color bits by argument type and format; depth accepts finite [0,1] values only. A global lock protects registration and device rebuilds.
+static NVNboolean fast_clear_result(const char *name, int ok) {
+    if (dm_boot_probe_active()) dm_boot_probe_note(ok ? "nvn_fast_clear_registered" : "nvn_fast_clear_rejected", name);
+    return ok;
+}
+static int fast_clear_color(NVNdevice *d, const void *color, NVNformat format, uint32_t kind) {
+    int bw, bh;
+    if (!d || !color || !nvn_fmt_bpb(format, &bw, &bh) || bw != 1 || bh != 1 ||
+        (format >= NVN_FORMAT_STENCIL8 && format <= NVN_FORMAT_DEPTH32F_STENCIL8)) return 0;
+    fast_clear_color_t entry = {.kind=kind, .format=(uint32_t)format}; memcpy(entry.bits, color, sizeof entry.bits);
+    pthread_mutex_lock(&g_fast_clear_lock);
+    dev_t_ *o = (dev_t_ *)d; fast_clear_t *f = &o->fast_clear; int ok = 0;
+    if (o->magic == MAGIC('D', 'E', 'V', 0) && f->color_count <= NVN_FAST_CLEAR_COLOR_CAP) {
+        for (uint32_t i=0; i<f->color_count; i++)
+            if (!memcmp(&f->colors[i], &entry, sizeof entry)) { ok=1; break; }
+        if (!ok && f->color_count < NVN_FAST_CLEAR_COLOR_CAP) { f->colors[f->color_count++]=entry; ok=1; }
+    }
+    pthread_mutex_unlock(&g_fast_clear_lock);
+    return ok;
 }
 NVN(nvnDeviceRegisterFastClearColor, NVNboolean, NVNdevice *d, const float *color, NVNformat format) {
-    (void)d; (void)color; (void)format; return fast_clear_unavailable("nvnDeviceRegisterFastClearColor");
+    return fast_clear_result("nvnDeviceRegisterFastClearColor", fast_clear_color(d, color, format, 0));
 }
 NVN(nvnDeviceRegisterFastClearColori, NVNboolean, NVNdevice *d, const int *color, NVNformat format) {
-    (void)d; (void)color; (void)format; return fast_clear_unavailable("nvnDeviceRegisterFastClearColori");
+    _Static_assert(sizeof(int) == 4, "NVN signed color ABI");
+    return fast_clear_result("nvnDeviceRegisterFastClearColori", fast_clear_color(d, color, format, 1));
 }
 NVN(nvnDeviceRegisterFastClearColorui, NVNboolean, NVNdevice *d, const uint32_t *color, NVNformat format) {
-    (void)d; (void)color; (void)format; return fast_clear_unavailable("nvnDeviceRegisterFastClearColorui");
+    return fast_clear_result("nvnDeviceRegisterFastClearColorui", fast_clear_color(d, color, format, 2));
 }
 NVN(nvnDeviceRegisterFastClearDepth, NVNboolean, NVNdevice *d, float depth) {
-    (void)d; (void)depth; return fast_clear_unavailable("nvnDeviceRegisterFastClearDepth");
+    int ok = 0;
+    if (d && depth >= 0.0f && depth <= 1.0f) {
+        uint32_t bits; memcpy(&bits, &depth, sizeof bits);
+        pthread_mutex_lock(&g_fast_clear_lock);
+        dev_t_ *o = (dev_t_ *)d; fast_clear_t *f = &o->fast_clear;
+        if (o->magic == MAGIC('D', 'E', 'V', 0) && f->depth_count <= NVN_FAST_CLEAR_DEPTH_CAP) {
+            for (uint32_t i=0; i<f->depth_count; i++) if (f->depths[i] == bits) { ok=1; break; }
+            if (!ok && f->depth_count < NVN_FAST_CLEAR_DEPTH_CAP) { f->depths[f->depth_count++]=bits; ok=1; }
+        }
+        pthread_mutex_unlock(&g_fast_clear_lock);
+    }
+    return fast_clear_result("nvnDeviceRegisterFastClearDepth", ok);
 }
-NVN(nvnDeviceFinalize, void, NVNdevice *d) { ((dev_t_ *)d)->magic = 0; }
+NVN(nvnDeviceFinalize, void, NVNdevice *d) {
+    if (!d) return;
+    pthread_mutex_lock(&g_fast_clear_lock); memset(d, 0, sizeof(dev_t_)); pthread_mutex_unlock(&g_fast_clear_lock);
+}
 NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const char *name) {
     (void)d; return (PFNNVNGENERICFUNCPTRPROC)nvn_lookup(name);
 }

@@ -14,7 +14,22 @@
 #define FITS(T, H) _Static_assert(sizeof(T) <= sizeof(H), #T " 超出 " #H " 的保留大小")
 
 typedef struct { uint32_t flags; } dev_builder_t;                       FITS(dev_builder_t, NVNdeviceBuilder);
-typedef struct { uint32_t magic, flags, origin, depth_mode; void *dbg_cb, *dbg_data; } dev_t_;  FITS(dev_t_, NVNdevice);
+// 宿主清除登记只保存原始位、格式与参数类型；容量是宿主策略，不代表 Tegra 压缩硬件。
+// 清除命令仍自带数值，Metal 使用现有普通清除路径，不依赖此表生成 GPU 工作。
+// Host clear registration stores raw bits, format and argument type; capacity is host policy, not Tegra compression hardware.
+// Clear commands still carry their values and Metal uses the existing ordinary clear path; this table creates no GPU work.
+enum { NVN_FAST_CLEAR_COLOR_CAP = 64, NVN_FAST_CLEAR_DEPTH_CAP = 16 };
+typedef struct { uint32_t kind, format, bits[4]; } fast_clear_color_t;
+typedef struct {
+    uint32_t color_count, depth_count;
+    fast_clear_color_t colors[NVN_FAST_CLEAR_COLOR_CAP];
+    uint32_t depths[NVN_FAST_CLEAR_DEPTH_CAP];
+} fast_clear_t;
+typedef struct {
+    uint32_t magic, flags, origin, depth_mode; void *dbg_cb, *dbg_data;
+    fast_clear_t fast_clear;
+} dev_t_;
+FITS(dev_t_, NVNdevice);
 
 typedef struct { NVNdevice *dev; uint32_t flags; uint64_t cmd_sz, comp_sz, ctl_sz, flush; void *mem; uint64_t mem_sz; } queue_builder_t;
 FITS(queue_builder_t, NVNqueueBuilder);

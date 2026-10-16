@@ -51,6 +51,85 @@ static size_t tex_size(int fmt, int w, int h, int flags, size_t *align) {
     return P(nvnTextureBuilderGetStorageSize)(&tb);
 }
 
+// 注册表的生命周期、边界与并发检查；全部通过生产取址接口和跳板，不创建 GPU。
+// Check registry lifecycle, bounds and concurrency through production lookup and thunks, without creating a GPU.
+static _Atomic unsigned g_clear_errors;
+static void *clear_register_thread(void *arg) {
+    NVNdevice *d=arg; const float color[4]={0,0,0,0};
+    for (int i=0;i<1000;i++) {
+        if (!P(nvnDeviceRegisterFastClearColor)(d,color,NVN_FORMAT_RGBA8)) atomic_fetch_add(&g_clear_errors,1);
+        if (!P(nvnDeviceRegisterFastClearDepth)(d,1.0f)) atomic_fetch_add(&g_clear_errors,1);
+    }
+    return NULL;
+}
+static void test_fast_clear_registry(const NVNdeviceBuilder *db) {
+    struct { uint64_t before; NVNdevice device; uint64_t after; } guarded={.before=0x11223344,.after=0x55667788};
+    NVNdevice *d=&guarded.device, other={0}; const float zero[4]={0,0,0,0};
+    EXPECT("未初始化设备拒绝 / reject uninitialized device",0,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA8));
+    EXPECT("独立设备初始化 / initialize separate device",1,P(nvnDeviceInitialize)(d,db));
+    fast_clear_t *f=&((dev_t_ *)d)->fast_clear;
+    EXPECT("初始化清空注册 / initialized registry empty",0,f->color_count+f->depth_count);
+    EXPECT("游戏使用的零色注册 / guest zero color registration",1,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA8));
+    EXPECT("游戏使用的深度一注册 / guest depth one registration",1,P(nvnDeviceRegisterFastClearDepth)(d,1.0f));
+    EXPECT("重复颜色成功 / duplicate color succeeds",1,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA8));
+    EXPECT("重复深度成功 / duplicate depth succeeds",1,P(nvnDeviceRegisterFastClearDepth)(d,1.0f));
+    EXPECT("重复项不增加记录 / duplicates reuse entries",1,f->color_count==1 && f->depth_count==1);
+    EXPECT("不同格式另记 / distinct format entry",1,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA8_SRGB));
+    const uint32_t izero[4]={0,0,0,0};
+    EXPECT("相同位的不同类型另记 / distinct argument type entry",1,P(nvnDeviceRegisterFastClearColorui)(d,izero,NVN_FORMAT_RGBA8));
+    EXPECT("格式和类型键隔离 / format and type keys isolated",3,f->color_count);
+    NVNdevice snapshot=*d;
+    EXPECT("空设备拒绝 / reject null device",0,P(nvnDeviceRegisterFastClearColor)(NULL,zero,NVN_FORMAT_RGBA8));
+    EXPECT("空颜色拒绝 / reject null color",0,P(nvnDeviceRegisterFastClearColor)(d,NULL,NVN_FORMAT_RGBA8));
+    EXPECT("无格式拒绝 / reject absent format",0,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_NONE));
+    EXPECT("未知格式拒绝 / reject unknown format",0,P(nvnDeviceRegisterFastClearColor)(d,zero,(NVNformat)0x7fffffff));
+    EXPECT("深度格式不作颜色 / reject depth color format",0,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_DEPTH32F));
+    EXPECT("块压缩颜色拒绝 / reject block-compressed color",0,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA_DXT1));
+    EXPECT("负深度拒绝 / reject negative depth",0,P(nvnDeviceRegisterFastClearDepth)(d,-0.1f));
+    EXPECT("过大深度拒绝 / reject depth above one",0,P(nvnDeviceRegisterFastClearDepth)(d,1.1f));
+    uint32_t nanbits=0x7fc00000;float nan;memcpy(&nan,&nanbits,4);
+    EXPECT("NaN 深度拒绝 / reject NaN depth",0,P(nvnDeviceRegisterFastClearDepth)(d,nan));
+    EXPECT("无效输入不改变记录 / invalid inputs preserve registry",0,memcmp(&snapshot,d,sizeof snapshot));
+    P(nvnDeviceInitialize)(d,db);
+    int all=1;
+    for (int i=0;i<64;i++) { float c[4]={(float)i,0,0,1}; all &= P(nvnDeviceRegisterFastClearColor)(d,c,NVN_FORMAT_RGBA8)!=0; }
+    EXPECT("64 个不同颜色成功 / 64 distinct colors",1,all && f->color_count==64);
+    snapshot=*d; const float extra[4]={1000,0,0,1};
+    EXPECT("颜色满表拒绝 / full color table rejects new entry",0,P(nvnDeviceRegisterFastClearColor)(d,extra,NVN_FORMAT_RGBA8));
+    EXPECT("满表无副作用 / full table unchanged",0,memcmp(&snapshot,d,sizeof snapshot));
+    const float first[4]={0,0,0,1};
+    EXPECT("颜色满表仍复用 / reuse duplicate in full color table",1,P(nvnDeviceRegisterFastClearColor)(d,first,NVN_FORMAT_RGBA8));
+    all=1;for (int i=0;i<16;i++) all &= P(nvnDeviceRegisterFastClearDepth)(d,(float)i/32)!=0;
+    EXPECT("16 个不同深度成功 / 16 distinct depths",1,all && f->depth_count==16);
+    snapshot=*d;
+    EXPECT("深度满表拒绝 / full depth table rejects new entry",0,P(nvnDeviceRegisterFastClearDepth)(d,1.0f));
+    EXPECT("深度满表仍复用 / reuse duplicate in full depth table",1,P(nvnDeviceRegisterFastClearDepth)(d,0.0f));
+    EXPECT("深度满表无副作用 / full depth table unchanged",0,memcmp(&snapshot,d,sizeof snapshot));
+    P(nvnDeviceInitialize)(&other,db);
+    EXPECT("设备间隔离 / device isolation",0,((dev_t_ *)&other)->fast_clear.color_count+((dev_t_ *)&other)->fast_clear.depth_count);
+    P(nvnDeviceFinalize)(d);
+    EXPECT("销毁释放记录 / finalize clears registrations",0,((dev_t_ *)d)->magic+f->color_count+f->depth_count);
+    EXPECT("销毁设备拒绝注册 / finalized device rejects registration",0,P(nvnDeviceRegisterFastClearDepth)(d,1.0f));
+    P(nvnDeviceInitialize)(d,db);
+    EXPECT("重建设备清空 / rebuilt device empty",0,f->color_count+f->depth_count);
+    pthread_t th[8];int started=0;for (;started<8;started++) if (pthread_create(&th[started],NULL,clear_register_thread,d)) break;
+    for (int i=0;i<started;i++) pthread_join(th[i],NULL);
+    EXPECT("八线程注册无失败 / eight-thread registration succeeds",1,started==8 && atomic_load(&g_clear_errors)==0);
+    EXPECT("并发重复项唯一 / concurrent duplicate entries unique",1,f->color_count==1 && f->depth_count==1);
+    EXPECT("设备对象前后边界 / device object bounds",1,guarded.before==0x11223344 && guarded.after==0x55667788);
+    // 注册不替换清除载荷；录制时复制颜色，调用方之后修改不会污染命令。
+    // Registration does not replace clear payloads; recording copies colors so later caller mutations cannot corrupt commands.
+    NVNcommandBuffer cb;uint8_t bytes[256] __attribute__((aligned(8)));float c[4]={0.25f,0.5f,0.75f,1};
+    P(nvnCommandBufferInitialize)(&cb,d);CB(&cb)->cur=bytes;CB(&cb)->end=bytes+sizeof bytes;
+    P(nvnCommandBufferBeginRecording)(&cb);P(nvnCommandBufferClearColor)(&cb,0,c,15);P(nvnCommandBufferClearDepthStencil)(&cb,1.0f,1,0,0);
+    NVNcommandHandle h=P(nvnCommandBufferEndRecording)(&cb);c[0]=100;
+    op_hdr header;memcpy(&header,bytes+8,8);const p_clear_color *pc=(const p_clear_color *)(bytes+16);
+    EXPECT("普通清色载荷不变 / ordinary clear color payload intact",1,h==(NVNcommandHandle)bytes && header.op==OP_CLEAR_COLOR && pc->index==0 && pc->mask==15 && pc->rgba[0]==0.25f && pc->rgba[3]==1);
+    const uint8_t *next=bytes+8+header.size;memcpy(&header,next,8);const p_clear_ds *pd=(const p_clear_ds *)(next+8);
+    EXPECT("普通清深度载荷不变 / ordinary depth clear payload intact",1,header.op==OP_CLEAR_DS && pd->depth==1.0f && pd->depth_mask==1);
+    P(nvnDeviceFinalize)(d);P(nvnDeviceFinalize)(&other);
+}
+
 int main(int argc, char **argv) {
     crash_install();   // 生产同一套 SIGSEGV / SIGBUS 处理（缺页钩子在其中分发） | the same SIGSEGV / SIGBUS handling as production (the page-fault hook is dispatched from within it)
     // 1. 引导取址：bootstrap 取 GetProcAddress，再用它取全部名字
@@ -77,13 +156,22 @@ int main(int argc, char **argv) {
     const float fc[4] = {0.0f, 0.25f, 1.0f, -1.0f};
     const int ic[4] = {-1, 0, 1, INT32_MAX};
     const uint32_t uc[4] = {0, 1, UINT32_MAX, 0x80000000u};
-    EXPECT("快速清除浮点注册不可用 / float registration unavailable", 0, P(nvnDeviceRegisterFastClearColor)(&dev, fc, NVN_FORMAT_RGBA8));
-    EXPECT("快速清除有符号注册不可用 / int registration unavailable", 0, P(nvnDeviceRegisterFastClearColori)(&dev, ic, NVN_FORMAT_RGBA8));
-    EXPECT("快速清除无符号注册不可用 / uint registration unavailable", 0, P(nvnDeviceRegisterFastClearColorui)(&dev, uc, NVN_FORMAT_RGBA8));
-    EXPECT("快速清除深度注册不可用 / depth registration unavailable", 0, P(nvnDeviceRegisterFastClearDepth)(&dev, 0.5f));
-    EXPECT("注册不改变设备 / device unchanged", 0, memcmp(&dev, &snapshot, sizeof dev));
+    EXPECT("快速清除浮点注册 / float registration", 1, P(nvnDeviceRegisterFastClearColor)(&dev, fc, NVN_FORMAT_RGBA8));
+    EXPECT("快速清除有符号注册 / int registration", 1, P(nvnDeviceRegisterFastClearColori)(&dev, ic, NVN_FORMAT_RGBA8I));
+    EXPECT("快速清除无符号注册 / uint registration", 1, P(nvnDeviceRegisterFastClearColorui)(&dev, uc, NVN_FORMAT_RGBA8UI));
+    EXPECT("快速清除深度注册 / depth registration", 1, P(nvnDeviceRegisterFastClearDepth)(&dev, 0.5f));
+    EXPECT("设备原字段不变 / existing device fields unchanged", 0, memcmp(&dev, &snapshot, offsetof(dev_t_,fast_clear)));
     EXPECT("已有跳板计数保留 / original thunk counter", 1, atomic_load(&nvn_slot[17].cnt));
     EXPECT("已有名字序号保留 / original name index", 0, strcmp(nvn_names[17], "nvnDeviceRegisterFastClearColor"));
+    const fast_clear_t *f = &((dev_t_ *)&dev)->fast_clear;
+    EXPECT("颜色计数 / color count", 3, f->color_count);
+    EXPECT("深度计数 / depth count", 1, f->depth_count);
+    EXPECT("浮点原始位 / raw float bits", 0, memcmp(f->colors[0].bits,fc,16));
+    EXPECT("有符号原始位 / raw signed bits", 0, memcmp(f->colors[1].bits,ic,16));
+    EXPECT("无符号原始位 / raw unsigned bits", 0, memcmp(f->colors[2].bits,uc,16));
+    EXPECT("参数类型与格式 / argument kind and format", 1, f->colors[0].kind==0 && f->colors[1].kind==1 && f->colors[2].kind==2 && f->colors[0].format==NVN_FORMAT_RGBA8 && f->colors[1].format==NVN_FORMAT_RGBA8I && f->colors[2].format==NVN_FORMAT_RGBA8UI);
+    EXPECT("深度原始位 / depth bits", 0x3f000000, f->depths[0]);
+    test_fast_clear_registry(&db);
     int named = 0;
     for (unsigned i = 523; i < NVN_NFUNC; i++) {
         named += nvn_slot[i].fn == (void *)nvn_unimpl_entry && (void *)gpa(&dev,nvn_names[i]) == nvn_thunk[i];
