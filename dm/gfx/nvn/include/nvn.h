@@ -1197,7 +1197,8 @@ typedef void (*PFNNVNMEMORYPOOLBUILDERSETDEVICEPROC)(NVNmemoryPoolBuilder*, NVNd
 typedef void (*PFNNVNMEMORYPOOLBUILDERSETDEFAULTSPROC)(NVNmemoryPoolBuilder*);
 typedef void (*PFNNVNMEMORYPOOLBUILDERSETSTORAGEPROC)(NVNmemoryPoolBuilder*, void*, size_t);
 typedef void (*PFNNVNMEMORYPOOLBUILDERSETFLAGSPROC)(NVNmemoryPoolBuilder*, int);
-typedef void (*PFNNVNMEMORYPOOLBUILDERGETMEMORYPROC)(const NVNmemoryPoolBuilder*);
+typedef NVNdevice* (*PFNNVNMEMORYPOOLBUILDERGETDEVICEPROC)(const NVNmemoryPoolBuilder*);
+typedef void* (*PFNNVNMEMORYPOOLBUILDERGETMEMORYPROC)(const NVNmemoryPoolBuilder*);
 typedef size_t (*PFNNVNMEMORYPOOLBUILDERGETSIZEPROC)(const NVNmemoryPoolBuilder*);
 typedef NVNmemoryPoolFlags (*PFNNVNMEMORYPOOLBUILDERGETFLAGSPROC)(const NVNmemoryPoolBuilder*);
 typedef NVNboolean (*PFNNVNMEMORYPOOLINITIALIZEPROC)(NVNmemoryPool*, const NVNmemoryPoolBuilder*);

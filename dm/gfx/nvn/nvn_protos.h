@@ -78,7 +78,8 @@ typedef void (*NVNT_nvnMemoryPoolBuilderSetDevice)(NVNmemoryPoolBuilder*, NVNdev
 typedef void (*NVNT_nvnMemoryPoolBuilderSetDefaults)(NVNmemoryPoolBuilder*);
 typedef void (*NVNT_nvnMemoryPoolBuilderSetStorage)(NVNmemoryPoolBuilder*, void*, size_t);
 typedef void (*NVNT_nvnMemoryPoolBuilderSetFlags)(NVNmemoryPoolBuilder*, int);
-typedef void (*NVNT_nvnMemoryPoolBuilderGetMemory)(const NVNmemoryPoolBuilder*);
+typedef NVNdevice* (*NVNT_nvnMemoryPoolBuilderGetDevice)(const NVNmemoryPoolBuilder*);
+typedef void* (*NVNT_nvnMemoryPoolBuilderGetMemory)(const NVNmemoryPoolBuilder*);
 typedef size_t (*NVNT_nvnMemoryPoolBuilderGetSize)(const NVNmemoryPoolBuilder*);
 typedef NVNmemoryPoolFlags (*NVNT_nvnMemoryPoolBuilderGetFlags)(const NVNmemoryPoolBuilder*);
 typedef NVNboolean (*NVNT_nvnMemoryPoolInitialize)(NVNmemoryPool*, const NVNmemoryPoolBuilder*);
@@ -504,7 +505,6 @@ typedef void (*NVNT_nvnCommandBufferSignalEvent)(NVNcommandBuffer*, const NVNeve
 //   nvnWindowGetNumTextures
 //   nvnProgramSetShadersExt
 //   nvnProgramSetSampleShading
-//   nvnMemoryPoolBuilderGetDevice
 //   nvnTextureBuilderGetDevice
 //   nvnTextureBuilderGetPackagedTextureLayout
 //   nvnTextureBuilderGetRawStorageClass
@@ -550,7 +550,6 @@ typedef void (*NVNT_nvnCommandBufferSignalEvent)(NVNcommandBuffer*, const NVNeve
 //   nvnWindowGetNumTextures
 //   nvnProgramSetShadersExt
 //   nvnProgramSetSampleShading
-//   nvnMemoryPoolBuilderGetDevice
 //   nvnTextureBuilderGetDevice
 //   nvnTextureBuilderGetPackagedTextureLayout
 //   nvnTextureBuilderGetRawStorageClass

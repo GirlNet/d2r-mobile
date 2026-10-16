@@ -197,11 +197,72 @@ static void test_buffers(void) {
     P(nvnBufferFinalize)(v);P(nvnBufferFinalize)(&alias);
 }
 
+// 查询用两种手机已观察到的标志和合成池，检查指针返回、64 位长度与访问权限。
+// Query synthetic pools with both flag combinations observed in phone reports; check pointer returns, 64-bit sizes and access permissions.
+static void test_pool_accessors(void) {
+    uint8_t bytes[256];memset(bytes,0x35,sizeof bytes);
+    struct { uint64_t before; NVNmemoryPoolBuilder b; uint64_t after; } builder={.before=0x11223344,.after=0x55667788};
+    NVNmemoryPoolBuilder *b=&builder.b;
+    P(nvnMemoryPoolBuilderSetDevice)(b,&dev);P(nvnMemoryPoolBuilderSetStorage)(b,bytes,sizeof bytes);P(nvnMemoryPoolBuilderSetFlags)(b,0xa1);P(nvnMemoryPoolBuilderSetDefaults)(b);
+    EXPECT("池默认值保留设备 / pool defaults preserve device",(uintptr_t)&dev,(uintptr_t)P(nvnMemoryPoolBuilderGetDevice)(b));
+    EXPECT("池默认值清空存储 / pool defaults clear storage",0,(uintptr_t)P(nvnMemoryPoolBuilderGetMemory)(b));
+    EXPECT("池默认值清空长度标志 / pool defaults clear size and flags",0,P(nvnMemoryPoolBuilderGetSize)(b)+P(nvnMemoryPoolBuilderGetFlags)(b));
+    P(nvnMemoryPoolBuilderSetStorage)(b,bytes,sizeof bytes);P(nvnMemoryPoolBuilderSetFlags)(b,0x22);
+    EXPECT("池存储指针返回 ABI / pool memory pointer return ABI",(uintptr_t)bytes,(uintptr_t)P(nvnMemoryPoolBuilderGetMemory)(b));
+    EXPECT("池构建长度 / pool builder size",256,P(nvnMemoryPoolBuilderGetSize)(b));
+    EXPECT("CPU 池构建标志 / CPU pool builder flags",0x22,P(nvnMemoryPoolBuilderGetFlags)(b));
+    NVNmemoryPool pool={0};pool_t *p=(pool_t *)&pool;
+    *p=(pool_t){.magic=MAGIC('P','O','O','L'),.flags=0x22,.mem=bytes,.size=256};NVNmemoryPool saved=pool;
+    EXPECT("CPU 池原始标志 / exact CPU pool flags",0x22,P(nvnMemoryPoolGetFlags)(&pool));
+    EXPECT("池实际长度 / actual pool size",256,P(nvnMemoryPoolGetSize)(&pool));
+    EXPECT("CPU 池映射 / CPU pool map",(uintptr_t)bytes,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    EXPECT("CPU 池缓冲地址 / CPU pool buffer address",(uintptr_t)bytes,P(nvnMemoryPoolGetBufferAddress)(&pool));
+    memset(P(nvnMemoryPoolMap)(&pool),0x71,sizeof bytes);
+    P(nvnMemoryPoolFlushMappedRange)(&pool,0,256);P(nvnMemoryPoolInvalidateMappedRange)(&pool,256,0);P(nvnMemoryPoolSetDebugLabel)(&pool,"synthetic-pool");
+    EXPECT("共享池映射写入 / shared pool map writes",1,bytes[0]==0x71 && bytes[255]==0x71);
+    EXPECT("池查询刷新不改对象 / pool queries and flush preserve object",0,memcmp(&saved,&pool,sizeof pool));
+    p->flags=0xa1;
+    EXPECT("GPU 池原始标志 / exact GPU pool flags",0xa1,P(nvnMemoryPoolGetFlags)(&pool));
+    EXPECT("禁止 CPU 池不映射 / CPU-inaccessible pool does not map",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    EXPECT("GPU 池保留实际地址 / GPU pool retains actual address",(uintptr_t)bytes,P(nvnMemoryPoolGetBufferAddress)(&pool));
+    p->flags=NVN_MEMORY_POOL_FLAGS_CPU_CACHED|NVN_MEMORY_POOL_FLAGS_GPU_CACHED;
+    EXPECT("CPU 缓存池也映射 / cached CPU pool maps",(uintptr_t)bytes,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    p->flags|=NVN_MEMORY_POOL_FLAGS_VIRTUAL;EXPECT("虚拟池不直接映射 / virtual pool does not map directly",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    p->flags=NVN_MEMORY_POOL_FLAGS_PHYSICAL;EXPECT("物理池不直接映射 / physical pool does not map directly",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    p->flags=0x2000022;EXPECT("标志位原样返回 / flag bits preserved",0x2000022,P(nvnMemoryPoolGetFlags)(&pool));
+    p->size=UINT64_C(0x100000011);EXPECT("池长度不截断 / pool size not truncated",UINT64_C(0x100000011),P(nvnMemoryPoolGetSize)(&pool));
+    P(nvnMemoryPoolBuilderSetStorage)(b,bytes,UINT64_C(0x100000011));EXPECT("构建长度不截断 / builder size not truncated",UINT64_C(0x100000011),P(nvnMemoryPoolBuilderGetSize)(b));
+    *p=*(pool_t *)&saved;p->mem=NULL;EXPECT("无存储映射为空 / absent backing maps null",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    P(nvnMemoryPoolFinalize)(&pool);
+    EXPECT("销毁后查询标志为零 / finalized flags zero",0,P(nvnMemoryPoolGetFlags)(&pool));
+    EXPECT("销毁后查询长度为零 / finalized size zero",0,P(nvnMemoryPoolGetSize)(&pool));
+    EXPECT("销毁后池不映射 / finalized pool map null",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    EXPECT("销毁后池地址为零 / finalized pool address zero",0,P(nvnMemoryPoolGetBufferAddress)(&pool));
+    EXPECT("空池查询 / null pool queries",0,P(nvnMemoryPoolGetFlags)(NULL)+P(nvnMemoryPoolGetSize)(NULL)+P(nvnMemoryPoolGetBufferAddress)(NULL)+(uintptr_t)P(nvnMemoryPoolMap)(NULL));
+    EXPECT("空池构建器查询 / null pool builder queries",0,(uintptr_t)P(nvnMemoryPoolBuilderGetDevice)(NULL)+(uintptr_t)P(nvnMemoryPoolBuilderGetMemory)(NULL)+P(nvnMemoryPoolBuilderGetSize)(NULL)+P(nvnMemoryPoolBuilderGetFlags)(NULL));
+    EXPECT("池构建器边界 / pool builder bounds",1,builder.before==0x11223344 && builder.after==0x55667788);
+}
+
 #ifdef DM_P5R_ONLY
 // 实际后端设置结束后线程必须留在生产停止边界；启用 UDC 开关也不能越过该边界。
 // After real backend setup the thread must remain at the production stop boundary, even with the UDC self-test switch enabled.
 static _Atomic int setupEscaped, setupContinued;
-static void *realSetup(void *preSubmit) { mtl_init(); if (preSubmit) { atomic_store(&setupContinued,1); mtl_drain(); } atomic_store(&setupEscaped,1); return NULL; }
+static void *realSetup(void *preSubmit) {
+    mtl_init();
+    if (preSubmit) {
+        // 使用真实池注册路径检查 CPU 设置仍可继续，随后由实际提交门停止。
+        // Check continued CPU setup through real pool registration, then stop at the actual submission gate.
+        static uint8_t bytes[16384] __attribute__((aligned(16384)));
+        NVNdeviceBuilder db={0};NVNdevice device;NVNmemoryPoolBuilder builder={0};NVNmemoryPool pool;
+        h_nvnDeviceBuilderSetDefaults(&db);if (!h_nvnDeviceInitialize(&device,&db)) return NULL;
+        h_nvnMemoryPoolBuilderSetDevice(&builder,&device);h_nvnMemoryPoolBuilderSetDefaults(&builder);
+        h_nvnMemoryPoolBuilderSetStorage(&builder,bytes,sizeof bytes);h_nvnMemoryPoolBuilderSetFlags(&builder,0x22);
+        if (!h_nvnMemoryPoolInitialize(&pool,&builder) || h_nvnMemoryPoolGetFlags(&pool)!=0x22 || h_nvnMemoryPoolGetSize(&pool)!=sizeof bytes || h_nvnMemoryPoolMap(&pool)!=bytes) return NULL;
+        h_nvnMemoryPoolFlushMappedRange(&pool,0,sizeof bytes);h_nvnMemoryPoolInvalidateMappedRange(&pool,sizeof bytes,0);
+        atomic_store(&setupContinued,1); mtl_drain();
+    }
+    atomic_store(&setupEscaped,1); return NULL;
+}
 static int realSetupProbe(const char *directory, int preSubmit) {
     if (!(preSubmit ? dm_boot_probe_begin_pre_submit(directory) : dm_boot_probe_begin_gpu_setup(directory)) || !dm_boot_probe_checkpoint("nnMain",0)) return 1;
     setenv("DM_UDC_SELFTEST","1",1);
@@ -267,6 +328,7 @@ int main(int argc, char **argv) {
     EXPECT("深度原始位 / depth bits", 0x3f000000, f->depths[0]);
     test_fast_clear_registry(&db);
     test_buffers();
+    test_pool_accessors();
     int named = 0;
     for (unsigned i = 523; i < NVN_NFUNC; i++) {
         named += nvn_slot[i].fn == (void *)nvn_unimpl_entry && (void *)gpa(&dev,nvn_names[i]) == nvn_thunk[i];

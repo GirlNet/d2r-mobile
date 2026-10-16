@@ -233,10 +233,18 @@ NVN(nvnDeviceFinalizeCommandHandle, void, NVNdevice *d, NVNcommandHandle h) { (v
 
 // ---------- 内存池 ----------
 // ---------- Memory pools ----------
-NVN(nvnMemoryPoolBuilderSetDefaults, void, NVNmemoryPoolBuilder *b) { memset(b, 0, sizeof(pool_builder_t)); }
+NVN(nvnMemoryPoolBuilderSetDefaults, void, NVNmemoryPoolBuilder *b) {
+    if (!b) return;
+    pool_builder_t *o=(pool_builder_t *)b;
+    memset((uint8_t *)o+sizeof o->dev,0,sizeof *o-sizeof o->dev);
+}
 NVN(nvnMemoryPoolBuilderSetDevice, void, NVNmemoryPoolBuilder *b, NVNdevice *d) { ((pool_builder_t *)b)->dev = d; }
 NVN(nvnMemoryPoolBuilderSetStorage, void, NVNmemoryPoolBuilder *b, void *m, size_t n) { ((pool_builder_t *)b)->mem = m; ((pool_builder_t *)b)->size = n; }
 NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool_builder_t *)b)->flags = f; }
+NVN(nvnMemoryPoolBuilderGetDevice, NVNdevice *, const NVNmemoryPoolBuilder *b) { return b ? ((const pool_builder_t *)b)->dev : NULL; }
+NVN(nvnMemoryPoolBuilderGetMemory, void *, const NVNmemoryPoolBuilder *b) { return b ? ((const pool_builder_t *)b)->mem : NULL; }
+NVN(nvnMemoryPoolBuilderGetSize, size_t, const NVNmemoryPoolBuilder *b) { return b ? ((const pool_builder_t *)b)->size : 0; }
+NVN(nvnMemoryPoolBuilderGetFlags, NVNmemoryPoolFlags, const NVNmemoryPoolBuilder *b) { return b ? (NVNmemoryPoolFlags)((const pool_builder_t *)b)->flags : 0; }
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
     const pool_builder_t *s = (const pool_builder_t *)b; pool_t *o = (pool_t *)p;
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
@@ -247,8 +255,29 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     return 1;
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) { if (((pool_t *)p)->mem) { nvn_dirty_remove_range(((pool_t *)p)->mem); mtl_pool_del(((pool_t *)p)->mem); } ((pool_t *)p)->magic = 0; }
-NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { (void)p; (void)off; (void)n; }
-NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { return (NVNbufferAddress)((const pool_t *)p)->mem; }
+// 查询只读已保存的池字段；共享存储无需复制。刷新不代表等待 GPU 工作完成。
+// Queries only read retained pool fields; shared storage needs no copy. Flushing does not imply waiting for GPU completion.
+static const pool_t *pool_valid(const NVNmemoryPool *p) {
+    const pool_t *o=(const pool_t *)p; return o && o->magic==MAGIC('P','O','O','L') ? o : NULL;
+}
+NVN(nvnMemoryPoolGetSize, size_t, const NVNmemoryPool *p) { const pool_t *o=pool_valid(p); return o ? o->size : 0; }
+NVN(nvnMemoryPoolGetFlags, NVNmemoryPoolFlags, const NVNmemoryPool *p) {
+    const pool_t *o=pool_valid(p);
+    if (o && dm_boot_probe_active()) { char detail[128]; snprintf(detail,sizeof detail,"bytes=%llu flags=%#x",(unsigned long long)o->size,o->flags); dm_boot_probe_note("nvn_memory_pool_flags",detail); }
+    return o ? (NVNmemoryPoolFlags)o->flags : 0;
+}
+NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p) {
+    const pool_t *o=pool_valid(p);
+    return o && !(o->flags & (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) ? o->mem : NULL;
+}
+NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { const pool_t *o=pool_valid(p); return o ? (NVNbufferAddress)(uintptr_t)o->mem : 0; }
+static void pool_mapped_range(const NVNmemoryPool *p, ptrdiff_t off, size_t n) {
+    const pool_t *o=pool_valid(p);
+    if (!o || off<0 || (uint64_t)off>o->size || n>o->size-(uint64_t)off) dm_boot_probe_block("invalid_pool_range","pool flush/invalidate outside storage");
+}
+NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { pool_mapped_range(p,off,n); }
+NVN(nvnMemoryPoolInvalidateMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { pool_mapped_range(p,off,n); }
+NVN(nvnMemoryPoolSetDebugLabel, void, NVNmemoryPool *p, const char *label) { (void)p; (void)label; }
 
 // ---------- 缓冲：复用池的共享存储，按减法检查区间以避免溢出 ----------
 // ---------- Buffers: reuse shared pool storage and check ranges by subtraction to avoid overflow ----------
