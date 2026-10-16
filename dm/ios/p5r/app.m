@@ -153,6 +153,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     NSString *guest = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/Guest.framework/Guest"];
     if (![NSFileManager.defaultManager fileExistsAtPath:guest]) { self.gpuStatus.text = text("dmP5RBootMissing"); return; }
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    BOOL resourceDirectory=NO;
+    if (![NSFileManager.defaultManager fileExistsAtPath:[documents stringByAppendingPathComponent:@"romfs"] isDirectory:&resourceDirectory] || !resourceDirectory) {
+        self.gpuStatus.text = text("dmP5RStartupNeedsRomfs"); return;
+    }
     NSString *directory = [documents stringByAppendingPathComponent:[@"p5r-boot-probe-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     if (!dm_boot_probe_begin_startup(directory.fileSystemRepresentation)) { self.gpuStatus.text = text("dmP5RBootReportFailed"); return; }
     started = 1; self.probingBoot = YES; self.probeDirectory = directory;
