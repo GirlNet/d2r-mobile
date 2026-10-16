@@ -111,6 +111,11 @@ jobs:
           make -C dm/host/tests build/t_fs build/t_fs_case
           TMPDIR="$RUNNER_TEMP" dm/host/tests/build/t_fs
           TMPDIR="$RUNNER_TEMP" dm/host/tests/build/t_fs_case
+      - name: Check application environment and exit-request sections
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_oe
+          dm/host/tests/build/t_oe
       - name: Run synthetic compute on an available Metal device
         run: |
           set +e

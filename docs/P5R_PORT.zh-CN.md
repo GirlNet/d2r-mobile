@@ -24,6 +24,7 @@ English: [P5R_PORT.md](P5R_PORT.md)
 - 既有 fetch 特化证明仅有覆盖分离纹理槽的两字位图。组合槽现在会在索引位图前拒绝这项优化，继续使用普通纹理路径。C 测试覆盖位图两端和全部组合槽。
 - ELF 导入解析在检查客体和宿主定义后，将仍未定义的弱符号保持为零，让可选 SDK 回调继续使用空指针检查的缺省路径；缺失强符号仍分配诊断桩。合成测试直接运行真实重定位/解析代码，覆盖 ABS64、GLOB_DAT、JUMP_SLOT、已有提供者、加数，以及同名强弱引用。依据 [ELF gABI 符号规则](https://www.sco.com/developers/gabi/1998-04-29/ch4.symtab.html)。
 - 分配诊断包装函数按已装客体导出名解析 `StandardAllocator::Allocate`，并用原子缓存代替固定 SDK 地址。原样转发分配器对象、大小、对齐和返回值；缺失或递归入口会明确失败。原生合成测试覆盖并发首次调用和空返回，不替换为宿主分配器。
+- 退出请求处理临界区使用可选宿主接管，以互斥锁保护进程级嵌套计数，避免宿主 oe 初始化后访问 Horizon 服务对象。原生运行环境测试覆盖配对、嵌套及并发进出；此计数器不实现 Horizon 退出请求投递。
 - 分阶段诊断支持只执行 SDK、只执行模块初始化及受控启动三种模式。启动器会在初始化后进入 `nnMain`，记录主函数进入/返回及客体文件路径检查点，阻止 GPU 初始化、未实现的 NVN/导入及未知内核操作。30 秒期限会保存超时状态并结束尚未停止的执行。就绪和图形标记保持为假；见 [P5R_PACKAGING.zh-CN.md](P5R_PACKAGING.zh-CN.md)。
 - 专用 UIKit/手柄壳及跨平台本地打包见 [P5R_PACKAGING.zh-CN.md](P5R_PACKAGING.zh-CN.md)。完整无游戏内容的 ARM64 iOS 宿主已在 CI 链接，本地改写模块可作为 Guest.framework 加入。产物仍是未签名实验包；图形资源仍为诊断时，游戏启动保持禁用。
 - `.github/workflows/p5r-runtime-tests.yml`：macOS 编译检查、SDK 启动 C 测试、音频/控制块/组合句柄测试、iOS ARM64 组件编译与 Python 工具测试，另有 macOS/iOS 合成 Metal 原生编译测试；仅使用源码和合成数据，不构建游戏安装包。文字扫描同时支持旧版 Python 和 Python 3.14 的 f-string 分词。

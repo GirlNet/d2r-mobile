@@ -75,6 +75,23 @@ void dm_focus_set(int st) {
 }
 static int opmode(void) { return dm_opmode(); }
 
+// 宿主没有 Horizon 的退出请求会话；本地维护进程级嵌套计数，不进入 SDK 的空服务对象。
+// The host has no Horizon exit-request session; keep a local process-wide nesting count instead of entering the SDK's null service object.
+static pthread_mutex_t g_exit_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t g_exit_depth;
+HLE_FORCE_OPTIONAL("_ZN2nn2oe31EnterExitRequestHandlingSectionEv", "退出请求临界区；宿主维护配对嵌套，不调用 Horizon 服务", void, h_oe_EnterExit, void) {
+    pthread_mutex_lock(&g_exit_lock);
+    if (g_exit_depth == UINT32_MAX) die("Exit request section nesting overflow");
+    g_exit_depth++;
+    pthread_mutex_unlock(&g_exit_lock);
+}
+HLE_FORCE_OPTIONAL("_ZN2nn2oe31LeaveExitRequestHandlingSectionEv", "退出请求临界区；宿主维护配对嵌套，不调用 Horizon 服务", void, h_oe_LeaveExit, void) {
+    pthread_mutex_lock(&g_exit_lock);
+    if (!g_exit_depth) die("Unbalanced exit request section");
+    g_exit_depth--;
+    pthread_mutex_unlock(&g_exit_lock);
+}
+
 // 截图 / 录像开关：宿主无系统截图服务，空操作
 // Screenshot / video recording switches: the host has no system screenshot service, no-op
 HLE_FORCE("_ZN2nn2oe15EnableRecordingEv", "录像开关；宿主无系统录像", void, h_oe_EnableRec, void) {}
