@@ -562,6 +562,34 @@ HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", 
     }
     return RES_OK;
 }
+// P5R SDK 的四个 ReadFile 重载必须使用同一宿主句柄，不能回落到 SDK FileAccessor*。
+// ReadOption 的已验证值为 0；其余值显式拒绝。无 out 的重载在短读时返回 0x177a02。
+// All four P5R SDK ReadFile overloads must share the host handle instead of falling back to SDK FileAccessor*.
+// The verified ReadOption value is 0; reject other values explicitly. Overloads without out return 0x177a02 on short reads.
+#define RES_READ_OUT_OF_RANGE 0x177a02u
+HLE_FORCE_OPTIONAL("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE", "fsp-srv; ReadOption=0 -> host pread, never SDK FileAccessor", Result, h_fs_ReadFileOption, size_t *out, uint64_t h, int64_t off, void *buf, size_t sz, const uint32_t *opt) {
+    if (!opt || *opt) {
+        dm_boot_probe_block("fs_read_option", "ReadFile requires verified ReadOption=0");
+        return RES_FAIL;
+    }
+    if (!out || (!buf && sz)) return RES_FAIL;
+    if (off < 0 || sz > (uint64_t)INT64_MAX - (uint64_t)off) return RES_READ_OUT_OF_RANGE;
+    Result r = h_fs_ReadFile(out, h, off, buf, sz);
+    if (dm_boot_probe_active()) {
+        char detail[160];
+        snprintf(detail, sizeof detail, "fd=%llu offset=%lld requested=%zu read=%zu result=%#x", (unsigned long long)h, (long long)off, sz, r ? 0 : *out, r);
+        probe_path("fs_read_completed", detail);
+    }
+    return r;
+}
+HLE_FORCE_OPTIONAL("_ZN2nn2fs8ReadFileENS0_10FileHandleElPvmRKNS0_10ReadOptionE", "fsp-srv; exact read with ReadOption=0", Result, h_fs_ReadFileExactOption, uint64_t h, int64_t off, void *buf, size_t sz, const uint32_t *opt) {
+    size_t got = 0; Result r = h_fs_ReadFileOption(&got, h, off, buf, sz, opt);
+    return r ? r : got == sz ? RES_OK : RES_READ_OUT_OF_RANGE;
+}
+HLE_FORCE_OPTIONAL("_ZN2nn2fs8ReadFileENS0_10FileHandleElPvm", "fsp-srv; exact read using the host handle", Result, h_fs_ReadFileExact, uint64_t h, int64_t off, void *buf, size_t sz) {
+    const uint32_t opt = 0;
+    return h_fs_ReadFileExactOption(h, off, buf, sz, &opt);
+}
 HLE_FORCE("_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE", "fsp-srv → pwrite(2)", Result, h_fs_WriteFile, uint64_t h, int64_t off, const void *buf, size_t sz, const void *opt) {
     (void)opt; size_t put = 0;
     if (g_fsave[(int)h & 0xffff]) {                                     // 存档写注入点（确定性回归用；只数存档挂载上的写） | Save write injection point (for deterministic regression; only writes on the save mount are counted)
