@@ -61,9 +61,12 @@ FITS(view_t, NVNtextureView);
 
 // 采样器参数（builder 与对象共用一份）
 // Sampler parameters (one copy shared by builder and object)
-typedef struct { uint8_t minf, magf, ws, wt, wr, cmp_mode, cmp_func; float lod_min, lod_max, lod_bias, aniso, border[4]; } samp_par;   // 枚举值都 < 256 | Enum values are all < 256
+typedef struct {
+    uint32_t minf:3, magf:1, ws:3, wt:3, wr:3, cmp_mode:1, cmp_func:4, reduction:4;
+    float lod_min, lod_max, lod_bias, aniso, border[4], lod_snap;
+} samp_par;
 typedef struct { NVNdevice *dev; samp_par p; } samp_builder_t;                                FITS(samp_builder_t, NVNsamplerBuilder);
-typedef struct { uint32_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
+typedef struct { uint64_t serial; samp_par p; } samp_t;                                     FITS(samp_t, NVNsampler);
 
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial：回放层解析结果的表键 | serial: table key for the replay layer's resolved result
 

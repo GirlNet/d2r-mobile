@@ -8,12 +8,15 @@ GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/include/*.h ../tex/*.h) ../../ho
 FW=-framework Metal -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
 # 宿主 crash.c 一并链入：写保护单测走生产同一套缺页钩子
 # Host crash.c is linked in as well: the write-protect unit tests go through the same page-fault hook as production
-t_nvn: t_startup_batch.inc ../nvn/nvn_startup_batch.inc t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
+t_nvn: t_sampler_state.inc t_startup_batch.inc ../nvn/nvn_startup_batch.inc t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_nvn.c ../../host/crash.c $(GFX) $(FW)
 # 实际 Metal 3 后端初始化诊断：不提交客体指令，使用生产报告实现。
 # Probe actual Metal 3 backend setup without guest submission, using the production report implementation.
-t_nvn_gpu_setup: t_probe_command_capture.inc t_startup_batch.inc ../nvn/nvn_startup_batch.inc t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c ../../ios/p5r/boot_probe.m ../../host/boot_probe.h $(GFX) $(GFX_H)
+t_nvn_gpu_setup: t_sampler_state.inc t_probe_command_capture.inc t_startup_batch.inc ../nvn/nvn_startup_batch.inc t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c ../../ios/p5r/boot_probe.m ../../host/boot_probe.h $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_P5R_ONLY=1 -DDM_NVN_M3=1 -I../../host -fblocks -fobjc-arc -o $@ t_nvn.c ../../host/crash.c ../../ios/p5r/boot_probe.m $(GFX) $(FW)
+
+t_nvn_sampler_gpu: t_nvn_sampler_gpu.m ../nvn/nvn_sampler_mtl.h ../nvn/nvn_obj.h
+	clang $(CFLAGS) -fobjc-arc -o $@ t_nvn_sampler_gpu.m -framework Metal -framework Foundation
 
 t_dirty_slots: t_dirty_slots.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
 	clang $(CFLAGS) -o $@ t_dirty_slots.c ../../host/crash.c ../nvn/nvn_dirty.c

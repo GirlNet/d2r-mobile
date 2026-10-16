@@ -28,6 +28,16 @@ def sources():
     return result + [REPO / 'dm/ios/p5r/diagnostics.c', REPO / 'dm/ios/p5r/boot_probe.m', REPO / 'dm/ios/p5r/app.m']
 
 
+def fingerprint_sources(plan):
+    # Object layouts and inline Metal helpers affect the executable just as .c
+    # files do. Include local headers/inlines so a header-only change cannot
+    # produce the same reported identity as an older shell.
+    result = [p[0] for p in plan]
+    for directory in ('dm/host', 'dm/gfx', 'dm/ios/p5r'):
+        result += sorted(p for p in (REPO / directory).rglob('*') if p.suffix in ('.h', '.inc'))
+    return list(dict.fromkeys(result))
+
+
 def run(command, log):
     result = subprocess.run([str(c) for c in command], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     log.write_bytes(result.stdout)
@@ -52,7 +62,7 @@ def build(output):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda p: run(p[2], p[3]), plan))
     failed = [str(p[0].relative_to(REPO)) for p, code in zip(plan, results) if code]
-    fingerprint_files = [p[0] for p in plan] + [REPO / 'dm/gfx/nvn/nvn_startup_batch.inc', REPO / 'dm/gfx/nvn/nvn_probe_commands.inc']
+    fingerprint_files = fingerprint_sources(plan)
     report = dict(profile='p5r', game_content_included=False, signed=False, runtime_ready=False,
                   sources=[str(p[0].relative_to(REPO)) for p in plan], failed_sources=failed,
                   fingerprint_sources=[str(p.relative_to(REPO)) for p in fingerprint_files],

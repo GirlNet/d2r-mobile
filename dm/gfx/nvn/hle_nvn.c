@@ -472,7 +472,20 @@ NVN(nvnSamplerBuilderSetLodBias, void, NVNsamplerBuilder *b, float v) { SB(b)->l
 NVN(nvnSamplerBuilderSetCompare, void, NVNsamplerBuilder *b, NVNcompareMode m, NVNcompareFunc f) { SB(b)->cmp_mode = m; SB(b)->cmp_func = f; }
 NVN(nvnSamplerBuilderSetBorderColor, void, NVNsamplerBuilder *b, const float *c) { memcpy(SB(b)->border, c, 16); }
 NVN(nvnSamplerBuilderSetMaxAnisotropy, void, NVNsamplerBuilder *b, float v) { SB(b)->aniso = v; }
-NVN(nvnSamplerBuilderSetLodSnap, void, NVNsamplerBuilder *b, float v) { (void)b; (void)v; }   // Metal 无对应，忽略 | No Metal equivalent, ignored
+NVN(nvnSamplerBuilderSetLodSnap, void, NVNsamplerBuilder *b, float v) { SB(b)->lod_snap = v; }
+NVN(nvnSamplerBuilderSetReductionFilter, void, NVNsamplerBuilder *b, NVNsamplerReduction v) { SB(b)->reduction = (unsigned)v & 15; }
+NVN(nvnSamplerBuilderGetReductionFilter, NVNsamplerReduction, const NVNsamplerBuilder *b) { return (NVNsamplerReduction)((const samp_builder_t *)b)->p.reduction; }
+NVN(nvnSamplerBuilderGetLodSnap, float, const NVNsamplerBuilder *b) { return ((const samp_builder_t *)b)->p.lod_snap; }
+// SDK border accessors copy four raw words, including when queried through another numeric type.
+NVN(nvnSamplerBuilderSetBorderColori, void, NVNsamplerBuilder *b, const int *v) { memcpy(SB(b)->border,v,16); }
+NVN(nvnSamplerBuilderSetBorderColorui, void, NVNsamplerBuilder *b, const uint32_t *v) { memcpy(SB(b)->border,v,16); }
+NVN(nvnSamplerBuilderGetBorderColori, void, const NVNsamplerBuilder *b, int *v) { memcpy(v,((const samp_builder_t *)b)->p.border,16); }
+NVN(nvnSamplerBuilderGetBorderColorui, void, const NVNsamplerBuilder *b, uint32_t *v) { memcpy(v,((const samp_builder_t *)b)->p.border,16); }
+NVN(nvnSamplerGetBorderColori, void, const NVNsampler *s, int *v) { memcpy(v,((const samp_t *)s)->p.border,16); }
+NVN(nvnSamplerGetBorderColorui, void, const NVNsampler *s, uint32_t *v) { memcpy(v,((const samp_t *)s)->p.border,16); }
+NVN(nvnSamplerGetReductionFilter, NVNsamplerReduction, const NVNsampler *s) { return (NVNsamplerReduction)((const samp_t *)s)->p.reduction; }
+NVN(nvnSamplerGetDebugID, uint64_t, const NVNsampler *s) { return ((const samp_t *)s)->serial; }
+NVN(nvnSamplerPoolRegisterSamplerBuilder, void, const NVNsamplerPool *sp, int id, const NVNsamplerBuilder *b) { (void)sp; mtl_reg_samp(id,&((const samp_builder_t *)b)->p); }
 NVN(nvnSamplerBuilderGetMinMagFilter, void, const NVNsamplerBuilder *b, NVNminFilter *mi, NVNmagFilter *ma) {
     const samp_par *o = &((const samp_builder_t *)b)->p; *mi = (NVNminFilter)o->minf; *ma = (NVNmagFilter)o->magf;
 }
@@ -480,9 +493,9 @@ NVN(nvnSamplerBuilderGetWrapMode, void, const NVNsamplerBuilder *b, NVNwrapMode 
     const samp_par *o = &((const samp_builder_t *)b)->p; *s = (NVNwrapMode)o->ws; *t = (NVNwrapMode)o->wt; *r = (NVNwrapMode)o->wr;
 }
 NVN(nvnSamplerInitialize, NVNboolean, NVNsampler *s, const NVNsamplerBuilder *b) {
-    samp_t *o = (samp_t *)s; o->magic = MAGIC('S', 'M', 'P', 0); o->p = ((const samp_builder_t *)b)->p; return 1;
+    samp_t *o = (samp_t *)s; o->p = ((const samp_builder_t *)b)->p; o->serial = nvn_new_serial(); return 1;
 }
-NVN(nvnSamplerFinalize, void, NVNsampler *s) { ((samp_t *)s)->magic = 0; }
+NVN(nvnSamplerFinalize, void, NVNsampler *s) { ((samp_t *)s)->serial = 0; }
 
 // ---------- 程序 ----------
 // ---------- Programs ----------

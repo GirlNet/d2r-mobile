@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include "nvn_mtl.h"
+#include "nvn_sampler_mtl.h"
 // 编译期开关 DM_NVN_M3=1：图形后端走老接口（普通命令队列 / 命令缓冲 / 渲染与计算与拷贝编码器，逐槽绑定缓冲，对参数块引用的资源逐个声明），
 // 目标 macOS 15 / iOS 18。缺省 0 = Metal 4（macOS 26 / iOS 26）。两支共用同一份回放逻辑，分叉处都在 #if DM_NVN_M3 里
 // Compile-time switch DM_NVN_M3=1: the graphics backend uses the older API (ordinary command queue / command buffers / render, compute and copy encoders, buffers bound per slot, each resource referenced by an argument block declared individually),
@@ -2439,6 +2440,8 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Calle
     if (p.cmp_mode) d.compareFunction = (MTLCompareFunction)(p.cmp_func - 1);
     d.borderColor = p.border[3] > 0.5f ? (p.border[0] > 0.5f ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack) : MTLSamplerBorderColorTransparentBlack;
     d.supportArgumentBuffers = YES;
+    if (!nvn_sampler_extended_descriptor(g_dev, d, &p, !dm_guest_d2r()))
+        MDIE("Unsupported sampler state: reduction=%u lod_snap=%g lod_bias=%g",p.reduction,p.lod_snap,p.lod_bias);
     id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d];
     if (s) { g_sview[sid] = (void *)CFBridgingRetain(s); g_srid[sid] = s.gpuResourceID._impl; }
     return s;

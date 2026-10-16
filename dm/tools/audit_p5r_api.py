@@ -28,9 +28,21 @@ def audit(root):
     capture_tests = (root / "dm/gfx/tests/t_probe_command_capture.inc").read_text(encoding="utf-8")
     assert set(captures) <= set(re.findall(r"P\((nvn\w+)\)", capture_tests)), "Capture interface lacks a typed regression call"
     assert set(batch) <= set(re.findall(r"P\((nvn\w+)\)", tests)), "Batch interface lacks a direct typed regression call"
+    sampler_tests = (root / "dm/gfx/tests/t_sampler_state.inc").read_text(encoding="utf-8")
+    sampler_extensions = {
+        'nvnSamplerBuilderSetReductionFilter', 'nvnSamplerBuilderGetReductionFilter',
+        'nvnSamplerBuilderGetLodSnap', 'nvnSamplerBuilderSetBorderColori',
+        'nvnSamplerBuilderSetBorderColorui', 'nvnSamplerBuilderGetBorderColori',
+        'nvnSamplerBuilderGetBorderColorui', 'nvnSamplerGetBorderColori',
+        'nvnSamplerGetBorderColorui', 'nvnSamplerGetReductionFilter',
+        'nvnSamplerGetDebugID', 'nvnSamplerPoolRegisterSamplerBuilder',
+    }
+    assert sampler_extensions <= set(implementations), "Missing sampler implementation"
+    assert sampler_extensions <= set(re.findall(r"P\((nvn\w+)\)", sampler_tests)), "Sampler extension lacks a typed regression call"
     return dict(schema_version=1, registered=len(names), host_implemented=len(implementations),
                 named_unimplemented=len(set(names)-registered), batch_implemented=len(batch),
                 diagnostic_only_capture=len(captures), capture_requires_active_pre_submit_probe=True,
+                sampler_extensions_implemented=len(sampler_extensions),
                 game_graphics_verified=False, runtime_ready=False,
                 scope="Source registration and direct regression-call coverage only; not ABI/GPU equivalence proof",
                 unimplemented=[n for n in names if n not in registered], diagnostic_only_interfaces=captures)
