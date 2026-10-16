@@ -1235,7 +1235,8 @@ typedef void (*PFNNVNBUFFERBUILDERSETDEVICEPROC)(NVNbufferBuilder*, NVNdevice*);
 typedef void (*PFNNVNBUFFERBUILDERSETDEFAULTSPROC)(NVNbufferBuilder*);
 typedef void (*PFNNVNBUFFERBUILDERSETSTORAGEPROC)(NVNbufferBuilder*, NVNmemoryPool*, ptrdiff_t,
                                                   size_t);
-typedef NVNmemoryPool (*PFNNVNBUFFERBUILDERGETMEMORYPOOLPROC)(const NVNbufferBuilder*);
+typedef NVNdevice* (*PFNNVNBUFFERBUILDERGETDEVICEPROC)(const NVNbufferBuilder*);
+typedef NVNmemoryPool* (*PFNNVNBUFFERBUILDERGETMEMORYPOOLPROC)(const NVNbufferBuilder*);
 typedef ptrdiff_t (*PFNNVNBUFFERBUILDERGETMEMORYOFFSETPROC)(const NVNbufferBuilder*);
 typedef size_t (*PFNNVNBUFFERBUILDERGETSIZEPROC)(const NVNbufferBuilder*);
 typedef NVNboolean (*PFNNVNBUFFERINITIALIZEPROC)(NVNbuffer*, const NVNbufferBuilder*);

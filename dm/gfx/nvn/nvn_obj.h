@@ -38,6 +38,13 @@ typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; } queue_t;   
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
 typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; } pool_t;                FITS(pool_t, NVNmemoryPool);
 
+// 缓冲是现有池的有界视图，不拥有存储，也不创建或提交额外 GPU 对象。
+// A buffer is a bounded view of an existing pool; it owns no storage and creates or submits no additional GPU objects.
+typedef struct { NVNdevice *dev; NVNmemoryPool *pool; ptrdiff_t off; size_t size; } buffer_builder_t;
+FITS(buffer_builder_t, NVNbufferBuilder);
+typedef struct { uint32_t magic; NVNmemoryPool *pool; ptrdiff_t off; size_t size; uint64_t serial; } buffer_t;
+FITS(buffer_t, NVNbuffer);
+
 typedef struct { const pool_t *pool; int64_t off; int32_t n; } dpool_t;                       // 贴图 / 采样器描述符池 | Texture / sampler descriptor pool
 FITS(dpool_t, NVNtexturePool); FITS(dpool_t, NVNsamplerPool);
 

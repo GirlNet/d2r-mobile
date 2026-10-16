@@ -130,6 +130,73 @@ static void test_fast_clear_registry(const NVNdeviceBuilder *db) {
     P(nvnDeviceFinalize)(d);P(nvnDeviceFinalize)(&other);
 }
 
+// 池用合成共享字节，不创建 Metal；验证真实跳板、边界、别名写入与生命周期。
+// Use synthetic shared pool bytes without Metal; verify real thunks, bounds, alias writes and lifecycle.
+static void test_buffers(void) {
+    uint8_t storage[256]; memset(storage,0x5a,sizeof storage);
+    NVNmemoryPool pool={0}; pool_t *p=(pool_t *)&pool;
+    *p=(pool_t){.magic=MAGIC('P','O','O','L'),.flags=NVN_MEMORY_POOL_FLAGS_CPU_CACHED|NVN_MEMORY_POOL_FLAGS_GPU_CACHED,.mem=storage,.size=sizeof storage};
+    NVNmemoryPool pool_before=pool;
+    struct { uint64_t before; NVNbufferBuilder b; uint64_t after; } builder={.before=0x12345678,.after=0xabcdef};
+    struct { uint64_t before; NVNbuffer b; uint64_t after; } object={.before=0x11223344,.after=0x55667788};
+    NVNbufferBuilder *b=&builder.b; NVNbuffer *v=&object.b;
+    P(nvnBufferBuilderSetDevice)(b,&dev); P(nvnBufferBuilderSetStorage)(b,&pool,16,32); P(nvnBufferBuilderSetDefaults)(b);
+    EXPECT("默认值保留设备 / defaults preserve device",(uintptr_t)&dev,(uintptr_t)P(nvnBufferBuilderGetDevice)(b));
+    EXPECT("默认池为空 / default pool null",0,(uintptr_t)P(nvnBufferBuilderGetMemoryPool)(b));
+    EXPECT("默认偏移和长度 / default offset and size",0,P(nvnBufferBuilderGetMemoryOffset)(b)+P(nvnBufferBuilderGetSize)(b));
+    EXPECT("无存储初始化失败 / missing storage rejected",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,32,96);
+    EXPECT("构建器池指针 ABI / builder pool pointer ABI",(uintptr_t)&pool,(uintptr_t)P(nvnBufferBuilderGetMemoryPool)(b));
+    EXPECT("构建器偏移 / builder offset",32,P(nvnBufferBuilderGetMemoryOffset)(b));
+    EXPECT("构建器长度 / builder size",96,P(nvnBufferBuilderGetSize)(b));
+    EXPECT("初始化有界视图 / initialize bounded view",1,P(nvnBufferInitialize)(v,b));
+    EXPECT("实际存储地址 / actual storage address",(uintptr_t)(storage+32),P(nvnBufferGetAddress)(v));
+    EXPECT("映射同一存储 / map aliases storage",(uintptr_t)(storage+32),(uintptr_t)P(nvnBufferMap)(v));
+    EXPECT("缓冲池指针 / buffer pool pointer",(uintptr_t)&pool,(uintptr_t)P(nvnBufferGetMemoryPool)(v));
+    EXPECT("缓冲偏移 / buffer offset",32,P(nvnBufferGetMemoryOffset)(v));
+    EXPECT("缓冲长度 / buffer size",96,P(nvnBufferGetSize)(v));
+    uint64_t id=P(nvnBufferGetDebugID)(v); EXPECT("调试号非零 / debug ID nonzero",1,id!=0);
+    memset(P(nvnBufferMap)(v),0x71,96);
+    P(nvnBufferFlushMappedRange)(v,0,96);P(nvnBufferInvalidateMappedRange)(v,96,0);P(nvnBufferSetDebugLabel)(v,"synthetic-buffer");
+    EXPECT("映射写入边界 / mapped write boundaries",1,storage[31]==0x5a && storage[32]==0x71 && storage[127]==0x71 && storage[128]==0x5a);
+    EXPECT("池元数据不变 / pool metadata unchanged",0,memcmp(&pool,&pool_before,sizeof pool));
+    NVNbuffer before=*v;
+    P(nvnBufferBuilderSetStorage)(b,&pool,-1,1);EXPECT("负偏移拒绝 / reject negative offset",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,257,1);EXPECT("池外偏移拒绝 / reject offset past pool",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,255,2);EXPECT("池尾越界拒绝 / reject range past end",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,1,SIZE_MAX);EXPECT("长度溢出拒绝 / reject length overflow",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,PTRDIFF_MAX,1);EXPECT("大偏移拒绝 / reject huge offset",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,256,0);EXPECT("零长度拒绝 / reject empty view",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,NULL,0,1);EXPECT("空池拒绝 / reject null pool",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,0,1);P(nvnBufferBuilderSetDevice)(b,NULL);EXPECT("空设备拒绝 / reject null device",0,P(nvnBufferInitialize)(v,b));
+    NVNdevice invalid={0};P(nvnBufferBuilderSetDevice)(b,&invalid);EXPECT("无效设备拒绝 / reject invalid device",0,P(nvnBufferInitialize)(v,b));P(nvnBufferBuilderSetDevice)(b,&dev);
+    p->magic=0;EXPECT("无效池拒绝 / reject invalid pool",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    p->mem=NULL;EXPECT("无背后存储拒绝 / reject absent backing",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    p->flags|=NVN_MEMORY_POOL_FLAGS_VIRTUAL;EXPECT("虚拟池拒绝 / reject virtual pool",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    p->flags|=NVN_MEMORY_POOL_FLAGS_PHYSICAL;EXPECT("物理池拒绝 / reject physical pool",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    p->mem=(uint8_t *)(uintptr_t)(UINTPTR_MAX-4);P(nvnBufferBuilderSetStorage)(b,&pool,8,1);EXPECT("地址溢出拒绝 / reject address overflow",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    EXPECT("失败保持对象 / failure preserves object",0,memcmp(&before,v,sizeof before));
+    EXPECT("空输出拒绝 / reject null output",0,P(nvnBufferInitialize)(NULL,b));
+    EXPECT("空构建器拒绝 / reject null builder",0,P(nvnBufferInitialize)(v,NULL));
+    NVNbuffer alias=*v;P(nvnBufferFinalize)(v);
+    EXPECT("销毁不释放池 / finalize retains backing",1,storage[32]==0x71 && !memcmp(&pool,&pool_before,sizeof pool));
+    EXPECT("销毁后映射为空 / finalized map null",0,(uintptr_t)P(nvnBufferMap)(v));
+    EXPECT("销毁后地址为零 / finalized address zero",0,P(nvnBufferGetAddress)(v));
+    EXPECT("销毁后元数据清空 / finalized metadata empty",0,P(nvnBufferGetSize)(v)+P(nvnBufferGetMemoryOffset)(v)+P(nvnBufferGetDebugID)(v)+(uintptr_t)P(nvnBufferGetMemoryPool)(v));
+    EXPECT("值拷贝仍有效 / value copy remains valid",(uintptr_t)(storage+32),P(nvnBufferGetAddress)(&alias));
+    p->flags|=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS;
+    EXPECT("CPU 禁访问池不可映射 / CPU-inaccessible pool map null",0,(uintptr_t)P(nvnBufferMap)(&alias));
+    EXPECT("CPU 禁访问不改 GPU 地址 / CPU access flag preserves GPU address",(uintptr_t)(storage+32),P(nvnBufferGetAddress)(&alias));*p=*(pool_t *)&pool_before;
+    P(nvnBufferBuilderSetStorage)(b,&pool,255,1);EXPECT("池尾合法视图 / valid view at pool end",1,P(nvnBufferInitialize)(v,b));
+    EXPECT("重建生成新号 / reinitialize gets new ID",1,P(nvnBufferGetDebugID)(v)!=id && P(nvnBufferGetDebugID)(v)!=0);
+    EXPECT("池尾地址 / pool end address",(uintptr_t)(storage+255),P(nvnBufferGetAddress)(v));
+    p->magic=0;EXPECT("池销毁后不可映射 / finalized pool cannot map",0,(uintptr_t)P(nvnBufferMap)(v));
+    EXPECT("池销毁后无地址 / finalized pool has no address",0,P(nvnBufferGetAddress)(v));*p=*(pool_t *)&pool_before;
+    EXPECT("空对象查询 / null object queries",0,P(nvnBufferGetAddress)(NULL)+(uintptr_t)P(nvnBufferMap)(NULL));
+    EXPECT("对象及构建器边界 / object and builder bounds",1,builder.before==0x12345678 && builder.after==0xabcdef && object.before==0x11223344 && object.after==0x55667788);
+    P(nvnBufferFinalize)(v);P(nvnBufferFinalize)(&alias);
+}
+
 #ifdef DM_P5R_ONLY
 // 实际后端设置结束后线程必须留在生产停止边界；启用 UDC 开关也不能越过该边界。
 // After real backend setup the thread must remain at the production stop boundary, even with the UDC self-test switch enabled.
@@ -199,6 +266,7 @@ int main(int argc, char **argv) {
     EXPECT("参数类型与格式 / argument kind and format", 1, f->colors[0].kind==0 && f->colors[1].kind==1 && f->colors[2].kind==2 && f->colors[0].format==NVN_FORMAT_RGBA8 && f->colors[1].format==NVN_FORMAT_RGBA8I && f->colors[2].format==NVN_FORMAT_RGBA8UI);
     EXPECT("深度原始位 / depth bits", 0x3f000000, f->depths[0]);
     test_fast_clear_registry(&db);
+    test_buffers();
     int named = 0;
     for (unsigned i = 523; i < NVN_NFUNC; i++) {
         named += nvn_slot[i].fn == (void *)nvn_unimpl_entry && (void *)gpa(&dev,nvn_names[i]) == nvn_thunk[i];
@@ -500,8 +568,8 @@ int main(int argc, char **argv) {
 
     // 7. 未实现函数：返回 0、报红、只报一次
     // 7. Unimplemented functions: return 0, report a failure, report only once
-    unsigned ui = 0; while (strcmp(nvn_names[ui], "nvnBufferBuilderSetDefaults")) ui++;
-    ((void (*)(void *))proc("nvnBufferBuilderSetDefaults"))(NULL); ((void (*)(void *))proc("nvnBufferBuilderSetDefaults"))(NULL);
+    unsigned ui = 0; while (strcmp(nvn_names[ui], "nvnDeviceWalkDebugDatabase")) ui++;
+    ((void (*)(void *))proc("nvnDeviceWalkDebugDatabase"))(NULL); ((void (*)(void *))proc("nvnDeviceWalkDebugDatabase"))(NULL);
     EXPECT("未实现函数被调用后记为已报红", 1, g_unimpl_seen[ui] > 0);
     EXPECT("未实现函数计数 2", 2, nvn_slot[ui].cnt);
 

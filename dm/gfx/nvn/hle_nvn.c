@@ -250,6 +250,67 @@ NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) { if (((pool_t *)p)->mem) { n
 NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { (void)p; (void)off; (void)n; }
 NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { return (NVNbufferAddress)((const pool_t *)p)->mem; }
 
+// ---------- 缓冲：复用池的共享存储，按减法检查区间以避免溢出 ----------
+// ---------- Buffers: reuse shared pool storage and check ranges by subtraction to avoid overflow ----------
+NVN(nvnBufferBuilderSetDevice, void, NVNbufferBuilder *b, NVNdevice *d) { if (b) ((buffer_builder_t *)b)->dev=d; }
+NVN(nvnBufferBuilderSetDefaults, void, NVNbufferBuilder *b) {
+    if (!b) return;
+    buffer_builder_t *o=(buffer_builder_t *)b;
+    memset((uint8_t *)o+sizeof o->dev,0,sizeof *o-sizeof o->dev);
+}
+NVN(nvnBufferBuilderSetStorage, void, NVNbufferBuilder *b, NVNmemoryPool *p, ptrdiff_t off, size_t n) {
+    if (b) { buffer_builder_t *o=(buffer_builder_t *)b; o->pool=p; o->off=off; o->size=n; }
+}
+NVN(nvnBufferBuilderGetDevice, NVNdevice *, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->dev : NULL; }
+NVN(nvnBufferBuilderGetMemoryPool, NVNmemoryPool *, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->pool : NULL; }
+NVN(nvnBufferBuilderGetMemoryOffset, ptrdiff_t, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->off : 0; }
+NVN(nvnBufferBuilderGetSize, size_t, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->size : 0; }
+static int buffer_storage_valid(const NVNmemoryPool *p, ptrdiff_t off, size_t n) {
+    if (!p || off<0 || !n) return 0;
+    const pool_t *o=(const pool_t *)p;
+    return o->magic==MAGIC('P','O','O','L') && o->mem &&
+        !(o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) &&
+        (uint64_t)off<=o->size && n<=o->size-(uint64_t)off &&
+        (uint64_t)off<=UINTPTR_MAX-(uintptr_t)o->mem && n<=UINTPTR_MAX-((uintptr_t)o->mem+(uintptr_t)off);
+}
+static const buffer_t *buffer_valid(const NVNbuffer *b) {
+    const buffer_t *o=(const buffer_t *)b;
+    return o && o->magic==MAGIC('B','U','F',0) && buffer_storage_valid(o->pool,o->off,o->size) ? o : NULL;
+}
+NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *b, const NVNbufferBuilder *builder) {
+    if (!b || !builder) return 0;
+    const buffer_builder_t *s=(const buffer_builder_t *)builder;
+    if (!s->dev || ((const dev_t_ *)s->dev)->magic!=MAGIC('D','E','V',0) || !buffer_storage_valid(s->pool,s->off,s->size)) return 0;
+    buffer_t next={.magic=MAGIC('B','U','F',0),.pool=s->pool,.off=s->off,.size=s->size,.serial=nvn_new_serial()};
+    memcpy(b,&next,sizeof next);
+    if (dm_boot_probe_active()) { char detail[128]; snprintf(detail,sizeof detail,"offset=%lld bytes=%llu",(long long)next.off,(unsigned long long)next.size); dm_boot_probe_note("nvn_buffer_initialized",detail); }
+    return 1;
+}
+NVN(nvnBufferFinalize, void, NVNbuffer *b) { if (b) memset(b,0,sizeof(buffer_t)); }
+NVN(nvnBufferGetAddress, NVNbufferAddress, const NVNbuffer *b) {
+    const buffer_t *o=buffer_valid(b); return o ? (NVNbufferAddress)((uintptr_t)((const pool_t *)o->pool)->mem+(uintptr_t)o->off) : 0;
+}
+NVN(nvnBufferMap, void *, const NVNbuffer *b) {
+    const buffer_t *o=buffer_valid(b);
+    return o && !(((const pool_t *)o->pool)->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ? (void *)(uintptr_t)h_nvnBufferGetAddress(b) : NULL;
+}
+NVN(nvnBufferGetMemoryPool, NVNmemoryPool *, const NVNbuffer *b) { const buffer_t *o=buffer_valid(b); return o ? o->pool : NULL; }
+NVN(nvnBufferGetMemoryOffset, ptrdiff_t, const NVNbuffer *b) { const buffer_t *o=buffer_valid(b); return o ? o->off : 0; }
+NVN(nvnBufferGetSize, size_t, const NVNbuffer *b) { const buffer_t *o=buffer_valid(b); return o ? o->size : 0; }
+NVN(nvnBufferGetDebugID, uint64_t, const NVNbuffer *b) { const buffer_t *o=buffer_valid(b); return o ? o->serial : 0; }
+NVN(nvnBufferSetDebugLabel, void, NVNbuffer *b, const char *label) { (void)b; (void)label; }
+// Metal 共享池已保持 CPU/GPU 一致；刷新和失效不复制数据、不释放池、不提交命令。
+// Metal shared pools are CPU/GPU coherent; flush and invalidate neither copy data, release pools nor submit commands.
+static void buffer_mapped_range(const NVNbuffer *b, ptrdiff_t off, size_t n) {
+    const buffer_t *o=buffer_valid(b);
+    if (!o || off<0 || (size_t)off>o->size || n>o->size-(size_t)off) {
+        dm_boot_probe_block("invalid_buffer_range","buffer flush/invalidate outside storage");
+        return;
+    }
+}
+NVN(nvnBufferFlushMappedRange, void, const NVNbuffer *b, ptrdiff_t off, size_t n) { buffer_mapped_range(b,off,n); }
+NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *b, ptrdiff_t off, size_t n) { buffer_mapped_range(b,off,n); }
+
 // ---------- 描述符池 ----------
 // ---------- Descriptor pools ----------
 NVN(nvnTexturePoolInitialize, NVNboolean, NVNtexturePool *tp, const NVNmemoryPool *p, ptrdiff_t off, int n) {
