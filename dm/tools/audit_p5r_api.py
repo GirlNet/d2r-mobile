@@ -15,6 +15,10 @@ def audit(root):
     assert len(names) == len(set(names)), "Duplicate registered names"
     assert len(implementations) == len(set(implementations)), "Duplicate implementations"
     capture_source = (nvn / "nvn_probe_commands.inc").read_text(encoding="utf-8")
+    host_source = sources[0].read_text(encoding="utf-8")
+    nops = re.search(r"static const char \*const g_nops\[\] = \{(.*?)\n\};", host_source, re.S).group(1)
+    assert nops.strip().startswith("#ifndef DM_P5R_ONLY") and nops.strip().endswith("#endif"), "P5R must not inherit legacy no-op registrations"
+    assert '#ifdef DM_P5R_ONLY\n#include "nvn_probe_commands.inc"\n#endif' in host_source, "Capture wrappers must stay inside the P5R profile"
     captures = re.findall(r"NVN_CAPTURE\((nvn\w+),", capture_source)
     assert len(captures) == len(set(captures)) and not set(captures) & set(implementations), "Duplicate capture registrations"
     registered = set(implementations) | set(captures)

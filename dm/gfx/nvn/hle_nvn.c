@@ -941,6 +941,9 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
 // Commands that only affect GPU state / only execute on the GPU: the null device only counts them (the thunk has already counted)
 static void nvn_nop(void) {}
 static const char *const g_nops[] = {
+#ifndef DM_P5R_ONLY
+    // P5R 诊断必须使用受限捕获或具名停止；保留原 D2R 空实现表。
+    // P5R diagnostics require gated capture or named stops; preserve the original D2R no-op table.
     "nvnCommandBufferSetPatchSize",
     "nvnCommandBufferMultiDrawArraysIndirectCount",
     "nvnCommandBufferMultiDrawElementsIndirectCount",
@@ -954,6 +957,7 @@ static const char *const g_nops[] = {
     "nvnCommandBufferInsertDebugMarkerDynamic",
     "nvnCommandBufferWaitEvent",
     "nvnWindowFinalize",
+#endif
 };
 __attribute__((constructor)) static void nvn_nops_register(void) {
     // 空实现在槽表初始化后覆盖未实现桩；名字写错（不在 main 名字表里）启动即报红中止
@@ -972,7 +976,7 @@ __attribute__((constructor)) static void nvn_nops_register(void) {
     if (getenv("DM_NVN_PROF"))
         for (unsigned i = 0; i < NVN_NFUNC; i++)
             if (nvn_slot[i].fn != (void *)nvn_unimpl_entry && strcmp(nvn_names[i], "nvnQueuePresentTexture")) { nvn_real[i] = nvn_slot[i].fn; nvn_slot[i].fn = (void *)nvn_prof_entry; }
-    LOG("[nvn] 空设备：名字 %u，已实现 %u（语义 %u + 空实现 %u），其余 %u 个接报红桩",
+    LOG("[nvn] 空设备：名字 %u，登记处理器 %u（含受限诊断 %u + 空实现 %u），其余 %u 个接报红桩；不代表 GPU 已验证",
         NVN_NFUNC, g_nsem + nnop, g_nsem, nnop, NVN_NFUNC - g_nsem - nnop);
 }
 
@@ -1373,4 +1377,6 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
 
 #include "nvn_startup_batch.inc"
 
+#ifdef DM_P5R_ONLY
 #include "nvn_probe_commands.inc"
+#endif
