@@ -7,8 +7,8 @@ void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"texture view GPU check failed at %d\n",__LINE__);return 1; } } while(0)
 
-static id<MTLTexture> registered(int id) {
-    pthread_mutex_lock(&g_rmu);id<MTLTexture> t=tex_by_id(id);pthread_mutex_unlock(&g_rmu);return t;
+static id<MTLTexture> registered(int index) {
+    pthread_mutex_lock(&g_rmu);id<MTLTexture> t=tex_by_id(index);pthread_mutex_unlock(&g_rmu);return t;
 }
 static int read_pixel(id<MTLCommandQueue> q,id<MTLComputePipelineState> pipeline,id<MTLTexture> texture,float out[4]) {
     id<MTLBuffer> output=[g_dev newBufferWithLength:32 options:MTLResourceStorageModeShared];
