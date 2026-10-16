@@ -77,7 +77,11 @@
 #pragma clang attribute push(__attribute__((objc_externally_retained)), apply_to = function)
 
 #define MLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] " __VA_ARGS__); fputc('\n', stderr); } while (0)
+#ifdef DM_P5R_ONLY
+#define MDIE(...) do { char fatal_detail[1024]; snprintf(fatal_detail,sizeof fatal_detail,__VA_ARGS__); dm_boot_probe_failure(fatal_detail); MLOG("FATAL %s",fatal_detail); abort(); } while (0)
+#else
 #define MDIE(...) do { MLOG("FATAL " __VA_ARGS__); abort(); } while (0)
+#endif
 
 static void warm_start(void);
 static void warm_claim(void);
@@ -320,8 +324,11 @@ static void udc_selftest(void) {
     }
 }
 void mtl_init(void) {
-    dm_boot_probe_block("gpu_initialization", "mtl_init: no guest GPU work is permitted in the SDK probe");
-    if (g_dev) return;
+    int probeSetup = dm_boot_probe_gpu_begin();
+    if (g_dev) {
+        if (probeSetup) { dm_boot_probe_failure("GPU setup probe requires a fresh backend"); dm_boot_probe_block("gpu_initialization","backend already exists"); }
+        return;
+    }
     const char *link = getenv("DM_PRESENT_LINK");
     g_dm_present_link = link ? atoi(link) : 1; if (g_dm_present_link < 0 || g_dm_present_link > 2) g_dm_present_link = 1;   // 缺省 1（真机同进程交替：负载超一拍时长帧 15% → 0、帧间隔变匀；稳 60 时与 0 无差别）；DM_PRESENT_LINK=0 关   // 1 = 60 Hz 节拍每拍出图；2 = 120 Hz 节拍、游戏隔拍出一帧（落后时下一个 8.33 ms 拍就能上屏） | Default 1 (real-device same-process alternation: when load exceeds one display-link period, long frames 15% → 0 and frame intervals even out; no difference from 0 at a steady 60); DM_PRESENT_LINK=0 turns it off   // 1 = present on every tick of a 60 Hz display link; 2 = 120 Hz display link, the game presents a frame every other display-link tick (when behind, it can present on the next 8.33 ms display-link tick)
     const char *latency = getenv("DM_PRESENT_LATENCY");
@@ -330,17 +337,21 @@ void mtl_init(void) {
     g_dev = MTLCreateSystemDefaultDevice();
     if (!g_dev) MDIE("没有 Metal 设备");
     if (!g_dev.hasUnifiedMemory) MDIE("需要统一内存设备（零拷贝内存池）");
+    dm_boot_probe_note("gpu_setup_device",g_dev.name.UTF8String);
     g_q = [g_dev newCommandQueue];
+    if (!g_q) MDIE("cannot create Metal command queue");
     MTLResidencySetDescriptor *rd = [MTLResidencySetDescriptor new];
     rd.initialCapacity = 4096;
     NSError *re = nil;
     g_res = [g_dev newResidencySetWithDescriptor:rd error:&re];
     if (!g_res) MDIE("建立 MTLResidencySet 失败");
     [g_q addResidencySet:g_res];
+    dm_boot_probe_note("gpu_setup_queue","Metal queue and residency set created");
     { void crash_set_wait_dump(void (*fn)(void)); void mtl_wait_state_dump(void); crash_set_wait_dump(mtl_wait_state_dump); }
 #if !DM_NVN_M3
     dispatch_queue_attr_t feedback_attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
     g_feedback_q = dispatch_queue_create("dm.nvn.mtl4-feedback", feedback_attr);
+    if (![g_dev supportsFamily:MTLGPUFamilyMetal4]) MDIE("device does not support the Metal 4 backend");
     MTL4CommandQueueDescriptor *q4d = [MTL4CommandQueueDescriptor new]; q4d.feedbackQueue = g_feedback_q;
     g_q4 = [g_dev newMTL4CommandQueueWithDescriptor:q4d error:&re];
     if (!g_q4) MDIE("建立 MTL4CommandQueue 失败");
@@ -386,11 +397,21 @@ void mtl_init(void) {
         res_add(g_bloomq_const[i]);
     }
     g_ev = [g_dev newSharedEvent];
+    if (!g_ev) MDIE("cannot create Metal shared event");
+    dm_boot_probe_note("gpu_setup_objects","allocators, argument tables, constant buffers and shared event created");
     g_keep = [NSMutableArray array];
     g_nvn_deswz_gpu = nvn_deswz_gpu_init(g_dev) == 0;
     dm_res_report_register(mtl_res_counts);
     if (!g_nvn_deswz_gpu) MLOG("【红】显卡解排布初始化失败，预排布贴图回退 CPU");
     MLOG("Metal 设备 %s", g_dev.name.UTF8String);
+    if (probeSetup) {
+        dm_boot_probe_note("gpu_setup_deswizzle",g_nvn_deswz_gpu ? "auxiliary pipeline compiled; no commands encoded" : "auxiliary pipeline unavailable; CPU fallback retained");
+#if DM_NVN_M3
+        dm_boot_probe_gpu_complete("Metal 3",g_dev.name.UTF8String);
+#else
+        dm_boot_probe_gpu_complete("Metal 4",g_dev.name.UTF8String);
+#endif
+    }
     udc_selftest();
 }
 
@@ -536,6 +557,7 @@ static int tbdr_on(void);
 
 static uint64_t g_sub_serial;   // 第几次提交（并行预编「每次提交只预测一次」用） | Submission index (used by the parallel precompile's 'predict only once per submission')
 void mtl_sub_begin(void) {
+    dm_boot_probe_block("guest_gpu_submission","mtl_sub_begin");
     mtl_init(); g_sub_serial++;
     if (tbdr_on() == 0 && g_ruler_pending) { g_ruler_truth = 0; g_ruler_pending = 0; MLOG("DM_NVN_RULER：切到被测模式"); }
     defer_drain();
@@ -804,6 +826,7 @@ int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) {
 static void rp_flush(void);
 static const char *cctx_snap(void);   // 这次提交里有什么（出错时打进红行；定义在 mtl_exec 之前） | What is in this submission (printed into the failure line on error; defined before mtl_exec)
 uint64_t mtl_sub_commit(void) {
+    dm_boot_probe_block("guest_gpu_submission","mtl_sub_commit");
     defer_fallback();   // 推迟合并通道：提交结束仍有未回放的 P 绘制（正常路径不会到这里） | Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }

@@ -11,6 +11,19 @@
 #define CHECK(e) do { if (!(e)) { fprintf(stderr,"BOOT PROBE check failed at %d: %s\n",__LINE__,#e); return 1; } } while (0)
 static _Atomic int escaped;
 static void *blocked(void *unused) { (void)unused; dm_boot_probe_block("gpu_initialization","synthetic boundary"); atomic_store(&escaped,1); return NULL; }
+static _Atomic int setupEntered, releaseSetup;
+static void *setupWorker(void *unused) {
+    (void)unused;
+    if (dm_boot_probe_gpu_begin()) {
+        atomic_fetch_add(&setupEntered,1);
+        while (!atomic_load(&releaseSetup)) usleep(1000);
+        dm_boot_probe_gpu_complete("synthetic backend","synthetic device");
+    }
+    atomic_store(&escaped,1); return NULL;
+}
+static void *wrongOwner(void *unused) { (void)unused; dm_boot_probe_gpu_complete("wrong","wrong"); atomic_store(&escaped,1); return NULL; }
+static void *submission(void *unused) { (void)unused; dm_boot_probe_block("guest_gpu_submission","synthetic submit"); atomic_store(&escaped,1); return NULL; }
+static void *gpuEntry(void *unused) { (void)unused; dm_boot_probe_gpu_begin(); atomic_store(&escaped,1); return NULL; }
 static NSDictionary *readReport(NSString *directory) {
     NSData *data = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"boot-report.json"]];
     return data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
@@ -19,12 +32,13 @@ int main(int argc, char **argv) { @autoreleasepool {
     CHECK(argc == 3);
     NSString *directory = @(argv[2]);
     CHECK(!dm_boot_probe_active() && dm_boot_probe_checkpoint("inactive",0) && !dm_boot_probe_timeout());
-    dm_boot_probe_block("inactive","must return");
-    int startup = !strncmp(argv[1],"startup-",8);
+    dm_boot_probe_block("inactive","must return"); CHECK(!dm_boot_probe_gpu_begin()); dm_boot_probe_gpu_complete("inactive","inactive");
+    int gpuSetup = !strncmp(argv[1],"gpu-setup",9);
+    int startup = gpuSetup || !strncmp(argv[1],"startup-",8);
     int modules = startup || !strcmp(argv[1],"modules") || !strcmp(argv[1],"modules-failure");
-    CHECK((startup ? dm_boot_probe_begin_startup(argv[2]) : modules ? dm_boot_probe_begin_modules(argv[2]) : dm_boot_probe_begin(argv[2])) && dm_boot_probe_active());
+    CHECK((gpuSetup ? dm_boot_probe_begin_gpu_setup(argv[2]) : startup ? dm_boot_probe_begin_startup(argv[2]) : modules ? dm_boot_probe_begin_modules(argv[2]) : dm_boot_probe_begin(argv[2])) && dm_boot_probe_active());
     NSDictionary *report = readReport(directory); CHECK([report[@"status"] isEqual:@"running"]);
-    CHECK([report[@"stop_before"] isEqual:startup ? @"gpu_initialization" : modules ? @"nnMain" : @"module_initializers"]);
+    CHECK([report[@"stop_before"] isEqual:gpuSetup ? @"guest_gpu_submission" : startup ? @"gpu_initialization" : modules ? @"nnMain" : @"module_initializers"]);
     NSData *before = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"boot-report.json"]];
     CHECK(!dm_boot_probe_begin(argv[2]));
     CHECK([before isEqual:[NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"boot-report.json"]]]);
@@ -48,12 +62,30 @@ int main(int argc, char **argv) { @autoreleasepool {
                     CHECK(dm_boot_probe_checkpoint("nnMain",0));
                     dm_boot_probe_note("fs_open","rom:/synthetic/\"test\".cpk");
                     CHECK([readReport(directory)[@"current_detail"] isEqual:@"rom:/synthetic/\"test\".cpk"]);
-                    if (!strcmp(argv[1],"startup-return")) {
+                    if (gpuSetup) {
+                        pthread_t owner, contender; CHECK(!pthread_create(&owner,NULL,setupWorker,NULL)); pthread_detach(owner);
+                        for (int i=0;i<200 && !atomic_load(&setupEntered);i++) usleep(5000);
+                        CHECK(atomic_load(&setupEntered)==1);
+                        CHECK(!pthread_create(&contender,NULL,setupWorker,NULL)); pthread_detach(contender);
+                        usleep(10000); CHECK(atomic_load(&setupEntered)==1 && !atomic_load(&escaped));
+                        if (!strcmp(argv[1],"gpu-setup-failure")) dm_boot_probe_failure("synthetic setup failure");
+                        else if (!strcmp(argv[1],"gpu-setup-timeout")) CHECK(dm_boot_probe_timeout());
+                        else if (!strcmp(argv[1],"gpu-setup-submit") || !strcmp(argv[1],"gpu-setup-wrong-owner")) {
+                            pthread_t thread; CHECK(!pthread_create(&thread,NULL,!strcmp(argv[1],"gpu-setup-submit") ? submission : wrongOwner,NULL)); pthread_detach(thread);
+                            for (int i=0;i<200;i++) { usleep(5000); if (![readReport(directory)[@"status"] isEqual:@"running"]) break; }
+                        } else CHECK(!strcmp(argv[1],"gpu-setup"));
+                        atomic_store(&releaseSetup,1);
+                        for (int i=0;i<200;i++) { usleep(5000); report=readReport(directory); if (![report[@"status"] isEqual:@"running"]) break; }
+                        CHECK(!atomic_load(&escaped) && atomic_load(&setupEntered)==1);
+                        CHECK([report[@"gpu_initialization_started"] isEqual:@YES]);
+                        CHECK([report[@"gpu_initialization_completed"] boolValue] == !strcmp(argv[1],"gpu-setup"));
+                        if (!strcmp(argv[1],"gpu-setup")) CHECK([report[@"gpu_backend"] isEqual:@"synthetic backend"] && [report[@"gpu_device"] isEqual:@"synthetic device"]);
+                    } else if (!strcmp(argv[1],"startup-return")) {
                         CHECK(dm_boot_probe_checkpoint("nnMain",1));
                         CHECK(!dm_boot_probe_checkpoint("nnMain",0));
                     } else if (!strcmp(argv[1],"startup-timeout")) CHECK(dm_boot_probe_timeout());
-                    else if (!strcmp(argv[1],"startup-gpu")) {
-                        pthread_t thread; CHECK(!pthread_create(&thread,NULL,blocked,NULL)); pthread_detach(thread);
+                    else if (!strcmp(argv[1],"startup-gpu") || !strcmp(argv[1],"startup-gpu-entry")) {
+                        pthread_t thread; CHECK(!pthread_create(&thread,NULL,!strcmp(argv[1],"startup-gpu-entry") ? gpuEntry : blocked,NULL)); pthread_detach(thread);
                         for (int i=0;i<200;i++) {
                             usleep(5000); report=readReport(directory);
                             if ([report[@"status"] isEqual:@"blocked_before_unverified_operation"]) break;
@@ -69,7 +101,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         }
         CHECK(!dm_boot_probe_timeout());
         report = readReport(directory);
-        NSString *status = !strcmp(argv[1],"startup-return") ? @"game_main_returned" : !strcmp(argv[1],"startup-timeout") ? @"timeout" : !strcmp(argv[1],"startup-gpu") ? @"blocked_before_unverified_operation" : modules ? !strcmp(argv[1],"modules-failure") ? @"failed" : @"stopped_before_game_main" : @"stopped_before_module_initializers";
+        NSString *status = gpuSetup ? !strcmp(argv[1],"gpu-setup") ? @"stopped_after_gpu_initialization" : !strcmp(argv[1],"gpu-setup-timeout") ? @"timeout" : !strcmp(argv[1],"gpu-setup-submit") ? @"blocked_before_unverified_operation" : @"failed" : !strcmp(argv[1],"startup-return") ? @"game_main_returned" : !strcmp(argv[1],"startup-timeout") ? @"timeout" : (!strcmp(argv[1],"startup-gpu") || !strcmp(argv[1],"startup-gpu-entry")) ? @"blocked_before_unverified_operation" : modules ? !strcmp(argv[1],"modules-failure") ? @"failed" : @"stopped_before_game_main" : @"stopped_before_module_initializers";
         CHECK([report[@"status"] isEqual:status]);
         CHECK([report[@"completed_sdk_entries"] intValue] == 6);
         CHECK([report[@"completed_argument_entries"] intValue] == (startup || !strcmp(argv[1],"modules") ? 2 : 0));
@@ -100,6 +132,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     CHECK([report[@"module_initializers_called"] boolValue] == modules);
     CHECK([report[@"module_initializers_completed"] boolValue] == (startup || !strcmp(argv[1],"modules")));
     CHECK([report[@"guest_gpu_work_submitted"] isEqual:@NO]);
+    if (!gpuSetup) CHECK([report[@"gpu_initialization_started"] isEqual:@NO] && [report[@"gpu_initialization_completed"] isEqual:@NO]);
     CHECK([report[@"restart_required"] isEqual:@YES]);
     printf("BOOT PROBE %s OK\n",argv[1]); return 0;
 } }

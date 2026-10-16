@@ -10,6 +10,11 @@ FW=-framework Metal -framework Foundation -framework QuartzCore -framework Image
 # Host crash.c is linked in as well: the write-protect unit tests go through the same page-fault hook as production
 t_nvn: t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_nvn.c ../../host/crash.c $(GFX) $(FW)
+# 实际 Metal 3 后端初始化诊断：不提交客体指令，使用生产报告实现。
+# Probe actual Metal 3 backend setup without guest submission, using the production report implementation.
+t_nvn_gpu_setup: t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c ../../ios/p5r/boot_probe.m ../../host/boot_probe.h $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_P5R_ONLY=1 -DDM_NVN_M3=1 -I../../host -fblocks -fobjc-arc -o $@ t_nvn.c ../../host/crash.c ../../ios/p5r/boot_probe.m $(GFX) $(FW)
+
 t_dirty_slots: t_dirty_slots.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
 	clang $(CFLAGS) -o $@ t_dirty_slots.c ../../host/crash.c ../nvn/nvn_dirty.c
 t_dirty_race: t_dirty_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h

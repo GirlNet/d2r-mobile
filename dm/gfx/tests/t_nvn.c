@@ -130,7 +130,33 @@ static void test_fast_clear_registry(const NVNdeviceBuilder *db) {
     P(nvnDeviceFinalize)(d);P(nvnDeviceFinalize)(&other);
 }
 
+#ifdef DM_P5R_ONLY
+// 实际后端设置结束后线程必须留在生产停止边界；启用 UDC 开关也不能越过该边界。
+// After real backend setup the thread must remain at the production stop boundary, even with the UDC self-test switch enabled.
+static _Atomic int setupEscaped;
+static void *realSetup(void *unused) { (void)unused; mtl_init(); atomic_store(&setupEscaped,1); return NULL; }
+static int realSetupProbe(const char *directory) {
+    if (!dm_boot_probe_begin_gpu_setup(directory) || !dm_boot_probe_checkpoint("nnMain",0)) return 1;
+    setenv("DM_UDC_SELFTEST","1",1);
+    pthread_t thread; if (pthread_create(&thread,NULL,realSetup,NULL)) return 1; pthread_detach(thread);
+    char path[2048], data[32768]; snprintf(path,sizeof path,"%s/boot-report.json",directory);
+    for (int i=0;i<4000;i++) {
+        usleep(10000); FILE *f=fopen(path,"rb"); if (!f) continue;
+        size_t n=fread(data,1,sizeof data-1,f); fclose(f); data[n]=0;
+        if (strstr(data,"stopped_after_gpu_initialization")) {
+            if (atomic_load(&setupEscaped)) return 1;
+            puts("REAL METAL SETUP OK: backend objects initialized; owner parked before returning to guest"); return 0;
+        }
+        if (strstr(data,"failure_reason") || strstr(data,"process_exit_requested")) return 1;
+    }
+    return 1;
+}
+#endif
+
 int main(int argc, char **argv) {
+#ifdef DM_P5R_ONLY
+    if (argc==3 && !strcmp(argv[1],"--gpu-setup-probe")) return realSetupProbe(argv[2]);
+#endif
     crash_install();   // 生产同一套 SIGSEGV / SIGBUS 处理（缺页钩子在其中分发） | the same SIGSEGV / SIGBUS handling as production (the page-fault hook is dispatched from within it)
     // 1. 引导取址：bootstrap 取 GetProcAddress，再用它取全部名字
     // 1. Bootstrap address lookup: bootstrap gets GetProcAddress, then uses it to get all the names

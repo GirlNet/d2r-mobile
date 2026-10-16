@@ -40,3 +40,5 @@ python3 dm/tools/p5r_pack.py /path/P5RMobile-shell-unsigned.ipa /path/port-prepa
 旁边的 `.report.json` 记录散列，并明确保留 `runtime_ready=false`、`graphics_verified=false`、`device_verified=false`、`signed=false`。UIKit 启动页显示图形待验证状态，正常游戏启动保持禁用；独立诊断按钮只执行选定的初始化阶段。未来经过验证的运行时包还需要使用者将自己的 RomFS 放到 `Documents/romfs/`；本工具不把 RomFS 装入 IPA。存档和临时目录独立使用 `save-p5r`、`temp-p5r`。
 
 安装前必须同时签名应用和 Guest 框架。此流程不安装应用、不获取证书、不修改描述文件、不上传游戏衍生文件。含游戏的完整 IPA 和诊断报告应保留在本地。
+
+导入本地 RomFS 后，当前启动器使用“图形初始化诊断”。新模式允许后端对象设置，随后在返回客体或提交游戏 GPU 工作前停止。`stopped_after_gpu_initialization` 只能证明后端初始化，不能证明游戏着色器、CPK 完整性、画面或可玩性。真机运行后提供新生成的本地启动报告和运行日志。App 与 Guest 框架仍需一起签名；更新时保留现有 RomFS。

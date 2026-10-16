@@ -81,7 +81,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     self.gpuStatus.font = [UIFont systemFontOfSize:13]; self.gpuStatus.numberOfLines = 0;
     self.gpuStatus.textAlignment = NSTextAlignmentCenter;
     self.bootProbe = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.bootProbe setTitle:text("dmP5RStartupProbe") forState:UIControlStateNormal];
+    [self.bootProbe setTitle:text("dmP5RGpuSetupProbe") forState:UIControlStateNormal];
     [self.bootProbe addTarget:self action:@selector(probeBoot) forControlEvents:UIControlEventTouchUpInside];
     self.menu = [[UIStackView alloc] initWithArrangedSubviews:@[self.status,self.launch,self.gpuTest,self.bootProbe,self.gpuStatus]];
     self.menu.axis = UILayoutConstraintAxisVertical; self.menu.spacing = 12;
@@ -158,10 +158,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         self.gpuStatus.text = text("dmP5RStartupNeedsRomfs"); return;
     }
     NSString *directory = [documents stringByAppendingPathComponent:[@"p5r-boot-probe-" stringByAppendingString:NSUUID.UUID.UUIDString]];
-    if (!dm_boot_probe_begin_startup(directory.fileSystemRepresentation)) { self.gpuStatus.text = text("dmP5RBootReportFailed"); return; }
+    if (!dm_boot_probe_begin_gpu_setup(directory.fileSystemRepresentation)) { self.gpuStatus.text = text("dmP5RBootReportFailed"); return; }
     started = 1; self.probingBoot = YES; self.probeDirectory = directory;
     self.launch.enabled = self.gpuTest.enabled = self.bootProbe.enabled = NO;
-    self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RStartupRunning"),directory.lastPathComponent];
+    self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RGpuSetupRunning"),directory.lastPathComponent];
     int log = open([directory stringByAppendingPathComponent:@"runtime.log"].fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL,0600);
     if (log < 0) { dm_boot_probe_failure("cannot create runtime.log"); return; }
     int redirected = dup2(log,STDERR_FILENO); close(log);

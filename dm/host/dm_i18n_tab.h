@@ -374,4 +374,6 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmP5RStartupProbe", "启动诊断", "Probe Startup" },
     { "dmP5RStartupRunning", "正在诊断游戏启动；图形初始化前停止。最长 30 秒，超时会退出 App。文稿目录：%@。", "Probing game startup; stop before graphics initialization. Up to 30 seconds; timeout closes the app. Documents folder: %@." },
     { "dmP5RStartupNeedsRomfs", "请先将资源包中的 romfs 文件夹放到本 App 文稿根目录，再运行启动诊断。", "Place the resource package’s romfs folder in this app’s Documents root before probing startup." },
+    { "dmP5RGpuSetupProbe", "图形初始化诊断", "Probe Graphics Initialization" },
+    { "dmP5RGpuSetupRunning", "正在初始化图形后端，完成后停止，不提交游戏画面。最长 30 秒，超时会退出 App。文稿目录：%@。", "Initializing the graphics backend; stop after setup without submitting game graphics. Up to 30 seconds; timeout closes the app. Documents folder: %@." },
 };
