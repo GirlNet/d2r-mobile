@@ -344,9 +344,15 @@ void mtl_init(void) {
     rd.initialCapacity = 4096;
     NSError *re = nil;
     g_res = [g_dev newResidencySetWithDescriptor:rd error:&re];
-    if (!g_res) MDIE("建立 MTLResidencySet 失败");
-    [g_q addResidencySet:g_res];
-    dm_boot_probe_note("gpu_setup_queue","Metal queue and residency set created");
+#if DM_NVN_M3
+    // Metal 3 已按编码器声明间接资源；虚拟设备没有驻留集时沿用该路径，不影响 Metal 4 的必需条件。
+    // Metal 3 already declares indirect resources per encoder; retain that path when a virtual device lacks residency sets, without relaxing Metal 4 requirements.
+    if (!g_res) MLOG("Metal 3 residency sets unavailable; using encoder resource declarations: %s",re.localizedDescription.UTF8String ?: "unknown error");
+#else
+    if (!g_res) MDIE("建立 MTLResidencySet 失败：%s",re.localizedDescription.UTF8String ?: "unknown error");
+#endif
+    if (g_res) [g_q addResidencySet:g_res];
+    dm_boot_probe_note("gpu_setup_queue",g_res ? "Metal queue and residency set created" : "Metal 3 queue created; encoder resource declarations retained");
     { void crash_set_wait_dump(void (*fn)(void)); void mtl_wait_state_dump(void); crash_set_wait_dump(mtl_wait_state_dump); }
 #if !DM_NVN_M3
     dispatch_queue_attr_t feedback_attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
