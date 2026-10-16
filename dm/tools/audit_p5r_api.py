@@ -14,15 +14,22 @@ def audit(root):
         implementations += re.findall(r"NVN(?:_NOPROTO)?\((nvn\w+),", path.read_text(encoding="utf-8"))
     assert len(names) == len(set(names)), "Duplicate registered names"
     assert len(implementations) == len(set(implementations)), "Duplicate implementations"
-    assert set(implementations) <= set(names), "Implementation lacks a static thunk"
+    capture_source = (nvn / "nvn_probe_commands.inc").read_text(encoding="utf-8")
+    captures = re.findall(r"NVN_CAPTURE\((nvn\w+),", capture_source)
+    assert len(captures) == len(set(captures)) and not set(captures) & set(implementations), "Duplicate capture registrations"
+    registered = set(implementations) | set(captures)
+    assert registered <= set(names), "Implementation lacks a static thunk"
     batch = re.findall(r"NVN\((nvn\w+),", sources[1].read_text(encoding="utf-8"))
     tests = (root / "dm/gfx/tests/t_startup_batch.inc").read_text(encoding="utf-8")
+    capture_tests = (root / "dm/gfx/tests/t_probe_command_capture.inc").read_text(encoding="utf-8")
+    assert set(captures) <= set(re.findall(r"P\((nvn\w+)\)", capture_tests)), "Capture interface lacks a typed regression call"
     assert set(batch) <= set(re.findall(r"P\((nvn\w+)\)", tests)), "Batch interface lacks a direct typed regression call"
     return dict(schema_version=1, registered=len(names), host_implemented=len(implementations),
-                named_unimplemented=len(set(names)-set(implementations)), batch_implemented=len(batch),
+                named_unimplemented=len(set(names)-registered), batch_implemented=len(batch),
+                diagnostic_only_capture=len(captures), capture_requires_active_pre_submit_probe=True,
                 game_graphics_verified=False, runtime_ready=False,
                 scope="Source registration and direct regression-call coverage only; not ABI/GPU equivalence proof",
-                unimplemented=[n for n in names if n not in implementations])
+                unimplemented=[n for n in names if n not in registered], diagnostic_only_interfaces=captures)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

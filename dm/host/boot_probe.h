@@ -10,6 +10,7 @@ int dm_boot_probe_begin_pre_submit(const char *directory);
 int dm_boot_probe_gpu_begin(void);
 void dm_boot_probe_gpu_complete(const char *backend, const char *device);
 int dm_boot_probe_active(void);
+int dm_boot_probe_capture_command(const char *name, unsigned count, const unsigned long long *arguments);
 void dm_boot_probe_note(const char *event, const char *detail);
 void dm_boot_probe_failure(const char *reason);
 int dm_boot_probe_checkpoint(const char *entry, int completed);
@@ -19,6 +20,7 @@ int dm_boot_probe_timeout(void);
 static inline int dm_boot_probe_gpu_begin(void) { return 0; }
 static inline void dm_boot_probe_gpu_complete(const char *backend, const char *device) { (void)backend; (void)device; }
 static inline int dm_boot_probe_active(void) { return 0; }
+static inline int dm_boot_probe_capture_command(const char *name, unsigned count, const unsigned long long *arguments) { (void)name; (void)count; (void)arguments; return 0; }
 static inline void dm_boot_probe_note(const char *event, const char *detail) { (void)event; (void)detail; }
 static inline void dm_boot_probe_failure(const char *reason) { (void)reason; }
 static inline int dm_boot_probe_checkpoint(const char *entry, int completed) { (void)entry; (void)completed; return 1; }

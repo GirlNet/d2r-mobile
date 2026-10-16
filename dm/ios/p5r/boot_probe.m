@@ -33,6 +33,23 @@ static void append(NSString *event, NSString *detail) {
     else report[@"events_truncated"] = @YES;
 }
 int dm_boot_probe_active(void) { return atomic_load(&active); }
+// 只在提交前模式且后端已完成时记录已知 ABI 的调用参数；不表示这些命令有 GPU 实现。
+// Capture known-ABI call arguments only in pre-submit mode after backend completion; this does not imply GPU implementations.
+int dm_boot_probe_capture_command(const char *name, unsigned count, const unsigned long long *arguments) { @autoreleasepool {
+    if (!atomic_load(&active) || count>8 || (count && !arguments)) return 0;
+    pthread_mutex_lock(&mutex);
+    if (probeMode!=4 || atomic_load(&terminal) || ![report[@"gpu_initialization_completed"] boolValue]) { pthread_mutex_unlock(&mutex); return 0; }
+    NSMutableDictionary *calls=report[@"diagnostic_only_calls"];
+    if (!calls) { calls=[NSMutableDictionary dictionary];report[@"diagnostic_only_calls"]=calls; }
+    NSString *key=string(name);NSMutableDictionary *entry=calls[key];
+    if (!entry && calls.count>=128) { report[@"diagnostic_calls_truncated"]=@YES;save();pthread_mutex_unlock(&mutex);return 0; }
+    if (!entry) { entry=[@{@"count":@0} mutableCopy];calls[key]=entry;append(@"diagnostic_only_nvn",key); }
+    NSMutableArray *values=[NSMutableArray array];for(unsigned i=0;i<count;i++)[values addObject:[NSString stringWithFormat:@"0x%016llx",arguments[i]]];
+    entry[@"count"]=@([entry[@"count"] unsignedLongLongValue]+1);entry[@"last_argument_bits"]=values;
+    report[@"diagnostic_only_call_count"]=@([report[@"diagnostic_only_call_count"] unsignedLongLongValue]+1);
+    report[@"command_stream_gpu_verified"]=@NO;report[@"current_stage"]=@"diagnostic_only_nvn";report[@"current_detail"]=key;
+    save();pthread_mutex_unlock(&mutex);return 1;
+} }
 static int begin(const char *directory, int mode) { @autoreleasepool {
     pthread_mutex_lock(&mutex);
     NSString *path = string(directory);

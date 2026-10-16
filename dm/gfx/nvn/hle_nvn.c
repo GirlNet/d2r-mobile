@@ -1372,3 +1372,5 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
 }
 
 #include "nvn_startup_batch.inc"
+
+#include "nvn_probe_commands.inc"

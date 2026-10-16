@@ -52,7 +52,7 @@ def build(output):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda p: run(p[2], p[3]), plan))
     failed = [str(p[0].relative_to(REPO)) for p, code in zip(plan, results) if code]
-    fingerprint_files = [p[0] for p in plan] + [REPO / 'dm/gfx/nvn/nvn_startup_batch.inc']
+    fingerprint_files = [p[0] for p in plan] + [REPO / 'dm/gfx/nvn/nvn_startup_batch.inc', REPO / 'dm/gfx/nvn/nvn_probe_commands.inc']
     report = dict(profile='p5r', game_content_included=False, signed=False, runtime_ready=False,
                   sources=[str(p[0].relative_to(REPO)) for p in plan], failed_sources=failed,
                   fingerprint_sources=[str(p.relative_to(REPO)) for p in fingerprint_files],

@@ -1,5 +1,12 @@
 // 启动接口批量补全：依据 nvn.h 的签名及现有宿主对象/命令格式；未验证 GPU 功能仍走具名停止桩。
 // Batch startup interfaces from nvn.h signatures and existing host objects/command formats; unverified GPU features retain named stops.
+// 宿主共享池只提供通用非压缩存储类；0x100 是类标签，低字节 0 是宿主策略，不声称 Tegra 压缩种类一致。
+// Shared host pools expose a generic uncompressed class: 0x100 is the class tag and low byte 0 is host policy, not Tegra compression-kind equivalence.
+static NVNstorageClass host_storage_class(const nvn_texdesc *d) { return d && nvn_fmt_bpb(d->format,NULL,NULL) ? 0x100 : 0; }
+NVN(nvnTextureBuilderGetStorageClass, NVNstorageClass, const NVNtextureBuilder *b) { return b ? host_storage_class(&((const tex_builder_t *)b)->d) : 0; }
+NVN(nvnTextureGetStorageClass, NVNstorageClass, const NVNtexture *t) { return t && ((const tex_t *)t)->magic==MAGIC('T','E','X',0) ? host_storage_class(&((const tex_t *)t)->d) : 0; }
+NVN(nvnMultisampleStateGetAlphaToCoverageDither, NVNboolean, const NVNmultisampleState *s) { return ((const ms_st *)s)->a2c_dither!=0; }
+NVN(nvnMultisampleStateGetRasterSamples, int, NVNmultisampleState *s) { return ((const ms_st *)s)->raster_samples; }
 NVN(nvnDeviceBuilderGetFlags, int, const NVNdeviceBuilder *p) { return (int)(((const dev_builder_t *)p)->flags); }
 NVN(nvnDeviceGetWindowOriginMode, NVNwindowOriginMode, const NVNdevice *p) { return (NVNwindowOriginMode)(((const dev_t_ *)p)->origin); }
 NVN(nvnDeviceGetDepthMode, NVNdepthMode, const NVNdevice *p) { return (NVNdepthMode)(((const dev_t_ *)p)->depth_mode); }

@@ -43,6 +43,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     CHECK(argc == 3);
     NSString *directory = @(argv[2]);
     CHECK(!dm_boot_probe_active() && dm_boot_probe_checkpoint("inactive",0) && !dm_boot_probe_timeout());
+    CHECK(!dm_boot_probe_capture_command("inactive",0,NULL));
     dm_boot_probe_block("inactive","must return"); CHECK(!dm_boot_probe_gpu_begin()); dm_boot_probe_gpu_complete("inactive","inactive");
     int gpuSetup = !strncmp(argv[1],"gpu-setup",9);
     int preSubmit = !strncmp(argv[1],"pre-submit",10);
@@ -50,6 +51,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     int modules = startup || !strcmp(argv[1],"modules") || !strcmp(argv[1],"modules-failure");
     CHECK((preSubmit ? dm_boot_probe_begin_pre_submit(argv[2]) : gpuSetup ? dm_boot_probe_begin_gpu_setup(argv[2]) : startup ? dm_boot_probe_begin_startup(argv[2]) : modules ? dm_boot_probe_begin_modules(argv[2]) : dm_boot_probe_begin(argv[2])) && dm_boot_probe_active());
     NSDictionary *report = readReport(directory); CHECK([report[@"status"] isEqual:@"running"]);
+    CHECK(!dm_boot_probe_capture_command("before_setup",0,NULL));
     CHECK([report[@"stop_before"] isEqual:gpuSetup || preSubmit ? @"guest_gpu_submission" : startup ? @"gpu_initialization" : modules ? @"nnMain" : @"module_initializers"]);
     NSData *before = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"boot-report.json"]];
     CHECK(!dm_boot_probe_begin(argv[2]));
@@ -89,6 +91,15 @@ int main(int argc, char **argv) { @autoreleasepool {
                             CHECK(atomic_load(&setupReturned)==2 && atomic_load(&setupEntered)==1);
                             report=readReport(directory); CHECK([report[@"status"] isEqual:@"running"] && [report[@"gpu_initialization_completed"] isEqual:@YES]);
                             CHECK(!dm_boot_probe_gpu_begin());
+                            unsigned long long bits[2]={0x101,0x3e800000};
+                            CHECK(!dm_boot_probe_capture_command("invalid_count",9,bits));
+                            CHECK(!dm_boot_probe_capture_command("null_arguments",1,NULL));
+                            CHECK(dm_boot_probe_capture_command("synthetic_capture",2,bits));
+                            bits[0]=0x8000000000000000ull;CHECK(dm_boot_probe_capture_command("synthetic_capture",2,bits));
+                            report=readReport(directory);CHECK([report[@"diagnostic_only_call_count"] intValue]==2);
+                            NSDictionary *call=report[@"diagnostic_only_calls"][@"synthetic_capture"];
+                            CHECK([call[@"count"] intValue]==2 && [call[@"last_argument_bits"][0] isEqual:@"0x8000000000000000"]);
+                            CHECK([report[@"command_stream_gpu_verified"] isEqual:@NO]);
                             dm_boot_probe_note("resource_setup","synthetic resource checkpoint");
                             if (!strcmp(argv[1],"pre-submit-timeout")) CHECK(dm_boot_probe_timeout());
                             else { CHECK(!strcmp(argv[1],"pre-submit")); pthread_t t; CHECK(!pthread_create(&t,NULL,guardedSubmission,NULL)); pthread_detach(t); for (int i=0;i<200;i++) { usleep(5000); if (![readReport(directory)[@"status"] isEqual:@"running"]) break; } }
