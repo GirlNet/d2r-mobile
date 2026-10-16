@@ -52,8 +52,10 @@ def build(output):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda p: run(p[2], p[3]), plan))
     failed = [str(p[0].relative_to(REPO)) for p, code in zip(plan, results) if code]
+    fingerprint_files = [p[0] for p in plan] + [REPO / 'dm/gfx/nvn/nvn_startup_batch.inc']
     report = dict(profile='p5r', game_content_included=False, signed=False, runtime_ready=False,
                   sources=[str(p[0].relative_to(REPO)) for p in plan], failed_sources=failed,
+                  fingerprint_sources=[str(p.relative_to(REPO)) for p in fingerprint_files],
                   linked=False, packaged=False)
     report_path = output / 'build-report.json'
     def save(): report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
@@ -93,7 +95,7 @@ def build(output):
                 UISupportedInterfaceOrientations=['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'])
     (app / 'Info.plist').write_bytes(plistlib.dumps(info))
     (app / 'dm/p5r-shell.json').write_text(json.dumps(dict(schema_version=1, profile='p5r', game_content_included=False,
-        source_fingerprint=hashlib.sha256(b''.join(p[0].read_bytes() for p in plan)).hexdigest(),
+        source_fingerprint=hashlib.sha256(b''.join(p.read_bytes() for p in fingerprint_files)).hexdigest(),
         shader_chain=(REPO / 'dm/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]), indent=2) + '\n')
     archive = output / 'P5RMobile-shell-unsigned.ipa'
     with zipfile.ZipFile(archive, 'x', compression=zipfile.ZIP_DEFLATED) as zipped:

@@ -243,6 +243,8 @@ static void test_pool_accessors(void) {
     EXPECT("池构建器边界 / pool builder bounds",1,builder.before==0x11223344 && builder.after==0x55667788);
 }
 
+#include "t_startup_batch.inc"
+
 #ifdef DM_P5R_ONLY
 // 实际后端设置结束后线程必须留在生产停止边界；启用 UDC 开关也不能越过该边界。
 // After real backend setup the thread must remain at the production stop boundary, even with the UDC self-test switch enabled.
@@ -329,6 +331,7 @@ int main(int argc, char **argv) {
     test_fast_clear_registry(&db);
     test_buffers();
     test_pool_accessors();
+    test_startup_batch();
     int named = 0;
     for (unsigned i = 523; i < NVN_NFUNC; i++) {
         named += nvn_slot[i].fn == (void *)nvn_unimpl_entry && (void *)gpa(&dev,nvn_names[i]) == nvn_thunk[i];

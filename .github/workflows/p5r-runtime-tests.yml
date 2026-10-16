@@ -73,6 +73,8 @@ jobs:
           persist-credentials: false
       - name: Generate shader cache version from this checkout
         run: python3 dm/gfx/tools/dmsh_chain.py --header
+      - name: Audit registered startup API coverage
+        run: python3 dm/tools/audit_p5r_api.py
       - name: Check changed host sources
         run: |
           set -euo pipefail

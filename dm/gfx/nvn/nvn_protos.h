@@ -5,6 +5,7 @@
 
 typedef void (*NVNT_nvnDeviceBuilderSetDefaults)(NVNdeviceBuilder*);
 typedef void (*NVNT_nvnDeviceBuilderSetFlags)(NVNdeviceBuilder*, int);
+typedef int (*NVNT_nvnDeviceBuilderGetFlags)(const NVNdeviceBuilder*);
 typedef NVNboolean (*NVNT_nvnDeviceInitialize)(NVNdevice*, const NVNdeviceBuilder*);
 typedef void (*NVNT_nvnDeviceFinalize)(NVNdevice*);
 typedef void (*NVNT_nvnDeviceSetDebugLabel)(NVNdevice*, const char*);
@@ -46,6 +47,14 @@ typedef void (*NVNT_nvnQueueBuilderSetControlMemorySize)(NVNqueueBuilder*, size_
 typedef size_t (*NVNT_nvnQueueBuilderGetQueueMemorySize)(const NVNqueueBuilder*);
 typedef void (*NVNT_nvnQueueBuilderSetQueueMemory)(NVNqueueBuilder*, void*, size_t);
 typedef void (*NVNT_nvnQueueBuilderSetCommandFlushThreshold)(NVNqueueBuilder*, size_t);
+typedef NVNdevice * (*NVNT_nvnQueueBuilderGetDevice)(const NVNqueueBuilder*);
+typedef int (*NVNT_nvnQueueBuilderGetFlags)(const NVNqueueBuilder*);
+typedef size_t (*NVNT_nvnQueueBuilderGetCommandMemorySize)(const NVNqueueBuilder*);
+typedef size_t (*NVNT_nvnQueueBuilderGetComputeMemorySize)(const NVNqueueBuilder*);
+typedef size_t (*NVNT_nvnQueueBuilderGetControlMemorySize)(const NVNqueueBuilder*);
+typedef size_t (*NVNT_nvnQueueBuilderGetCommandFlushThreshold)(const NVNqueueBuilder*);
+typedef size_t (*NVNT_nvnQueueBuilderGetMemorySize)(const NVNqueueBuilder*);
+typedef void * (*NVNT_nvnQueueBuilderGetMemory)(const NVNqueueBuilder*);
 typedef NVNboolean (*NVNT_nvnQueueInitialize)(NVNqueue*, const NVNqueueBuilder*);
 typedef void (*NVNT_nvnQueueFinalize)(NVNqueue*);
 typedef void (*NVNT_nvnQueueSetDebugLabel)(NVNqueue*, const char*);
@@ -59,6 +68,9 @@ typedef void (*NVNT_nvnWindowBuilderSetDefaults)(NVNwindowBuilder*);
 typedef void (*NVNT_nvnWindowBuilderSetNativeWindow)(NVNwindowBuilder*, NVNnativeWindow);
 typedef void (*NVNT_nvnWindowBuilderSetTextures)(NVNwindowBuilder*, int, NVNtexture* const*);
 typedef void (*NVNT_nvnWindowBuilderSetPresentInterval)(NVNwindowBuilder*, int);
+typedef NVNdevice * (*NVNT_nvnWindowBuilderGetDevice)(const NVNwindowBuilder*);
+typedef int (*NVNT_nvnWindowBuilderGetNumTextures)(const NVNwindowBuilder*);
+typedef NVNtexture * (*NVNT_nvnWindowBuilderGetTexture)(const NVNwindowBuilder*, int);
 typedef NVNnativeWindow (*NVNT_nvnWindowBuilderGetNativeWindow)(const NVNwindowBuilder*);
 typedef int (*NVNT_nvnWindowBuilderGetPresentInterval)(const NVNwindowBuilder*);
 typedef NVNboolean (*NVNT_nvnWindowInitialize)(NVNwindow*, const NVNwindowBuilder*);
@@ -149,6 +161,7 @@ typedef void (*NVNT_nvnTextureBuilderSetPackagedTextureLayout)(NVNtextureBuilder
 typedef void (*NVNT_nvnTextureBuilderSetStride)(NVNtextureBuilder*, ptrdiff_t);
 typedef void (*NVNT_nvnTextureBuilderSetGLTextureName)(NVNtextureBuilder*, uint32_t);
 typedef NVNstorageClass (*NVNT_nvnTextureBuilderGetStorageClass)(const NVNtextureBuilder*);
+typedef NVNdevice * (*NVNT_nvnTextureBuilderGetDevice)(const NVNtextureBuilder*);
 typedef NVNtextureFlags (*NVNT_nvnTextureBuilderGetFlags)(const NVNtextureBuilder*);
 typedef NVNtextureTarget (*NVNT_nvnTextureBuilderGetTarget)(const NVNtextureBuilder*);
 typedef int (*NVNT_nvnTextureBuilderGetWidth)(const NVNtextureBuilder*);
@@ -164,7 +177,7 @@ typedef ptrdiff_t (*NVNT_nvnTextureBuilderGetStride)(const NVNtextureBuilder*);
 typedef void (*NVNT_nvnTextureBuilderGetSparseTileLayout)(const NVNtextureBuilder*, NVNtextureSparseTileLayout*);
 typedef uint32_t (*NVNT_nvnTextureBuilderGetGLTextureName)(const NVNtextureBuilder*);
 typedef size_t (*NVNT_nvnTextureBuilderGetZCullStorageSize)(const NVNtextureBuilder*);
-typedef NVNmemoryPool (*NVNT_nvnTextureBuilderGetMemoryPool)(const NVNtextureBuilder*);
+typedef NVNmemoryPool* (*NVNT_nvnTextureBuilderGetMemoryPool)(const NVNtextureBuilder*);
 typedef ptrdiff_t (*NVNT_nvnTextureBuilderGetMemoryOffset)(const NVNtextureBuilder*);
 typedef void (*NVNT_nvnTextureViewSetDefaults)(NVNtextureView*);
 typedef void (*NVNT_nvnTextureViewSetLevels)(NVNtextureView*, int, int);
@@ -205,7 +218,7 @@ typedef void (*NVNT_nvnTextureReadTexels)(const NVNtexture*, const NVNtextureVie
 typedef void (*NVNT_nvnTextureReadTexelsStrided)(const NVNtexture*, const NVNtextureView*, const NVNcopyRegion*, void*, ptrdiff_t, ptrdiff_t);
 typedef void (*NVNT_nvnTextureFlushTexels)(const NVNtexture*, const NVNtextureView*, const NVNcopyRegion*);
 typedef void (*NVNT_nvnTextureInvalidateTexels)(const NVNtexture*, const NVNtextureView*, const NVNcopyRegion*);
-typedef NVNmemoryPool (*NVNT_nvnTextureGetMemoryPool)(const NVNtexture*);
+typedef NVNmemoryPool* (*NVNT_nvnTextureGetMemoryPool)(const NVNtexture*);
 typedef ptrdiff_t (*NVNT_nvnTextureGetMemoryOffset)(const NVNtexture*);
 typedef int (*NVNT_nvnTextureGetStorageSize)(const NVNtexture*);
 typedef NVNboolean (*NVNT_nvnTextureCompare)(const NVNtexture*, const NVNtexture*);
@@ -223,6 +236,7 @@ typedef void (*NVNT_nvnSamplerBuilderSetBorderColorui)(NVNsamplerBuilder*, const
 typedef void (*NVNT_nvnSamplerBuilderSetMaxAnisotropy)(NVNsamplerBuilder*, float);
 typedef void (*NVNT_nvnSamplerBuilderSetReductionFilter)(NVNsamplerBuilder*, NVNsamplerReduction);
 typedef void (*NVNT_nvnSamplerBuilderSetLodSnap)(NVNsamplerBuilder*, float);
+typedef NVNdevice * (*NVNT_nvnSamplerBuilderGetDevice)(const NVNsamplerBuilder*);
 typedef void (*NVNT_nvnSamplerBuilderGetMinMagFilter)(const NVNsamplerBuilder*, NVNminFilter*, NVNmagFilter*);
 typedef void (*NVNT_nvnSamplerBuilderGetWrapMode)(const NVNsamplerBuilder*, NVNwrapMode*, NVNwrapMode*, NVNwrapMode*);
 typedef void (*NVNT_nvnSamplerBuilderGetLodClamp)(const NVNsamplerBuilder*, float*, float*);
@@ -466,7 +480,7 @@ typedef void (*NVNT_nvnCommandBufferInsertDebugMarkerStatic)(NVNcommandBuffer*, 
 typedef void (*NVNT_nvnCommandBufferInsertDebugMarkerDynamic)(NVNcommandBuffer*, uint32_t, const char*);
 typedef void (*NVNT_nvnCommandBufferInsertDebugMarker)(NVNcommandBuffer*, const char*);
 typedef PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC (*NVNT_nvnCommandBufferGetMemoryCallback)(const NVNcommandBuffer*);
-typedef void (*NVNT_nvnCommandBufferGetMemoryCallbackData)(const NVNcommandBuffer*);
+typedef void* (*NVNT_nvnCommandBufferGetMemoryCallbackData)(const NVNcommandBuffer*);
 typedef NVNboolean (*NVNT_nvnCommandBufferIsRecording)(const NVNcommandBuffer*);
 typedef NVNboolean (*NVNT_nvnSyncInitialize)(NVNsync*, NVNdevice*);
 typedef void (*NVNT_nvnSyncFinalize)(NVNsync*);
@@ -483,33 +497,20 @@ typedef void (*NVNT_nvnEventSignal)(NVNevent*, NVNeventSignalMode, uint32_t);
 typedef void (*NVNT_nvnCommandBufferWaitEvent)(NVNcommandBuffer*, const NVNevent*, NVNeventWaitMode, uint32_t);
 typedef void (*NVNT_nvnCommandBufferSignalEvent)(NVNcommandBuffer*, const NVNevent*, NVNeventSignalMode, NVNeventSignalLocation, int, uint32_t);
 
-// 头文件里没有原型的名字（新版接口）：只能接记名桩
-//   nvnDeviceBuilderGetFlags
+// 头文件没有原型的名字仍使用具名停止桩。
+// Names without header prototypes retain named stopping stubs.
 //   nvnQueueBuilderSetQueuePriority
 //   nvnQueueBuilderGetQueuePriority
-//   nvnQueueBuilderGetDevice
-//   nvnQueueBuilderGetFlags
-//   nvnQueueBuilderGetCommandMemorySize
-//   nvnQueueBuilderGetComputeMemorySize
-//   nvnQueueBuilderGetControlMemorySize
-//   nvnQueueBuilderGetCommandFlushThreshold
-//   nvnQueueBuilderGetMemorySize
-//   nvnQueueBuilderGetMemory
 //   nvnWindowBuilderSetNumActiveTextures
-//   nvnWindowBuilderGetDevice
-//   nvnWindowBuilderGetNumTextures
-//   nvnWindowBuilderGetTexture
 //   nvnWindowBuilderGetNumActiveTextures
 //   nvnWindowSetNumActiveTextures
 //   nvnWindowGetNumActiveTextures
 //   nvnWindowGetNumTextures
 //   nvnProgramSetShadersExt
 //   nvnProgramSetSampleShading
-//   nvnTextureBuilderGetDevice
 //   nvnTextureBuilderGetPackagedTextureLayout
 //   nvnTextureBuilderGetRawStorageClass
 //   nvnTextureGetRawStorageClass
-//   nvnSamplerBuilderGetDevice
 //   nvnCommandBufferSetCommandMemoryCallbackEnabled
 //   nvnCommandBufferSetColorReductionEnable
 //   nvnCommandBufferSetColorReductionThresholds
@@ -528,54 +529,6 @@ typedef void (*NVNT_nvnCommandBufferSignalEvent)(NVNcommandBuffer*, const NVNeve
 //   nvnDeviceSetAutomaticCheckpointsByDebugGroup
 //   nvnDeviceSetCheckpointCallStacksEnable
 //   nvnDeviceSetCheckpointMaxCallStacksDepth
-// Names with no prototype in the header (newer interface): can only be wired to named stubs
-//   nvnDeviceBuilderGetFlags
-//   nvnQueueBuilderSetQueuePriority
-//   nvnQueueBuilderGetQueuePriority
-//   nvnQueueBuilderGetDevice
-//   nvnQueueBuilderGetFlags
-//   nvnQueueBuilderGetCommandMemorySize
-//   nvnQueueBuilderGetComputeMemorySize
-//   nvnQueueBuilderGetControlMemorySize
-//   nvnQueueBuilderGetCommandFlushThreshold
-//   nvnQueueBuilderGetMemorySize
-//   nvnQueueBuilderGetMemory
-//   nvnWindowBuilderSetNumActiveTextures
-//   nvnWindowBuilderGetDevice
-//   nvnWindowBuilderGetNumTextures
-//   nvnWindowBuilderGetTexture
-//   nvnWindowBuilderGetNumActiveTextures
-//   nvnWindowSetNumActiveTextures
-//   nvnWindowGetNumActiveTextures
-//   nvnWindowGetNumTextures
-//   nvnProgramSetShadersExt
-//   nvnProgramSetSampleShading
-//   nvnTextureBuilderGetDevice
-//   nvnTextureBuilderGetPackagedTextureLayout
-//   nvnTextureBuilderGetRawStorageClass
-//   nvnTextureGetRawStorageClass
-//   nvnSamplerBuilderGetDevice
-//   nvnCommandBufferSetCommandMemoryCallbackEnabled
-//   nvnCommandBufferSetColorReductionEnable
-//   nvnCommandBufferSetColorReductionThresholds
-//   nvnSyncInitializeFromFencedGLSync
-//   nvnSyncCreateGLSync
-//   nvnEventBuilderGetStorage
-//   nvnEventBuilderGetMemoryPool
-//   nvnEventBuilderGetMemoryOffset
-//   nvnEventGetMemoryPool
-//   nvnEventGetMemoryOffset
-//   nvnCommandBufferSetStencilCullCriteria
-//   nvnCommandBufferInsertCheckpointStatic
-//   nvnCommandBufferInsertCheckpointDynamic
-//   nvnDeviceSetAutomaticCheckpointsEnable
-//   nvnDeviceSetAutomaticCheckpointsSamplingInterval
-//   nvnDeviceSetAutomaticCheckpointsByDebugGroup
-//   nvnDeviceSetCheckpointCallStacksEnable
-//   nvnDeviceSetCheckpointMaxCallStacksDepth
-
-// P5R 新增名字的 ABI 尚未验证，只提供可识别名称的未实现跳板。
-// ABI for these additional P5R names is unverified; provide named unimplemented thunks only.
 //   nvnProgramGetSubtileSize
 //   nvnTextureBuilderGetViewOffset
 //   nvnCommandBufferBindUniformBuffersDeferred
