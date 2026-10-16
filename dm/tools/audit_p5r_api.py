@@ -8,7 +8,7 @@ from pathlib import Path
 def audit(root):
     nvn = root / "dm/gfx/nvn"
     names = (nvn / "names.txt").read_text(encoding="utf-8").split()
-    sources = [(nvn / "hle_nvn.c"), (nvn / "nvn_startup_batch.inc")]
+    sources = [(nvn / "hle_nvn.c"), (nvn / "nvn_startup_batch.inc"), (nvn / "nvn_texture_state.inc")]
     implementations = []
     for path in sources:
         implementations += re.findall(r"NVN(?:_NOPROTO)?\((nvn\w+),", path.read_text(encoding="utf-8"))
@@ -39,10 +39,14 @@ def audit(root):
     }
     assert sampler_extensions <= set(implementations), "Missing sampler implementation"
     assert sampler_extensions <= set(re.findall(r"P\((nvn\w+)\)", sampler_tests)), "Sampler extension lacks a typed regression call"
+    texture_extensions = set(re.findall(r"NVN\((nvn\w+),", sources[2].read_text(encoding="utf-8")))
+    texture_tests = (root / "dm/gfx/tests/t_texture_state.inc").read_text(encoding="utf-8")
+    assert texture_extensions <= set(re.findall(r"P\((nvn\w+)\)",texture_tests)), "Texture extension lacks a typed regression call"
     return dict(schema_version=1, registered=len(names), host_implemented=len(implementations),
                 named_unimplemented=len(set(names)-registered), batch_implemented=len(batch),
                 diagnostic_only_capture=len(captures), capture_requires_active_pre_submit_probe=True,
                 sampler_extensions_implemented=len(sampler_extensions),
+                texture_extensions_implemented=len(texture_extensions),
                 game_graphics_verified=False, runtime_ready=False,
                 scope="Source registration and direct regression-call coverage only; not ABI/GPU equivalence proof",
                 unimplemented=[n for n in names if n not in registered], diagnostic_only_interfaces=captures)

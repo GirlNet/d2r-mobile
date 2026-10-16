@@ -25,6 +25,7 @@ static int g_fail, g_n;
 static PFNNVNDEVICEGETPROCADDRESSPROC gpa; static NVNdevice dev;
 static void *proc(const char *n) { void *p = (void *)gpa(&dev, n); if (!p) { printf("取址失败 %s\n", n); exit(1); } return p; }
 #include "t_sampler_state.inc"
+#include "t_texture_state.inc"
 
 // 命令内存回调：每次给一段 256 字节的新内存（强制多段 JUMP 链）
 // Command memory callback: hands out a new 256-byte memory segment each time (forces a multi-segment JUMP chain)
@@ -347,6 +348,7 @@ int main(int argc, char **argv) {
     test_pool_accessors();
     test_startup_batch();
     test_sampler_state();
+    test_texture_state();
     int named = 0;
     for (unsigned i = 523; i < NVN_NFUNC; i++) {
         named += nvn_slot[i].fn == (void *)nvn_unimpl_entry && (void *)gpa(&dev,nvn_names[i]) == nvn_thunk[i];

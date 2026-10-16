@@ -48,15 +48,20 @@ FITS(buffer_t, NVNbuffer);
 typedef struct { const pool_t *pool; int64_t off; int32_t n; } dpool_t;                       // 贴图 / 采样器描述符池 | Texture / sampler descriptor pool
 FITS(dpool_t, NVNtexturePool); FITS(dpool_t, NVNsamplerPool);
 
+typedef struct { int32_t swizzle[4], depth_mode; uint8_t has_swizzle; } tex_sampling_t;
 typedef struct {
-    NVNdevice *dev; nvn_texdesc d; pool_t *pool; int64_t off;
+    NVNdevice *dev; nvn_texdesc d; pool_t *pool; int64_t off; tex_sampling_t sampling;
     uint8_t has_layout, layout[8];
 } tex_builder_t;                                                                             FITS(tex_builder_t, NVNtextureBuilder);
 typedef struct {
-    uint32_t magic; nvn_texdesc d; nvn_texlayout L; uint8_t *mem; pool_t *pool; int64_t off; uint8_t has_layout, layout[8];
+    uint32_t magic; nvn_texdesc d; nvn_texlayout L; uint8_t *mem; pool_t *pool; int64_t off; uint8_t has_layout, layout[8]; tex_sampling_t sampling;
     uint64_t serial;                     // 初始化序号：回放层按它在宿主表里找 MTLTexture（游戏可能按值拷贝对象，不能存对象指针） | Initialization serial: the replay layer uses it to find the MTLTexture in the host table (the game may copy the object by value, so object pointers cannot be stored)
 } tex_t;                                                                                     FITS(tex_t, NVNtexture);
-typedef struct { uint8_t set_levels, set_layers, set_format, set_target; int32_t base_level, nlevels, min_layer, nlayers, format, target; } view_t;
+typedef struct {
+    uint8_t set_levels, set_layers, set_format, set_target;
+    int32_t base_level, nlevels, min_layer, nlayers, format, target;
+    uint8_t set_swizzle, set_depth_mode, swizzle[4], depth_mode;
+} view_t;
 FITS(view_t, NVNtextureView);
 
 // 采样器参数（builder 与对象共用一份）

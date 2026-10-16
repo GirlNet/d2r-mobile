@@ -27,6 +27,7 @@
 #include "../../host/front.h"
 #include "nvn_dirty.h"
 #include "nvn_handle_bindings.h"
+#include "nvn_texture_sampling.h"
 #include "../../host/boot_probe.h"
 #include <mach/mach_time.h>
 #include <mach/mach.h>
@@ -359,6 +360,7 @@ NVN(nvnSamplerPoolRegisterSampler, void, const NVNsamplerPool *sp, int id, const
 NVN(nvnTextureBuilderSetDefaults, void, NVNtextureBuilder *b) {
     NVNdevice *dev = TB(b)->dev; memset(b, 0, sizeof(tex_builder_t)); TB(b)->dev = dev;
     TB(b)->d.target = NVN_TEXTURE_TARGET_2D; TB(b)->d.width = TB(b)->d.height = TB(b)->d.depth = TB(b)->d.levels = 1;
+    TB(b)->sampling = (tex_sampling_t){.swizzle={2,3,4,5},.has_swizzle=1};
 }
 NVN(nvnTextureBuilderSetDevice, void, NVNtextureBuilder *b, NVNdevice *d) { TB(b)->dev = d; }
 NVN(nvnTextureBuilderSetFlags, void, NVNtextureBuilder *b, int f) { TB(b)->d.flags = f; }
@@ -400,6 +402,7 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
     memset(o, 0, sizeof *o);
     o->magic = MAGIC('T', 'E', 'X', 0); o->d = s->d; o->pool = s->pool; o->off = s->off;
     o->has_layout = s->has_layout; memcpy(o->layout, s->layout, 8);
+    o->sampling = s->sampling;
     nvn_tex_layout(&o->d, &o->L);
     o->mem = s->pool && s->pool->mem ? s->pool->mem + s->off : NULL;
     o->serial = nvn_new_serial();
@@ -415,7 +418,9 @@ NVN(nvnTextureGetDepth, int, const NVNtexture *t) { return (int)CTX(t)->d.depth;
 NVN(nvnTextureGetStorageSize, int, const NVNtexture *t) { return (int)CTX(t)->L.size; }
 NVN(nvnTextureCompare, NVNboolean, const NVNtexture *a, const NVNtexture *b) {
     const tex_t *x = CTX(a), *y = CTX(b);
-    return !memcmp(&x->d, &y->d, sizeof x->d) && x->mem == y->mem;
+    if (memcmp(&x->d,&y->d,sizeof x->d) || x->mem!=y->mem || x->sampling.depth_mode!=y->sampling.depth_mode) return 0;
+    for(unsigned i=0;i<4;i++)if(nvn_texture_component(&x->sampling,i)!=nvn_texture_component(&y->sampling,i))return 0;
+    return 1;
 }
 // 头文件无原型；main 0x174899c 一类调用点把返回值与 1 比，不等则置某状态位 0x100。含义未核，先给 1
 // No prototype in the header; call sites such as main 0x174899c compare the return value with 1 and set some status bit 0x100 if not equal. Meaning unverified; return 1 for now
@@ -429,6 +434,7 @@ NVN(nvnTextureViewSetTarget, void, NVNtextureView *v, NVNtextureTarget t) { VW(v
 NVN(nvnTextureViewGetLayers, NVNboolean, const NVNtextureView *v, int *min, int *n) {
     const view_t *o = (const view_t *)v; *min = o->min_layer; *n = o->nlayers; return o->set_layers;
 }
+#include "nvn_texture_state.inc"
 NVN(nvnTextureGetViewOffset, ptrdiff_t, const NVNtexture *t, const NVNtextureView *v) {
     const tex_t *o = CTX(t); const view_t *w = (const view_t *)v;
     if (!w) return 0;

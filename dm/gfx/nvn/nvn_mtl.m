@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include "nvn_mtl.h"
 #include "nvn_sampler_mtl.h"
+#include "nvn_texture_sampling.h"
 // 编译期开关 DM_NVN_M3=1：图形后端走老接口（普通命令队列 / 命令缓冲 / 渲染与计算与拷贝编码器，逐槽绑定缓冲，对参数块引用的资源逐个声明），
 // 目标 macOS 15 / iOS 18。缺省 0 = Metal 4（macOS 26 / iOS 26）。两支共用同一份回放逻辑，分叉处都在 #if DM_NVN_M3 里
 // Compile-time switch DM_NVN_M3=1: the graphics backend uses the older API (ordinary command queue / command buffers / render, compute and copy encoders, buffers bound per slot, each resource referenced by an argument block declared individually),
@@ -2391,21 +2392,34 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
     id<MTLTexture> base = tex_mtl(&rp->t);
     if (!base) return nil;
     v = base;
-    if (r.has_v && (r.v.set_format || r.v.set_levels || r.v.set_layers || r.v.set_target)) {
-        uint32_t pf = (uint32_t)base.pixelFormat; uint8_t swz[4];
-        if (r.v.set_format && !(nvn_fmt_to_mtl(r.v.format, &pf, swz) && pf)) pf = (uint32_t)base.pixelFormat;
-        { uint32_t upf; int ubpp; if (r.v.set_format && bc_unpack(r.v.format, &upf, &ubpp)) pf = upf; }   // 无 BC：BC 视图跟底图一样换成解压后的格式 | No BC: a BC view is switched to the decompressed format just like the base texture
-        if (r.v.set_format && tex_need_pfv(base.pixelFormat, (MTLPixelFormat)pf) && !(base.usage & MTLTextureUsagePixelFormatView)) {
+    const view_t *sv=r.has_v ? &r.v : NULL;
+    int format=sv && sv->set_format ? sv->format : r.t.d.format, mode=0;
+    uint32_t pf=0;uint8_t swz[4];
+    if (!nvn_texture_sampling_plan(&r.t,sv,format,&pf,swz,&mode))
+        MDIE("Unsupported texture sampling state id=%d format=%#x",tid,format);
+    // The base texture always retains physical channel order. An explicit NVN
+    // view overrides the builder swizzle; compose only with the format mapping.
+    { uint32_t upf;int ubpp;if (bc_unpack(format,&upf,&ubpp)) pf=upf; }
+    if (mode==NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL &&
+        (format==NVN_FORMAT_DEPTH24_STENCIL8 || format==NVN_FORMAT_DEPTH32F_STENCIL8)) {
+        if (base.pixelFormat!=MTLPixelFormatDepth32Float_Stencil8)
+            MDIE("Unsupported stencil aspect base format %lu",(unsigned long)base.pixelFormat);
+        pf=MTLPixelFormatX32_Stencil8;
+    }
+    int remapped=swz[0]!=2 || swz[1]!=3 || swz[2]!=4 || swz[3]!=5;
+    if (remapped || pf!=base.pixelFormat || (sv && (sv->set_format || sv->set_levels || sv->set_layers || sv->set_target))) {
+        if ((remapped || tex_need_pfv(base.pixelFormat, (MTLPixelFormat)pf)) && !(base.usage & MTLTextureUsagePixelFormatView)) {
             base = tex_upgrade_pfv(&rp->t, base, (MTLPixelFormat)pf);
             sg = g_ser_gen;
         }
-        NSUInteger l0 = r.v.set_levels ? r.v.base_level : 0, nl = r.v.set_levels && r.v.nlevels ? r.v.nlevels : base.mipmapLevelCount - l0;
-        NSUInteger s0 = r.v.set_layers ? r.v.min_layer : 0;
-        NSUInteger ns = base.textureType == MTLTextureType3D ? 1 : (r.v.set_layers && r.v.nlayers ? r.v.nlayers : base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1) - s0);
-        MTLTextureType tt = r.v.set_target ? ttype(r.v.target, base.textureType) : base.textureType;
+        NSUInteger l0 = sv && sv->set_levels ? sv->base_level : 0, nl = sv && sv->set_levels && sv->nlevels ? sv->nlevels : base.mipmapLevelCount - l0;
+        NSUInteger s0 = sv && sv->set_layers ? sv->min_layer : 0;
+        NSUInteger ns = base.textureType == MTLTextureType3D ? 1 : (sv && sv->set_layers && sv->nlayers ? sv->nlayers : base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1) - s0);
+        MTLTextureType tt = sv && sv->set_target ? ttype(sv->target, base.textureType) : base.textureType;
         if (tt == MTLTextureType2D && ns > 1) ns = 1;
-        v = [base newTextureViewWithPixelFormat:(MTLPixelFormat)pf textureType:tt levels:NSMakeRange(l0, nl) slices:NSMakeRange(s0, ns)];
-        if (!v) { RED_ONCE(11, "贴图视图建不出 id %d", tid); v = base; }
+        MTLTextureSwizzleChannels channels=MTLTextureSwizzleChannelsMake(swz[0],swz[1],swz[2],swz[3]);
+        v = [base newTextureViewWithPixelFormat:(MTLPixelFormat)pf textureType:tt levels:NSMakeRange(l0, nl) slices:NSMakeRange(s0, ns) swizzle:channels];
+        if (!v) MDIE("Texture view creation failed id=%d",tid);
     }
     rp->view = (void *)CFBridgingRetain(v); rp->view_rid = v.gpuResourceID._impl; rp->view_ser = sg; rp->view_dirty = dg;
     return v;
