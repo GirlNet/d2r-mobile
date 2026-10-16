@@ -51,7 +51,7 @@ static size_t tex_size(int fmt, int w, int h, int flags, size_t *align) {
     return P(nvnTextureBuilderGetStorageSize)(&tb);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     crash_install();   // 生产同一套 SIGSEGV / SIGBUS 处理（缺页钩子在其中分发） | the same SIGSEGV / SIGBUS handling as production (the page-fault hook is dispatched from within it)
     // 1. 引导取址：bootstrap 取 GetProcAddress，再用它取全部名字
     // 1. Bootstrap address lookup: bootstrap gets GetProcAddress, then uses it to get all the names
@@ -59,7 +59,7 @@ int main(void) {
     gpa = (PFNNVNDEVICEGETPROCADDRESSPROC)boot("nvnDeviceGetProcAddress");
     EXPECT("bootstrap 取 GetProcAddress 非空", 1, gpa != NULL);
     int nonnull = 0; for (unsigned i = 0; i < NVN_NFUNC; i++) nonnull += gpa(NULL, nvn_names[i]) != NULL;
-    EXPECT("523 个名字全部取到地址", 523, nonnull);
+    EXPECT("全部登记名字取到地址 / registered names", NVN_NFUNC, nonnull);
     EXPECT("未知名字取址返回空", 0, gpa(NULL, "nvnNoSuchFunction") != NULL);
 
     // 2. 设备
@@ -70,6 +70,30 @@ int main(void) {
     EXPECT("uniform 缓冲对齐（X1 实测 256）", 256, v);
     P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_TEXTURE_DESCRIPTOR_SIZE, &v); EXPECT("贴图描述符大小（32）", 32, v);
     P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_QUEUE_COMMAND_MEMORY_MIN_SIZE, &v); EXPECT("队列命令内存下限（65536）", 65536, v);
+
+    // 只运行启动接口时也走真实静态跳板；未验证的新名字必须仍接具名阻塞桩。
+    // Bootstrap-only checks also use real static thunks; unverified new names must retain named blocking stubs.
+    NVNdevice snapshot = dev;
+    const float fc[4] = {0.0f, 0.25f, 1.0f, -1.0f};
+    const int ic[4] = {-1, 0, 1, INT32_MAX};
+    const uint32_t uc[4] = {0, 1, UINT32_MAX, 0x80000000u};
+    EXPECT("快速清除浮点注册不可用 / float registration unavailable", 0, P(nvnDeviceRegisterFastClearColor)(&dev, fc, NVN_FORMAT_RGBA8));
+    EXPECT("快速清除有符号注册不可用 / int registration unavailable", 0, P(nvnDeviceRegisterFastClearColori)(&dev, ic, NVN_FORMAT_RGBA8));
+    EXPECT("快速清除无符号注册不可用 / uint registration unavailable", 0, P(nvnDeviceRegisterFastClearColorui)(&dev, uc, NVN_FORMAT_RGBA8));
+    EXPECT("快速清除深度注册不可用 / depth registration unavailable", 0, P(nvnDeviceRegisterFastClearDepth)(&dev, 0.5f));
+    EXPECT("注册不改变设备 / device unchanged", 0, memcmp(&dev, &snapshot, sizeof dev));
+    EXPECT("已有跳板计数保留 / original thunk counter", 1, atomic_load(&nvn_slot[17].cnt));
+    EXPECT("已有名字序号保留 / original name index", 0, strcmp(nvn_names[17], "nvnDeviceRegisterFastClearColor"));
+    int named = 0;
+    for (unsigned i = 523; i < NVN_NFUNC; i++) {
+        named += nvn_slot[i].fn == (void *)nvn_unimpl_entry && (void *)gpa(&dev,nvn_names[i]) == nvn_thunk[i];
+        for (unsigned j = 0; j < i; j++) if (!strcmp(nvn_names[i],nvn_names[j])) named = -100;
+    }
+    EXPECT("11 个新接口仍为具名桩 / 11 named unimplemented interfaces", 11, named);
+    if (argc == 2 && !strcmp(argv[1], "--bootstrap-only")) {
+        printf("NVN BOOTSTRAP: %d checks, %d failures; no GPU work\n", g_n, g_fail);
+        return g_fail ? 1 : 0;
+    }
 
     // 3. 内存池：GPU 地址 = 游戏给的存储地址
     // 3. Memory pool: GPU address = the storage address given by the game

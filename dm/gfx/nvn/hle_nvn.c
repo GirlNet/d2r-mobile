@@ -1,5 +1,5 @@
 // NVN 接口层：接管 main 导入的 nvnBootstrapLoader，sdk 里的 NVN 驱动整块不执行。
-// 523 个 NVN 名字一律返回计数跳板（nvn_thunks.S），跳板再转到这里的实现：
+// 已登记的 NVN 名字一律返回计数跳板（nvn_thunks.S），跳板再转到这里的实现：
 //   · 有语义的（设备 / 内存池 / 贴图与采样器 / 队列 / 窗口 / 同步 / 事件 / 命令缓冲内存）按 NVN 语义实现，对象是真的；
 //   · 只改 GPU 状态、没有 CPU 可见结果的（状态对象、绑定、绘制、清除…）录成命令，提交时回放；
 //   · 其余（main 只加载不调用的 307 个 + 头文件无原型的）接 nvn_unimpl_entry：被调到即报红打印名字。
@@ -9,7 +9,7 @@
 // 每个实现都按 nvn_protos.h 的原型做编译期签名检查（NVNboolean 参数按 uint32_t 收、只看低 8 位）。
 // 环境开关：DM_NVN_FRAMES=N 前 N 帧逐帧打印调用表（默认 3）；DM_NVN_TSV=路径 每帧调用表与计时写 TSV（DM_NVN_TSV_CALLS=0 只写计时）；DM_SLOWFRAME=1 只把掉帧的逐帧分项写进日志；DM_NVN_LOG=1 记对象创建。
 // NVN interface layer: takes over the nvnBootstrapLoader imported by main; the NVN driver in sdk is not executed at all.
-// All 523 NVN names return counting thunks (nvn_thunks.S), and the thunks forward to the implementations here:
+// All registered NVN names return counting thunks (nvn_thunks.S), and the thunks forward to the implementations here:
 //   - those with semantics (device / memory pools / textures and samplers / queue / window / sync / events / command buffer memory) are implemented per NVN semantics, and the objects are real;
 //   - those that only change GPU state and have no CPU-visible result (state objects, bindings, draws, clears...) are recorded as commands and replayed at submit;
 //   - the rest (the 307 that main only loads but never calls + those without a prototype in the header) go to nvn_unimpl_entry: reports a failure and prints the name when called.
@@ -127,6 +127,26 @@ NVN(nvnDeviceInitialize, NVNboolean, NVNdevice *d, const NVNdeviceBuilder *b) {
     o->magic = MAGIC('D', 'E', 'V', 0); o->flags = ((const dev_builder_t *)b)->flags;
     OLOG("DeviceInitialize %p flags=%#x", (void *)d, o->flags);
     return 1;
+}
+// Metal 后端没有 NVN 的快速清除注册表：显式返回未注册，保留普通 Clear 命令的路径。
+// 这些调用不创建 GPU 对象、不提交工作，也不修改设备或输入颜色；不能伪报注册成功。
+// The Metal backend has no NVN fast-clear registration table: explicitly decline registration and retain ordinary Clear commands.
+// These calls create no GPU objects, submit no work and change neither the device nor input colors; never report a successful registration.
+static NVNboolean fast_clear_unavailable(const char *name) {
+    if (dm_boot_probe_active()) dm_boot_probe_note("nvn_fast_clear_unavailable", name);
+    return 0;
+}
+NVN(nvnDeviceRegisterFastClearColor, NVNboolean, NVNdevice *d, const float *color, NVNformat format) {
+    (void)d; (void)color; (void)format; return fast_clear_unavailable("nvnDeviceRegisterFastClearColor");
+}
+NVN(nvnDeviceRegisterFastClearColori, NVNboolean, NVNdevice *d, const int *color, NVNformat format) {
+    (void)d; (void)color; (void)format; return fast_clear_unavailable("nvnDeviceRegisterFastClearColori");
+}
+NVN(nvnDeviceRegisterFastClearColorui, NVNboolean, NVNdevice *d, const uint32_t *color, NVNformat format) {
+    (void)d; (void)color; (void)format; return fast_clear_unavailable("nvnDeviceRegisterFastClearColorui");
+}
+NVN(nvnDeviceRegisterFastClearDepth, NVNboolean, NVNdevice *d, float depth) {
+    (void)d; (void)depth; return fast_clear_unavailable("nvnDeviceRegisterFastClearDepth");
 }
 NVN(nvnDeviceFinalize, void, NVNdevice *d) { ((dev_t_ *)d)->magic = 0; }
 NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const char *name) {

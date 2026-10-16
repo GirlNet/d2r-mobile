@@ -575,3 +575,17 @@ typedef void (*NVNT_nvnCommandBufferSignalEvent)(NVNcommandBuffer*, const NVNeve
 //   nvnDeviceSetAutomaticCheckpointsByDebugGroup
 //   nvnDeviceSetCheckpointCallStacksEnable
 //   nvnDeviceSetCheckpointMaxCallStacksDepth
+
+// P5R 新增名字的 ABI 尚未验证，只提供可识别名称的未实现跳板。
+// ABI for these additional P5R names is unverified; provide named unimplemented thunks only.
+//   nvnProgramGetSubtileSize
+//   nvnTextureBuilderGetViewOffset
+//   nvnCommandBufferBindUniformBuffersDeferred
+//   nvnCommandBufferBindStorageBuffersDeferred
+//   nvnCommandBufferBindTexturesDeferred
+//   nvnCommandBufferBindImagesDeferred
+//   nvnCommandBufferBindSeparateTexturesDeferred
+//   nvnCommandBufferBindSeparateSamplersDeferred
+//   nvnCommandBufferOverrideSubtileSize
+//   nvnCommandBufferSetZCullZF32CompressionEnable
+//   nvnDeviceSetAutomaticCheckpointsMask

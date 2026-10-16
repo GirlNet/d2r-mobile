@@ -5235,6 +5235,116 @@ _nvnth_522:
     stadd x17, [x16]
     ldr x17, [x16, #8]
     br x17
+    .globl _nvnth_523
+_nvnth_523:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8368
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_524
+_nvnth_524:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8384
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_525
+_nvnth_525:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8400
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_526
+_nvnth_526:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8416
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_527
+_nvnth_527:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8432
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_528
+_nvnth_528:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8448
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_529
+_nvnth_529:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8464
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_530
+_nvnth_530:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8480
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_531
+_nvnth_531:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8496
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_532
+_nvnth_532:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8512
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
+    .globl _nvnth_533
+_nvnth_533:
+    adrp x16, _nvn_slot@PAGE
+    add x16, x16, _nvn_slot@PAGEOFF
+    mov x17, #8528
+    add x16, x16, x17
+    mov x17, #1
+    stadd x17, [x16]
+    ldr x17, [x16, #8]
+    br x17
     .data
     .p2align 3
     .globl _nvn_thunk
@@ -5762,6 +5872,17 @@ _nvn_thunk:
     .quad _nvnth_520
     .quad _nvnth_521
     .quad _nvnth_522
+    .quad _nvnth_523
+    .quad _nvnth_524
+    .quad _nvnth_525
+    .quad _nvnth_526
+    .quad _nvnth_527
+    .quad _nvnth_528
+    .quad _nvnth_529
+    .quad _nvnth_530
+    .quad _nvnth_531
+    .quad _nvnth_532
+    .quad _nvnth_533
     .globl _nvn_names
 _nvn_names:
     .quad Ln0
@@ -6287,6 +6408,17 @@ _nvn_names:
     .quad Ln520
     .quad Ln521
     .quad Ln522
+    .quad Ln523
+    .quad Ln524
+    .quad Ln525
+    .quad Ln526
+    .quad Ln527
+    .quad Ln528
+    .quad Ln529
+    .quad Ln530
+    .quad Ln531
+    .quad Ln532
+    .quad Ln533
     .cstring
 Ln0: .asciz "nvnDeviceBuilderSetDefaults"
 Ln1: .asciz "nvnDeviceBuilderSetFlags"
@@ -6811,3 +6943,14 @@ Ln519: .asciz "nvnDeviceSetAutomaticCheckpointsSamplingInterval"
 Ln520: .asciz "nvnDeviceSetAutomaticCheckpointsByDebugGroup"
 Ln521: .asciz "nvnDeviceSetCheckpointCallStacksEnable"
 Ln522: .asciz "nvnDeviceSetCheckpointMaxCallStacksDepth"
+Ln523: .asciz "nvnProgramGetSubtileSize"
+Ln524: .asciz "nvnTextureBuilderGetViewOffset"
+Ln525: .asciz "nvnCommandBufferBindUniformBuffersDeferred"
+Ln526: .asciz "nvnCommandBufferBindStorageBuffersDeferred"
+Ln527: .asciz "nvnCommandBufferBindTexturesDeferred"
+Ln528: .asciz "nvnCommandBufferBindImagesDeferred"
+Ln529: .asciz "nvnCommandBufferBindSeparateTexturesDeferred"
+Ln530: .asciz "nvnCommandBufferBindSeparateSamplersDeferred"
+Ln531: .asciz "nvnCommandBufferOverrideSubtileSize"
+Ln532: .asciz "nvnCommandBufferSetZCullZF32CompressionEnable"
+Ln533: .asciz "nvnDeviceSetAutomaticCheckpointsMask"

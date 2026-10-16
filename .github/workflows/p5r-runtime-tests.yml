@@ -11,6 +11,7 @@ on:
       - 'dm/tools/p5r_pack.py'
       - 'dm/tools/test_p5r_pack.py'
       - 'dm/gfx/nvn/**'
+      - 'dm/gfx/tests/**'
       - 'dm/gfx/tools/dmsh_build.py'
       - 'dm/gfx/tools/dmsh_chain.py'
       - 'dm/gfx/tools/dmsh_xlate/**'
@@ -93,6 +94,11 @@ jobs:
           dm/host/tests/build/t_nvn_handles
           dm/host/tests/build/t_nvn_buffers
           dm/host/tests/build/t_nvn_combined_refl
+      - name: Check NVN bootstrap without GPU work
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_nvn
+          dm/gfx/tests/t_nvn --bootstrap-only
       - name: Check ELF optional imports through the actual loader
         run: |
           set -euo pipefail
