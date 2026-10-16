@@ -21,6 +21,17 @@ static void *setupWorker(void *unused) {
     }
     atomic_store(&escaped,1); return NULL;
 }
+static _Atomic int setupReturned;
+static void *continueSetup(void *unused) {
+    (void)unused;
+    if (dm_boot_probe_gpu_begin()) {
+        atomic_fetch_add(&setupEntered,1);
+        while (!atomic_load(&releaseSetup)) usleep(1000);
+        dm_boot_probe_gpu_complete("synthetic backend","synthetic device");
+    }
+    atomic_fetch_add(&setupReturned,1); return NULL;
+}
+static void *guardedSubmission(void *unused) { (void)unused; DM_GPU_SUBMIT(atomic_store(&escaped,1)); return NULL; }
 static void *wrongOwner(void *unused) { (void)unused; dm_boot_probe_gpu_complete("wrong","wrong"); atomic_store(&escaped,1); return NULL; }
 static void *submission(void *unused) { (void)unused; dm_boot_probe_block("guest_gpu_submission","synthetic submit"); atomic_store(&escaped,1); return NULL; }
 static void *gpuEntry(void *unused) { (void)unused; dm_boot_probe_gpu_begin(); atomic_store(&escaped,1); return NULL; }
@@ -34,11 +45,12 @@ int main(int argc, char **argv) { @autoreleasepool {
     CHECK(!dm_boot_probe_active() && dm_boot_probe_checkpoint("inactive",0) && !dm_boot_probe_timeout());
     dm_boot_probe_block("inactive","must return"); CHECK(!dm_boot_probe_gpu_begin()); dm_boot_probe_gpu_complete("inactive","inactive");
     int gpuSetup = !strncmp(argv[1],"gpu-setup",9);
-    int startup = gpuSetup || !strncmp(argv[1],"startup-",8);
+    int preSubmit = !strncmp(argv[1],"pre-submit",10);
+    int startup = preSubmit || gpuSetup || !strncmp(argv[1],"startup-",8);
     int modules = startup || !strcmp(argv[1],"modules") || !strcmp(argv[1],"modules-failure");
-    CHECK((gpuSetup ? dm_boot_probe_begin_gpu_setup(argv[2]) : startup ? dm_boot_probe_begin_startup(argv[2]) : modules ? dm_boot_probe_begin_modules(argv[2]) : dm_boot_probe_begin(argv[2])) && dm_boot_probe_active());
+    CHECK((preSubmit ? dm_boot_probe_begin_pre_submit(argv[2]) : gpuSetup ? dm_boot_probe_begin_gpu_setup(argv[2]) : startup ? dm_boot_probe_begin_startup(argv[2]) : modules ? dm_boot_probe_begin_modules(argv[2]) : dm_boot_probe_begin(argv[2])) && dm_boot_probe_active());
     NSDictionary *report = readReport(directory); CHECK([report[@"status"] isEqual:@"running"]);
-    CHECK([report[@"stop_before"] isEqual:gpuSetup ? @"guest_gpu_submission" : startup ? @"gpu_initialization" : modules ? @"nnMain" : @"module_initializers"]);
+    CHECK([report[@"stop_before"] isEqual:gpuSetup || preSubmit ? @"guest_gpu_submission" : startup ? @"gpu_initialization" : modules ? @"nnMain" : @"module_initializers"]);
     NSData *before = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"boot-report.json"]];
     CHECK(!dm_boot_probe_begin(argv[2]));
     CHECK([before isEqual:[NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"boot-report.json"]]]);
@@ -62,7 +74,27 @@ int main(int argc, char **argv) { @autoreleasepool {
                     CHECK(dm_boot_probe_checkpoint("nnMain",0));
                     dm_boot_probe_note("fs_open","rom:/synthetic/\"test\".cpk");
                     CHECK([readReport(directory)[@"current_detail"] isEqual:@"rom:/synthetic/\"test\".cpk"]);
-                    if (gpuSetup) {
+                    if (preSubmit) {
+                        pthread_t owner, contender; CHECK(!pthread_create(&owner,NULL,continueSetup,NULL)); pthread_detach(owner);
+                        for (int i=0;i<200 && !atomic_load(&setupEntered);i++) usleep(5000);
+                        CHECK(atomic_load(&setupEntered)==1);
+                        CHECK(!pthread_create(&contender,NULL,continueSetup,NULL)); pthread_detach(contender);
+                        usleep(10000); CHECK(!atomic_load(&setupReturned));
+                        int failure=!strcmp(argv[1],"pre-submit-failure"), wrong=!strcmp(argv[1],"pre-submit-wrong-owner");
+                        if (failure) dm_boot_probe_failure("synthetic resource failure");
+                        else if (wrong) { pthread_t t; CHECK(!pthread_create(&t,NULL,wrongOwner,NULL)); pthread_detach(t); for (int i=0;i<200;i++) { usleep(5000); if (![readReport(directory)[@"status"] isEqual:@"running"]) break; } }
+                        atomic_store(&releaseSetup,1);
+                        if (!failure && !wrong) {
+                            for (int i=0;i<200 && atomic_load(&setupReturned)!=2;i++) usleep(5000);
+                            CHECK(atomic_load(&setupReturned)==2 && atomic_load(&setupEntered)==1);
+                            report=readReport(directory); CHECK([report[@"status"] isEqual:@"running"] && [report[@"gpu_initialization_completed"] isEqual:@YES]);
+                            CHECK(!dm_boot_probe_gpu_begin());
+                            dm_boot_probe_note("resource_setup","synthetic resource checkpoint");
+                            if (!strcmp(argv[1],"pre-submit-timeout")) CHECK(dm_boot_probe_timeout());
+                            else { CHECK(!strcmp(argv[1],"pre-submit")); pthread_t t; CHECK(!pthread_create(&t,NULL,guardedSubmission,NULL)); pthread_detach(t); for (int i=0;i<200;i++) { usleep(5000); if (![readReport(directory)[@"status"] isEqual:@"running"]) break; } }
+                        } else { usleep(10000); CHECK(!atomic_load(&setupReturned)); }
+                        CHECK(!atomic_load(&escaped));
+                    } else if (gpuSetup) {
                         pthread_t owner, contender; CHECK(!pthread_create(&owner,NULL,setupWorker,NULL)); pthread_detach(owner);
                         for (int i=0;i<200 && !atomic_load(&setupEntered);i++) usleep(5000);
                         CHECK(atomic_load(&setupEntered)==1);
@@ -101,7 +133,7 @@ int main(int argc, char **argv) { @autoreleasepool {
         }
         CHECK(!dm_boot_probe_timeout());
         report = readReport(directory);
-        NSString *status = gpuSetup ? !strcmp(argv[1],"gpu-setup") ? @"stopped_after_gpu_initialization" : !strcmp(argv[1],"gpu-setup-timeout") ? @"timeout" : !strcmp(argv[1],"gpu-setup-submit") ? @"blocked_before_unverified_operation" : @"failed" : !strcmp(argv[1],"startup-return") ? @"game_main_returned" : !strcmp(argv[1],"startup-timeout") ? @"timeout" : (!strcmp(argv[1],"startup-gpu") || !strcmp(argv[1],"startup-gpu-entry")) ? @"blocked_before_unverified_operation" : modules ? !strcmp(argv[1],"modules-failure") ? @"failed" : @"stopped_before_game_main" : @"stopped_before_module_initializers";
+        NSString *status = preSubmit ? !strcmp(argv[1],"pre-submit") ? @"blocked_before_unverified_operation" : !strcmp(argv[1],"pre-submit-timeout") ? @"timeout" : @"failed" : gpuSetup ? !strcmp(argv[1],"gpu-setup") ? @"stopped_after_gpu_initialization" : !strcmp(argv[1],"gpu-setup-timeout") ? @"timeout" : !strcmp(argv[1],"gpu-setup-submit") ? @"blocked_before_unverified_operation" : @"failed" : !strcmp(argv[1],"startup-return") ? @"game_main_returned" : !strcmp(argv[1],"startup-timeout") ? @"timeout" : (!strcmp(argv[1],"startup-gpu") || !strcmp(argv[1],"startup-gpu-entry")) ? @"blocked_before_unverified_operation" : modules ? !strcmp(argv[1],"modules-failure") ? @"failed" : @"stopped_before_game_main" : @"stopped_before_module_initializers";
         CHECK([report[@"status"] isEqual:status]);
         CHECK([report[@"completed_sdk_entries"] intValue] == 6);
         CHECK([report[@"completed_argument_entries"] intValue] == (startup || !strcmp(argv[1],"modules") ? 2 : 0));
@@ -132,7 +164,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     CHECK([report[@"module_initializers_called"] boolValue] == modules);
     CHECK([report[@"module_initializers_completed"] boolValue] == (startup || !strcmp(argv[1],"modules")));
     CHECK([report[@"guest_gpu_work_submitted"] isEqual:@NO]);
-    if (!gpuSetup) CHECK([report[@"gpu_initialization_started"] isEqual:@NO] && [report[@"gpu_initialization_completed"] isEqual:@NO]);
+    if (!gpuSetup && !preSubmit) CHECK([report[@"gpu_initialization_started"] isEqual:@NO] && [report[@"gpu_initialization_completed"] isEqual:@NO]);
     CHECK([report[@"restart_required"] isEqual:@YES]);
     printf("BOOT PROBE %s OK\n",argv[1]); return 0;
 } }

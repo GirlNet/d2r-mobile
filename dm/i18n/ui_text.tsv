@@ -374,3 +374,5 @@ dmP5RStartupRunning	正在诊断游戏启动；图形初始化前停止。最长
 dmP5RStartupNeedsRomfs	请先将资源包中的 romfs 文件夹放到本 App 文稿根目录，再运行启动诊断。	Place the resource package’s romfs folder in this app’s Documents root before probing startup.	P5R UIKit launcher
 dmP5RGpuSetupProbe	图形初始化诊断	Probe Graphics Initialization	P5R UIKit launcher
 dmP5RGpuSetupRunning	正在初始化图形后端，完成后停止，不提交游戏画面。最长 30 秒，超时会退出 App。文稿目录：%@。	Initializing the graphics backend; stop after setup without submitting game graphics. Up to 30 seconds; timeout closes the app. Documents folder: %@.	P5R UIKit launcher
+dmP5RPreSubmitProbe	提交前诊断	Probe Before Submission	P5R UIKit launcher
+dmP5RPreSubmitRunning	继续资源初始化和命令录制，在首次游戏 GPU 提交前停止。最长 30 秒，超时会退出 App。文稿目录：%@。	Continuing resource setup and command recording; stop before the first game GPU submission. Up to 30 seconds; timeout closes the app. Documents folder: %@.	P5R UIKit launcher

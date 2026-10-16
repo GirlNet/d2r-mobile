@@ -133,19 +133,19 @@ static void test_fast_clear_registry(const NVNdeviceBuilder *db) {
 #ifdef DM_P5R_ONLY
 // 实际后端设置结束后线程必须留在生产停止边界；启用 UDC 开关也不能越过该边界。
 // After real backend setup the thread must remain at the production stop boundary, even with the UDC self-test switch enabled.
-static _Atomic int setupEscaped;
-static void *realSetup(void *unused) { (void)unused; mtl_init(); atomic_store(&setupEscaped,1); return NULL; }
-static int realSetupProbe(const char *directory) {
-    if (!dm_boot_probe_begin_gpu_setup(directory) || !dm_boot_probe_checkpoint("nnMain",0)) return 1;
+static _Atomic int setupEscaped, setupContinued;
+static void *realSetup(void *preSubmit) { mtl_init(); if (preSubmit) { atomic_store(&setupContinued,1); mtl_drain(); } atomic_store(&setupEscaped,1); return NULL; }
+static int realSetupProbe(const char *directory, int preSubmit) {
+    if (!(preSubmit ? dm_boot_probe_begin_pre_submit(directory) : dm_boot_probe_begin_gpu_setup(directory)) || !dm_boot_probe_checkpoint("nnMain",0)) return 1;
     setenv("DM_UDC_SELFTEST","1",1);
-    pthread_t thread; if (pthread_create(&thread,NULL,realSetup,NULL)) return 1; pthread_detach(thread);
+    pthread_t thread; if (pthread_create(&thread,NULL,realSetup,(void *)(uintptr_t)preSubmit)) return 1; pthread_detach(thread);
     char path[2048], data[32768]; snprintf(path,sizeof path,"%s/boot-report.json",directory);
     for (int i=0;i<4000;i++) {
         usleep(10000); FILE *f=fopen(path,"rb"); if (!f) continue;
         size_t n=fread(data,1,sizeof data-1,f); fclose(f); data[n]=0;
-        if (strstr(data,"stopped_after_gpu_initialization")) {
-            if (atomic_load(&setupEscaped)) return 1;
-            puts("REAL METAL SETUP OK: backend objects initialized; owner parked before returning to guest"); return 0;
+        if (strstr(data,preSubmit ? "blocked_before_unverified_operation" : "stopped_after_gpu_initialization")) {
+            if (atomic_load(&setupEscaped) || (preSubmit && !atomic_load(&setupContinued))) return 1;
+            puts(preSubmit ? "REAL METAL PRE-SUBMIT OK: setup returned; production mtl_drain commit blocked" : "REAL METAL SETUP OK: backend objects initialized; owner parked before returning to guest"); return 0;
         }
         if (strstr(data,"failure_reason") || strstr(data,"process_exit_requested")) return 1;
     }
@@ -155,7 +155,8 @@ static int realSetupProbe(const char *directory) {
 
 int main(int argc, char **argv) {
 #ifdef DM_P5R_ONLY
-    if (argc==3 && !strcmp(argv[1],"--gpu-setup-probe")) return realSetupProbe(argv[2]);
+    if (argc==3 && !strcmp(argv[1],"--gpu-setup-probe")) return realSetupProbe(argv[2],0);
+    if (argc==3 && !strcmp(argv[1],"--pre-submit-probe")) return realSetupProbe(argv[2],1);
 #endif
     crash_install();   // 生产同一套 SIGSEGV / SIGBUS 处理（缺页钩子在其中分发） | the same SIGSEGV / SIGBUS handling as production (the page-fault hook is dispatched from within it)
     // 1. 引导取址：bootstrap 取 GetProcAddress，再用它取全部名字

@@ -6,6 +6,7 @@ int dm_boot_probe_begin(const char *directory);
 int dm_boot_probe_begin_modules(const char *directory);
 int dm_boot_probe_begin_startup(const char *directory);
 int dm_boot_probe_begin_gpu_setup(const char *directory);
+int dm_boot_probe_begin_pre_submit(const char *directory);
 int dm_boot_probe_gpu_begin(void);
 void dm_boot_probe_gpu_complete(const char *backend, const char *device);
 int dm_boot_probe_active(void);
@@ -23,3 +24,7 @@ static inline void dm_boot_probe_failure(const char *reason) { (void)reason; }
 static inline int dm_boot_probe_checkpoint(const char *entry, int completed) { (void)entry; (void)completed; return 1; }
 static inline void dm_boot_probe_block(const char *boundary, const char *detail) { (void)boundary; (void)detail; }
 #endif
+
+// GPU 提交必须在求值前经过诊断边界；驻留集元数据 commit 不属于命令提交。
+// GPU submission must pass the probe boundary before evaluation; residency-set metadata commits are not command submissions.
+#define DM_GPU_SUBMIT(...) do { dm_boot_probe_block("guest_gpu_submission",__func__); __VA_ARGS__; } while (0)

@@ -101,6 +101,9 @@ jobs:
           dm/gfx/tests/t_nvn --bootstrap-only
           make -C dm/gfx/tests t_nvn_gpu_setup
           dm/gfx/tests/t_nvn_gpu_setup --gpu-setup-probe "$RUNNER_TEMP/p5r-real-metal-setup"
+          dm/gfx/tests/t_nvn_gpu_setup --pre-submit-probe "$RUNNER_TEMP/p5r-real-pre-submit"
+          python3 dm/gfx/tests/test_gpu_submit_guards.py
+          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-pre-submit/boot-report.json")); assert r["status"]=="blocked_before_unverified_operation" and r["gpu_initialization_completed"] and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"]'
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-metal-setup/boot-report.json")); assert r["status"]=="stopped_after_gpu_initialization" and r["gpu_backend"]=="Metal 3" and r["gpu_initialization_completed"] and not r["guest_gpu_work_submitted"] and not r["graphics_verified"] and not r["runtime_ready"]'
       - name: Check ELF optional imports through the actual loader
         run: |
@@ -140,7 +143,7 @@ jobs:
           set -euo pipefail
           xcrun clang -DDM_P5R_ONLY=1 -fobjc-arc -fblocks -Wall -Wextra -Werror -I dm/host \
             dm/host/tests/t_boot_probe.m dm/ios/p5r/boot_probe.m -framework Foundation -o "$RUNNER_TEMP/p5r-boot-probe-test"
-          for mode in checkpoint blocked timeout failure modules modules-failure startup-return startup-timeout startup-gpu startup-gpu-entry gpu-setup gpu-setup-failure gpu-setup-timeout gpu-setup-submit gpu-setup-wrong-owner; do
+          for mode in checkpoint blocked timeout failure modules modules-failure startup-return startup-timeout startup-gpu startup-gpu-entry gpu-setup gpu-setup-failure gpu-setup-timeout gpu-setup-submit gpu-setup-wrong-owner pre-submit pre-submit-timeout pre-submit-failure pre-submit-wrong-owner; do
             "$RUNNER_TEMP/p5r-boot-probe-test" "$mode" "$RUNNER_TEMP/p5r-probe-$mode"
           done
       - name: Run synthetic texture bindings on Metal 3 and 4
