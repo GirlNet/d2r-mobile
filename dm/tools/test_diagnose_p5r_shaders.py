@@ -89,6 +89,8 @@ class DiagnosticTests(unittest.TestCase):
         result=compile_metal(source,self.root/'metal output','iphoneos',runner=runner,metal_tools=tools)
         self.assertEqual(calls[0][:3],[str(tools/'metal.exe'),'-target','air64-apple-ios18.0'])
         self.assertIn('-fno-fast-math',calls[0]);self.assertIn(str(source),calls[0])
+        cache=self.root/'metal output'/'module-cache'
+        self.assertIn('-fmodules-cache-path='+str(cache),calls[0]);self.assertTrue(cache.is_dir())
         self.assertEqual(calls[1][0],str(tools/'metallib.exe'))
         self.assertEqual(result['source_sha256'],hashlib.sha256(source.read_bytes()).hexdigest())
         self.assertTrue(result['strict_float']);self.assertFalse(result['gpu_output_verified'])

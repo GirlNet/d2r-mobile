@@ -245,12 +245,16 @@ def compile_metal(msl, directory, sdk, xcrun='xcrun', runner=run_command, metal_
         compile_prefix=[xcrun,'-sdk',sdk,'metal']
         link_prefix=[xcrun,'-sdk',sdk,'metallib']
     directory.mkdir(parents=True, exist_ok=True)
+    # Keep compiler-generated modules beside the diagnostic outputs. The default
+    # Windows user-profile cache may be read-only in a restricted build session.
+    module_cache = directory / 'module-cache'
+    module_cache.mkdir(exist_ok=True)
     air = directory / (msl.stem + '.air')
     library = directory / (msl.stem + '.metallib')
     if air.exists() or library.exists():
         raise FileExistsError('Metal outputs must be new; refusing stale compiler artifacts')
     minimum = ['-mios-version-min=18.0'] if sdk == 'iphoneos' else []
-    runner([*compile_prefix, '-c', '-fno-fast-math', *minimum, msl, '-o', air],
+    runner([*compile_prefix, '-c', '-fno-fast-math', '-fmodules-cache-path=' + str(module_cache), *minimum, msl, '-o', air],
            directory / (msl.stem + '-metal.log'))
     if not air.is_file() or not air.stat().st_size:
         raise RuntimeError('Metal compiler did not produce a nonempty AIR object')
