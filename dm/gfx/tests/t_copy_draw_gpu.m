@@ -34,7 +34,7 @@ static float expected_sample(float sx,float sy,int n,int layer,int level,int cha
     return sum;
 }
 static int colour_cases(void) {
-    const struct {int flags,sl,dl,ss,ds;NVNcopyRegion sr,dr;} cases[]={
+    const struct {int flags,sl,dl,ss,ds;NVNcopyRegion sr,dr;int same_format;} cases[]={
       {0,0,0,0,0,{0,0,0,4,4,1},{0,0,0,8,8,1}},
       {NVN_COPY_FLAGS_MIRROR_X_BIT,0,0,0,0,{0,0,0,4,4,1},{2,2,0,4,4,1}},
       {NVN_COPY_FLAGS_MIRROR_Y_BIT,0,0,0,0,{0,0,0,4,4,1},{2,2,0,4,4,1}},
@@ -43,21 +43,25 @@ static int colour_cases(void) {
       {NVN_COPY_FLAGS_LINEAR_FILTER_BIT|NVN_COPY_FLAGS_MIRROR_X_BIT|NVN_COPY_FLAGS_MIRROR_Y_BIT,0,0,0,0,{0,0,0,4,4,1},{0,0,0,8,8,1}},
       {NVN_COPY_FLAGS_LINEAR_FILTER_BIT,1,1,1,1,{0,0,0,2,2,2},{0,0,0,4,4,2}},
       {NVN_COPY_FLAGS_LINEAR_FILTER_BIT,0,0,1,2,{1,1,0,2,2,1},{2,1,0,4,6,1}},
-      {0,0,0,0,0,{0,0,0,4,4,1},{1,1,0,4,4,1}}};
+      {0,0,0,0,0,{0,0,0,4,4,1},{1,1,0,4,4,1}},
+      // Same format/size must still select the draw path for mirror flags.
+      {NVN_COPY_FLAGS_MIRROR_X_BIT|NVN_COPY_FLAGS_MIRROR_Y_BIT,0,0,0,0,{0,0,0,4,4,1},{2,2,0,4,4,1},1}};
     for(unsigned c=0;c<sizeof cases/sizeof *cases;c++) {
         tex_t src={.serial=1100000+c*2},dst={.serial=1100001+c*2};
         src.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D_ARRAY,.format=NVN_FORMAT_RGBA8,.width=4,.height=4,.depth=3,.levels=2,.samples=1};
-        dst.d=src.d;dst.d.width=dst.d.height=8;dst.d.format=NVN_FORMAT_RGBA32F;
+        dst.d=src.d;dst.d.width=dst.d.height=8;dst.d.format=cases[c].same_format?NVN_FORMAT_RGBA8:NVN_FORMAT_RGBA32F;
+        unsigned bpp=cases[c].same_format?4:16;
         MTLTextureDescriptor *descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:4 height:4 mipmapped:YES];
         descriptor.mipmapLevelCount=2;descriptor.textureType=MTLTextureType2DArray;descriptor.arrayLength=3;descriptor.storageMode=MTLStorageModeShared;descriptor.usage=MTLTextureUsageShaderRead|MTLTextureUsagePixelFormatView;
         id<MTLTexture> source=[g_dev newTextureWithDescriptor:descriptor];CHECK(source);
-        descriptor.pixelFormat=MTLPixelFormatRGBA32Float;descriptor.width=descriptor.height=8;descriptor.usage|=MTLTextureUsageRenderTarget;
+        descriptor.pixelFormat=cases[c].same_format?MTLPixelFormatRGBA8Unorm:MTLPixelFormatRGBA32Float;descriptor.width=descriptor.height=8;descriptor.usage|=MTLTextureUsageRenderTarget;
         id<MTLTexture> destination=[g_dev newTextureWithDescriptor:descriptor];CHECK(destination);
         uint8_t pixels[4*4*4];float guard[8*8*4];for(unsigned i=0;i<8*8*4;i++)guard[i]=-9;
+        if(cases[c].same_format)memset(guard,0x6b,sizeof guard);
         for(int layer=0;layer<3;layer++)for(int level=0;level<2;level++) {
             int n=4>>level;for(int y=0;y<n;y++)for(int x=0;x<n;x++)for(int k=0;k<4;k++)pixels[(y*n+x)*4+k]=(uint8_t)lroundf(component(x,y,layer,level,k)*255);
             [source replaceRegion:MTLRegionMake2D(0,0,n,n) mipmapLevel:level slice:layer withBytes:pixels bytesPerRow:n*4 bytesPerImage:n*n*4];
-            int m=8>>level;[destination replaceRegion:MTLRegionMake2D(0,0,m,m) mipmapLevel:level slice:layer withBytes:guard bytesPerRow:m*16 bytesPerImage:m*m*16];
+            int m=8>>level;[destination replaceRegion:MTLRegionMake2D(0,0,m,m) mipmapLevel:level slice:layer withBytes:guard bytesPerRow:m*bpp bytesPerImage:m*m*bpp];
         }
         res_add(source);res_add(destination);serial_put(src.serial,source);serial_put(dst.serial,destination);
         NVNcopyRegion bad=cases[c].sr;bad.width=99;CHECK(!copy_t2t_draw(source,destination,0,0,0,0,&bad,&cases[c].dr,0,0));
@@ -68,20 +72,21 @@ static int colour_cases(void) {
             [encoder copyFromTexture:destination sourceSlice:layer sourceLevel:level sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(n,n,1)
                toBuffer:output destinationOffset:0 destinationBytesPerRow:256 destinationBytesPerImage:256*n];[encoder endEncoding];[command commit];[command waitUntilCompleted];CHECK(command.status==MTLCommandBufferStatusCompleted);
             for(unsigned y=0;y<n;y++) {
-                uint8_t *row=(uint8_t *)output.contents+y*256;for(unsigned x=n*16;x<256;x++)CHECK(row[x]==0xa7);
+                uint8_t *row=(uint8_t *)output.contents+y*256;for(unsigned x=n*bpp;x<256;x++)CHECK(row[x]==0xa7);
                 for(unsigned x=0;x<n;x++)for(int k=0;k<4;k++) {
-                    const NVNcopyRegion *sr=&cases[c].sr,*dr=&cases[c].dr;float expected=-9;
+                    const NVNcopyRegion *sr=&cases[c].sr,*dr=&cases[c].dr;float expected=cases[c].same_format?107.f/255:-9;
                     if(level==cases[c].dl&&layer>=cases[c].ds&&layer<cases[c].ds+dr->depth&&x>=(unsigned)dr->xoffset&&x<(unsigned)(dr->xoffset+dr->width)&&y>=(unsigned)dr->yoffset&&y<(unsigned)(dr->yoffset+dr->height)) {
                         float u=((float)x-dr->xoffset+.5f)/dr->width,v=((float)y-dr->yoffset+.5f)/dr->height;
                         if(cases[c].flags&NVN_COPY_FLAGS_MIRROR_X_BIT)u=1-u;if(cases[c].flags&NVN_COPY_FLAGS_MIRROR_Y_BIT)v=1-v;
                         expected=expected_sample(sr->xoffset+u*sr->width,sr->yoffset+v*sr->height,4>>cases[c].sl,layer-cases[c].ds+cases[c].ss,cases[c].sl,k,!!(cases[c].flags&NVN_COPY_FLAGS_LINEAR_FILTER_BIT));
                     }
-                    if(!isfinite(((float *)row)[x*4+k])||fabsf(((float *)row)[x*4+k]-expected)>.002f){fprintf(stderr,"case%u layer%d level%d pixel%u,%u channel%d actual%g expected%g\n",c,layer,level,x,y,k,((float *)row)[x*4+k],expected);return 1;}
+                    float actual=cases[c].same_format?row[x*4+k]/255.f:((float *)row)[x*4+k];
+                    if(!isfinite(actual)||fabsf(actual-expected)>.002f){fprintf(stderr,"case%u layer%d level%d pixel%u,%u channel%d actual%g expected%g\n",c,layer,level,x,y,k,actual,expected);return 1;}
                 }
             }
         }
     }
-    puts("COPY DRAW COLOUR GPU OK: nine nearest/linear/mirror/conversion/mip/layer cases and untouched subresources");return 0;
+    puts("COPY DRAW COLOUR GPU OK: ten nearest/linear/mirror/conversion/mip/layer cases and untouched subresources");return 0;
 }
 static int depth_cases(void) {
     // Produce varying depth/stencil on the GPU, then read both planes with an
