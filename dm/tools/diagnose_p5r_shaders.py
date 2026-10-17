@@ -234,7 +234,7 @@ def compile_metal(msl, directory, sdk, xcrun='xcrun', runner=run_command):
     air = directory / (msl.stem + '.air')
     library = directory / (msl.stem + '.metallib')
     minimum = ['-mios-version-min=18.0'] if sdk == 'iphoneos' else []
-    runner([xcrun, '-sdk', sdk, 'metal', '-c', *minimum, msl, '-o', air],
+    runner([xcrun, '-sdk', sdk, 'metal', '-c', '-fno-fast-math', *minimum, msl, '-o', air],
            directory / (msl.stem + '-metal.log'))
     runner([xcrun, '-sdk', sdk, 'metallib', air, '-o', library],
            directory / (msl.stem + '-metallib.log'))
