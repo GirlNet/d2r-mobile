@@ -1,6 +1,7 @@
 // Public draw -> production fragment specialization -> independent GPU readback.
 #include "../nvn/nvn_mtl.m"
 #include "../nvn/hle_nvn.c"
+#include "nvn_gpu_test_device.h"
 #include "../../host/guest_bootstrap.h"
 uint64_t g_t0_ns;
 void *front_metal_layer(void){return NULL;}
@@ -17,7 +18,7 @@ static id<MTLBuffer> readback(id<MTLTexture> texture) {
     [encoder endEncoding];[command commit];[command waitUntilCompleted];return command.status==MTLCommandBufferStatusCompleted?output:nil;
 }
 int main(void){@autoreleasepool{
-    if(!MTLCreateSystemDefaultDevice())return 77;
+    int availability=nvn_gpu_test_device();if(availability)return availability;
     CHECK(dm_guest_profile_select("p5r"));mtl_init();
     const struct { NVNformat format;uint32_t raw;unsigned bytes; } cases[]={
       {NVN_FORMAT_R8UI,7,1},{NVN_FORMAT_R16UI,257,2},{NVN_FORMAT_R32UI,0xf1234567,4},

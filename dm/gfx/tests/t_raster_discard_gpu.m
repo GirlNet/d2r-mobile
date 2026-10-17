@@ -1,6 +1,7 @@
 // Discard disables rasterization while retaining real vertex execution.
 #include "../nvn/nvn_mtl.m"
 #include "../nvn/hle_nvn.c"
+#include "nvn_gpu_test_device.h"
 #include "../../host/guest_bootstrap.h"
 uint64_t g_t0_ns;
 void *front_metal_layer(void){return NULL;}
@@ -10,7 +11,7 @@ void svc_thread_dump(void){}
 uint64_t now_ns(void){return bp_now();}
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"raster discard check failed at %d\n",__LINE__);return 1;}}while(0)
 int main(void){@autoreleasepool{
-    if(!MTLCreateSystemDefaultDevice())return 77;
+    int availability=nvn_gpu_test_device();if(availability)return availability;
     CHECK(dm_guest_profile_select("p5r"));mtl_init();NSError *error=nil;
     NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
       "struct V {float4 p[[position]];};\nvertex V v(uint n[[vertex_id]],device atomic_uint *seen[[buffer(16)]]){"

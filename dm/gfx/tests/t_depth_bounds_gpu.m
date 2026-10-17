@@ -2,6 +2,7 @@
 // colour/depth readback for stored-depth bounds, including equality and disabled reset.
 #include "../nvn/nvn_mtl.m"
 #include "../nvn/hle_nvn.c"
+#include "nvn_gpu_test_device.h"
 #include "../../host/guest_bootstrap.h"
 uint64_t g_t0_ns;
 void *front_metal_layer(void){return NULL;}
@@ -25,7 +26,7 @@ static int readback(id<MTLTexture> texture,int colour,float depth) {
     return 0;
 }
 int main(void){@autoreleasepool{
-    if(!MTLCreateSystemDefaultDevice())return 77;
+    int availability=nvn_gpu_test_device();if(availability)return availability;
     CHECK(dm_guest_profile_select("p5r"));mtl_init();NSError *error=nil;
     int supported=depth_bounds_supported();
     NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"

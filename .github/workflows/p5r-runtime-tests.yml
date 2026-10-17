@@ -155,6 +155,21 @@ jobs:
             exit 0
           fi
           exit "$result"
+      - name: Check production draw paths on Metal 4
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4
+          for test in t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4; do
+            set +e
+            "dm/gfx/tests/$test"
+            result=$?
+            set -e
+            if [ "$result" -eq 77 ] || [ "$result" -eq 78 ]; then
+              echo "::warning::$test requires hardware unavailable on this runner; output comparisons skipped."
+            elif [ "$result" -ne 0 ]; then
+              exit "$result"
+            fi
+          done
       - name: Check production texture views with synthetic GPU pixels
         run: |
           set -euo pipefail

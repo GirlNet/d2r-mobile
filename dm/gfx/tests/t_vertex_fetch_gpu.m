@@ -2,6 +2,7 @@
 // Includes mixed signed/unsigned/normalized fetches and values above 2^24.
 #include "../nvn/nvn_mtl.m"
 #include "../nvn/hle_nvn.c"
+#include "nvn_gpu_test_device.h"
 #include "../../host/guest_bootstrap.h"
 uint64_t g_t0_ns;
 void *front_metal_layer(void){return NULL;}
@@ -11,7 +12,7 @@ void svc_thread_dump(void){}
 uint64_t now_ns(void){return bp_now();}
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"vertex fetch check failed at %d\n",__LINE__);return 1;}}while(0)
 int main(void){@autoreleasepool{
-    if(!MTLCreateSystemDefaultDevice())return 77;
+    int availability=nvn_gpu_test_device();if(availability)return availability;
     CHECK(dm_guest_profile_select("p5r"));mtl_init();
     const struct { NVNformat format;uint32_t raw;unsigned bytes;int sign; } cases[]={
       {NVN_FORMAT_R8UI,7,1,0},{NVN_FORMAT_R16UI,257,2,0},{NVN_FORMAT_R32UI,0xf1234567,4,0},

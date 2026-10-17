@@ -2,6 +2,7 @@
 // 65535 vertex with 16-bit primitive restart disabled. No game shaders.
 #include "../nvn/nvn_mtl.m"
 #include "../nvn/hle_nvn.c"
+#include "nvn_gpu_test_device.h"
 #include "../../host/guest_bootstrap.h"
 uint64_t g_t0_ns;
 void *front_metal_layer(void){return NULL;}
@@ -11,7 +12,7 @@ void svc_thread_dump(void){}
 uint64_t now_ns(void){return bp_now();}
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"primitive restart check failed at %d\n",__LINE__);return 1;}}while(0)
 int main(void){@autoreleasepool{
-    if(!MTLCreateSystemDefaultDevice())return 77;
+    int availability=nvn_gpu_test_device();if(availability)return availability;
     CHECK(dm_guest_profile_select("p5r"));setenv("DM_NVN_TBDR","1",1);mtl_init();NSError *error=nil;
     id<MTLLibrary> library=[g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
       "vertex float4 v(uint i[[vertex_id]]){uint n=i==65535?7:i;float2 p[8]={float2(-1,-1),float2(-1,1),float2(-.25,-1),float2(-.25,1),float2(.25,-1),float2(.25,1),float2(1,-1),float2(1,1)};return float4(p[n],.5,1);}\n"

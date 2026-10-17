@@ -2,6 +2,7 @@
 // colour/depth readback for clipped and clamped near/far triangles.
 #include "../nvn/nvn_mtl.m"
 #include "../nvn/hle_nvn.c"
+#include "nvn_gpu_test_device.h"
 uint64_t g_t0_ns;
 void *front_metal_layer(void){return NULL;}
 module_t *module_of(const void *p){(void)p;return NULL;}
@@ -24,7 +25,7 @@ static int readback(id<MTLTexture> texture,int colour,float depth) {
     return 0;
 }
 int main(void){@autoreleasepool{
-    if(!MTLCreateSystemDefaultDevice())return 77;
+    int availability=nvn_gpu_test_device();if(availability)return availability;
     setenv("DM_NVN_TBDR","0",1);mtl_init();NSError *error=nil;
     NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
         "float4 pos(uint n,float z){float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return float4(p[n],z,1);}\n"

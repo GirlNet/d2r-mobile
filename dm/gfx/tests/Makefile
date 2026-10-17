@@ -42,6 +42,9 @@ t_fragment_export_gpu: t_fragment_export_gpu.m ../../host/crash.c $(GFX) $(GFX_H
 t_raster_discard_gpu: t_raster_discard_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_raster_discard_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 
+%_m4: %.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=0 -mmacosx-version-min=26.0 -fobjc-arc -o $@ $< ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
 t_dirty_slots: t_dirty_slots.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
 	clang $(CFLAGS) -o $@ t_dirty_slots.c ../../host/crash.c ../nvn/nvn_dirty.c
 t_dirty_race: t_dirty_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
