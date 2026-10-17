@@ -30,6 +30,17 @@ class ReflectionPlanTests(unittest.TestCase):
     def plan(self, source, res=None, stage='ps'):
         return reflection_plan(job(stage), res or resource(stage), source)
 
+    def test_vertex_input_locations_preserve_sparse_shader_slots(self):
+        source='struct main0_in { float4 position [[attribute(0)]]; float2 joints [[attribute(7)]]; };'
+        plan=self.plan(source,stage='vs')
+        self.assertEqual(plan['vertex_inputs'],[dict(location=0,msl_type='float4',msl_name='position'),dict(location=7,msl_type='float2',msl_name='joints')])
+        self.assertFalse(plan['vertex_input_state_verified'])
+        self.assertFalse(plan['runtime_ready'])
+        for source in ('half4 position [[attribute(0)]];', 'float4 a [[attribute(16)]];',
+                       'float4 a [[attribute(0)]];float b [[attribute(0)]];'):
+            with self.assertRaises(ValueError):self.plan(source,stage='vs')
+        with self.assertRaises(ValueError):self.plan('float4 a [[attribute(0)]];',stage='ps')
+
     def test_combined_sampler_and_texture_use_independent_slot_domain(self):
         source = msl('texture2d<float> fp_t_tcb_8 [[id(7)]];', 'sampler fp_t_tcb_8Smplr [[id(3)]];')
         plan = self.plan(source, resource(textures=[texture()]))
