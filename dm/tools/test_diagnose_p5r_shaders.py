@@ -100,6 +100,32 @@ class DiagnosticTests(unittest.TestCase):
         self.run_diagnostic()
         self.assertEqual(before, {p: p.read_bytes() for p in self.preparation.rglob('*') if p.is_file()})
 
+    def test_parallel_workers_preserve_order_failures_and_provenance(self):
+        rows = []
+        for value in range(4):
+            data = shader(constants=256); data[0x40] = value
+            rows.extend(scan_segment(data)[0])
+        self.preparation = self.root / 'parallel'
+        write_outputs(self.preparation, dict(file_sha256='test', build_id='test'), rows, [])
+        failed = rows[1]['key']
+        def runner(command, log, timeout=120):
+            if '--target-env' in command and Path(command[-1]).stem == failed:
+                raise RuntimeError('synthetic validation failure')
+            return self.runner(command, log, timeout)
+        report = diagnose(self.preparation, self.root / 'parallel-out', self.tool, self.tool, self.tool,
+                          runner=runner, workers=3)
+        self.assertEqual([row['key'] for row in report['shaders']], [row['key'] for row in rows])
+        self.assertEqual(report['summary']['passed'], 3)
+        self.assertEqual(report['status'], 'failed')
+        self.assertEqual(report['shaders'][1]['completed'], ['translated'])
+        for row in report['shaders']:
+            if row['status'] == 'diagnostic_passed':
+                plan = json.loads(Path(row['reflection_plan']['path']).read_text())
+                self.assertTrue(plan['source']['control_sha256'].startswith(row['key']))
+        for workers in (0, 33, True):
+            with self.assertRaises(ValueError):
+                diagnose(self.preparation, self.root / 'invalid', self.tool, self.tool, self.tool, workers=workers)
+
     def test_tampered_code_constants_or_stage_rejected_before_output(self):
         path = self.preparation / 'diagnostic-jobs.json'
         original = path.read_text(encoding='utf-8')

@@ -3,6 +3,7 @@
 # Local P5R diagnostic pipeline: check extracted provenance, translate, validate and audit resources; optional Apple compilation never produces runtime libraries.
 import argparse
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
@@ -233,14 +234,19 @@ def compile_metal(msl, directory, sdk, xcrun='xcrun', runner=run_command):
                 diagnostic_only=True, gpu_output_verified=False)
 
 
-def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='xcrun', runner=run_command):
+def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='xcrun', runner=run_command,
+             workers=1):
     preparation, output = preparation.resolve(), output.resolve()
     repo = Path(__file__).resolve().parents[2]
     if output.is_relative_to(repo) or output.is_relative_to(preparation) or preparation.is_relative_to(output):
         raise ValueError('Output must be a new directory outside the repository and extraction tree')
     if any(sdk not in ('macosx', 'iphoneos') for sdk in sdks):
         raise ValueError('Unsupported Metal SDK')
+    if type(workers) is not int or not 1 <= workers <= 32:
+        raise ValueError('Workers must be between 1 and 32')
     manifest, jobs = load_jobs(preparation)
+    sources = {record['key']: {field: record[field] for field in
+               ('control_sha256', 'code_sha256', 'c1_sha256')} for record in manifest['shaders']}
     # 提取文件保持只读；运行时文件名/链目录不出现在诊断输出中。
     # Extraction files remain read-only; diagnostic outputs use neither runtime filenames nor chain directories.
     output.mkdir(parents=True, exist_ok=False)
@@ -266,12 +272,11 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
             raise ValueError('Invalid translator source fingerprint')
         report['tools']['translator']['source_sha16'] = source_sha
         try:
-            runner([translator, jobs_path, spv], output / 'translation.log', timeout=600)
+            runner([translator, jobs_path, spv], output / 'translation.log', timeout=max(600, len(jobs)))
         except RuntimeError as error:
             report['errors'].append(str(error))
-        for job in jobs:
+        def check_job(job):
             key = job['key']; row = dict(key=key, stage=job['stage'], status='running', completed=[])
-            report['shaders'].append(row)
             try:
                 binary = spv / (key + '.spv')
                 resource = read_json(spv / (key + '.res.json'))
@@ -306,9 +311,7 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                     plan['compute_memory_audit'] = row['compute_memory_audit']
                     if plan['compute_memory_audit']['memory_unused_proven']:
                         plan['blockers'].remove('Compute local and shared memory remain unverified')
-                plan['source'] = next({field: record[field] for field in
-                                     ('control_sha256', 'code_sha256', 'c1_sha256')}
-                                    for record in manifest['shaders'] if record['key'] == key)
+                plan['source'] = sources[key]
                 plan['artifacts'] = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                                      for path in (binary, spv / (key + '.res.json'), msl)}
                 plan_path = reflection_dir / (key + '.plan.json'); save_json(plan_path, plan)
@@ -327,7 +330,14 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                 row['status'] = 'diagnostic_passed'
             except (ValueError, OSError, RuntimeError, KeyError, TypeError) as error:
                 row.update(status='failed', error=str(error))
-            save_json(report_path, report)
+            return row
+        # Each worker owns distinct shader files. Aggregate deterministically on
+        # this thread, and checkpoint in batches to avoid quadratic report I/O.
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for index, row in enumerate(executor.map(check_job, jobs), 1):
+                report['shaders'].append(row)
+                if index % 128 == 0:
+                    save_json(report_path, report)
         report['summary'] = dict(shaders=len(jobs), passed=sum(r['status'] == 'diagnostic_passed' for r in report['shaders']),
                                  stages=dict(Counter(j['stage'] for j in jobs)),
                                  shaders_with_textures=sum(bool(r.get('audit', {}).get('handles')) for r in report['shaders']),
@@ -362,10 +372,11 @@ def main():
     parser.add_argument('--spirv-val', type=Path, required=True)
     parser.add_argument('--spirv-cross', type=Path, required=True)
     parser.add_argument('--metal-sdk', action='append', choices=['macosx', 'iphoneos'], default=[])
+    parser.add_argument('--workers', type=int, default=1, help='Independent shader validation workers (1..32)')
     args = parser.parse_args()
     try:
         report = diagnose(args.preparation, args.output, args.translator.resolve(), args.spirv_val.resolve(),
-                          args.spirv_cross.resolve(), tuple(dict.fromkeys(args.metal_sdk)))
+                          args.spirv_cross.resolve(), tuple(dict.fromkeys(args.metal_sdk)), workers=args.workers)
         print(json.dumps(dict(status=report['status'], summary=report.get('summary'),
                               report=str(args.output.resolve() / 'diagnostic-report.json')), indent=2))
         return 0 if report['status'] == 'diagnostic_passed' else 1
