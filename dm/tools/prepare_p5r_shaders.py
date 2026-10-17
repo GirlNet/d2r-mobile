@@ -11,6 +11,7 @@ import sys
 
 import lz4.block
 from inspect_exefs import inspect_module
+from cpk_reader import inventory as cpk_inventory, read_entry
 
 CONTROL_MAGIC = bytes.fromhex('34127698')
 CODE_MAGIC = bytes.fromhex('78563412')
@@ -123,24 +124,85 @@ def write_outputs(workspace, inventory, records, rejected):
                     build_id=inventory['build_id'], shaders=rows, rejected_magic_addresses=rejected,
                     translation_ready=False, graphics_verified=False, runnable_verified=False,
                     caveat='Embedded shaders only. Jobs use unverified resource/state defaults; SPIR-V is diagnostic, not a validated shader library.')
+    if inventory.get('shader_archives'):
+        manifest['source_archives'] = inventory['shader_archives']
+        manifest['caveat'] = 'Embedded and selected GFDNX preset-cache shaders. Other external coverage and resource/draw-state facts remain unverified.'
     for name, value in [('shader-preparation.json', manifest), ('diagnostic-jobs.json', jobs)]:
         (workspace / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     return manifest
+
+
+def extract_archives(paths):
+    """Extract named GFDNX preset caches without writing archive entry names."""
+    records, sources = [], []
+    for path in paths:
+        source = cpk_inventory(path)
+        selected, seen = [], set()
+        with Path(path).open('rb') as file:
+            for entry in source['files']:
+                name = entry['FileName']
+                if not (name.upper().startswith('GFDNX') and name.upper().endswith('.GSC')):
+                    continue
+                identity = (entry['absolute_offset'], entry['FileSize'], entry['ExtractSize'])
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                blob, stored_sha = read_entry(file, entry)
+                found, rejected = scan_segment(blob, 0)
+                if not found or rejected:
+                    raise ValueError(f'Unsupported or empty GFDNX preset shader cache: {name}')
+                origin = dict(archive=str(Path(path).resolve()), entry=name,
+                    offset=entry['absolute_offset'], stored_size=entry['FileSize'],
+                    decoded_size=len(blob), stored_sha256=stored_sha,
+                    decoded_sha256=hashlib.sha256(blob).hexdigest(), shaders=len(found))
+                selected.append(origin)
+                for record in found:
+                    record['segment'] = 'cpk_preset'
+                    record['origins'] = [dict(archive=origin['archive'], entry=name,
+                        entry_sha256=origin['decoded_sha256'], control_offset=record['control_address'])]
+                records.extend(found)
+        sources.append({key: value for key, value in source.items() if key != 'files'} | dict(entries=selected))
+    return records, sources
+
+
+def unique_records(records):
+    unique = {}
+    for record in records:
+        key = record['key']
+        if key in unique:
+            old = unique[key]
+            if any(old[field] != record[field] for field in ('control', 'code', 'c1', 'stage')):
+                raise ValueError(f'Ambiguous control key {key}')
+            if record.get('origins'):
+                old.setdefault('origins', []).extend(record['origins'])
+        else:
+            unique[key] = dict(record)
+            if record.get('origins'):
+                unique[key]['origins'] = list(record['origins'])
+    return list(unique.values())
 
 
 def main():
     parser = argparse.ArgumentParser(description='Extract embedded P5R NVN 11 shaders for local diagnostics, not a playable build.')
     parser.add_argument('main_nso', type=Path)
     parser.add_argument('workspace', type=Path, help='New output directory outside the repository and source directory')
+    parser.add_argument('--cpk', action='append', type=Path, default=[], help='Also scan named GFDNX preset caches in this local CPK; repeat for multiple archives')
     args = parser.parse_args()
     source, output = args.main_nso.resolve(), args.workspace.resolve()
     repo = Path(__file__).resolve().parents[2]
-    if output.is_relative_to(repo) or output.is_relative_to(source.parent):
+    if output.is_relative_to(repo) or output.is_relative_to(source.parent) or any(output.is_relative_to(p.resolve().parent) for p in args.cpk):
         parser.error('Workspace must be outside the repository and source directory')
     try:
         inventory, records, rejected = extract_module(source)
+        if args.cpk:
+            external, archives = extract_archives(args.cpk)
+            if not external:
+                raise ValueError('No GFDNX preset shaders found in the selected CPK archives')
+            inventory['shader_archives'] = archives
+            records.extend(external)
+        records = unique_records(records)
         write_outputs(output, inventory, records, rejected)
-        print(f'Extracted {len(records)} embedded shaders; resource facts and rendered output remain UNVERIFIED.')
+        print(f'Extracted {len(records)} unique shaders; resource facts and rendered output remain UNVERIFIED.')
         return 0
     except (ValueError, OSError, lz4.block.LZ4BlockError) as error:
         print(f'Shader preparation failed: {error}', file=sys.stderr)

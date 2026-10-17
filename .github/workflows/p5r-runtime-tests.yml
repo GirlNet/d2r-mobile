@@ -31,6 +31,10 @@ on:
       - 'dm/tools/test_shader_buffer_reflection.py'
       - 'dm/tools/prepare_p5r_shaders.py'
       - 'dm/tools/test_prepare_p5r_shaders.py'
+      - 'dm/tools/cpk_reader.py'
+      - 'dm/tools/crilayla.py'
+      - 'dm/tools/test_cpk_reader.py'
+      - 'dm/tools/test_crilayla.py'
       - 'dm/tools/inspect_exefs.py'
       - 'dm/tools/prepare_port.py'
       - 'dm/tools/test_inspect_exefs.py'
@@ -248,6 +252,8 @@ jobs:
           "$RUNNER_TEMP/p5r-tests/bin/python" -m pip install lz4==4.4.5
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_cpk_reader.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_crilayla.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v
