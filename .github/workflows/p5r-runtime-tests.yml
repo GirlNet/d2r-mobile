@@ -104,6 +104,7 @@ jobs:
           make -C dm/gfx/tests t_nvn
           dm/gfx/tests/t_nvn --bootstrap-only
           make -C dm/gfx/tests t_nvn_gpu_setup
+          dm/gfx/tests/t_nvn_gpu_setup --queue-sync-gpu
           dm/gfx/tests/t_nvn_gpu_setup --gpu-setup-probe "$RUNNER_TEMP/p5r-real-metal-setup"
           dm/gfx/tests/t_nvn_gpu_setup --pre-submit-probe "$RUNNER_TEMP/p5r-real-pre-submit"
           dm/gfx/tests/t_nvn_gpu_setup --capture-disabled-check
@@ -158,6 +159,12 @@ jobs:
           set -euo pipefail
           make -C dm/host/tests build/t_cache
           dm/host/tests/build/t_cache
+      - name: Check offline service overloads and local context lifetimes
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_offline_services build/t_hid_receipt
+          dm/host/tests/build/t_offline_services
+          dm/host/tests/build/t_hid_receipt
       - name: Check filesystem transactions and exact path behavior
         run: |
           set -euo pipefail

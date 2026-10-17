@@ -8,12 +8,12 @@ class SubmissionGuards(unittest.TestCase):
     def test_no_unguarded_backend_commits(self):
         source = (Path(__file__).resolve().parents[1] / "nvn/nvn_mtl.m").read_text(encoding="utf-8")
         count = 0
-        for match in re.finditer(r"\[[^\[\]\n]*\bcommit(?::[^\]\n]*)?\]", source):
+        for match in re.finditer(r"\[[^\[\]\n]*\b(?:commit|waitForEvent)(?::[^\]\n]*)?\]", source):
             if match.group() == "[g_res commit]":
                 continue
             count += 1
             self.assertTrue(source[:match.start()].endswith("DM_GPU_SUBMIT("), match.group())
-        self.assertEqual(count, 19)
+        self.assertEqual(count, 21)
 
 if __name__ == "__main__":
     unittest.main()

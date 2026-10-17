@@ -10,8 +10,10 @@ void *objmap_get(const void *k) { for (int i = 0; i < 8; i++) if (om[i].k == k) 
 void objmap_put(const void *k, void *v) { for (int i = 0; i < 8; i++) if (!om[i].k) { om[i].k = k; om[i].v = v; return; } }
 void *objmap_del(const void *k) { for (int i = 0; i < 8; i++) if (om[i].k == k) { om[i].k = 0; return om[i].v; } return NULL; }
 static _Atomic int g_sig;
+static void *bound_event;
+static int bound_autoclear;
 void hle_signal_system_event(void *g) { (void)g; atomic_fetch_add_explicit(&g_sig, 1, memory_order_seq_cst); }
-void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; }   // 真实现要客体线程 + SDK 内核事件；单测只数触发次数 | the real implementation needs a guest thread + SDK kernel event; the unit test only counts triggers
+void hle_bind_system_event(void *g, int autoclear) { bound_event = g; bound_autoclear = autoclear; }   // The real implementation binds SDK kernel events; this test records the ABI.
 // 精确核对 PCM 帧计数，不依赖时钟或声卡；停止/空队列的补零不计，半帧字节跨块保留。
 // Check exact PCM frame counts without a clock/audio device; stopped/empty-queue silence does not count, and partial frames carry across buffers.
 static int test_played_count(void) {
@@ -46,6 +48,9 @@ static int test_played_count(void) {
 int main(void) {
     if (test_played_count()) return 1;
     char out[64], ev[64]; uint8_t prm[16]; gbuf b[3]; static int16_t pcm[3][4800 * 2];
+    memset(ev, 0xa5, sizeof ev);
+    if (h_au_DeviceEvent(ev) || bound_event != ev || bound_autoclear || g_sig) return 1;
+    for (unsigned i = 0; i < sizeof ev; i++) if ((uint8_t)ev[i] != 0xa5) return 1;
     h_au_InitParam(prm);
     // 默认设备的两种 ABI 重载均建立真正的宿主对象；事件只在带事件版本绑定。
     // Both default-device ABI overloads create real host objects; only the event overload binds an event.

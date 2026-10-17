@@ -82,6 +82,19 @@ The pipeline now also writes `reflection-plans/<key>.plan.json`. Plans link hash
 
 ## Remaining work before a playable build
 
+Continue implementation through source audits, synthetic CPU/GPU tests and
+cloud iOS builds without requesting a device installation for each interface.
+The next report on 2026-10-17 records successful Darwin cache maintenance, then
+stops at an unhandled service connection (`SVC 0x1f`); the syscall number alone
+does not identify the service. Related coverage adds older BSD socket overloads,
+offline account-context lifetimes, a host notification event for the stable
+default audio device, and missing host controller/touch overloads. Unknown IPC
+is not treated as successful. `nvnQueueWaitSync` schedules a Metal shared-event
+GPU dependency without blocking the submitting CPU and rejects unfenced,
+cross-device, finalized and future fences. A synthetic two-queue copy checks
+dependency ordering. Game output and playable flows still require final device
+acceptance; synthetic cloud tests cannot establish those results.
+
 The next device log on 2026-10-17 passed the linear render-target size check,
 then faulted on the `CTR_EL0` read in `nn::os::FlushDataCache`. Optional forced
 symbol adapters now forward this API to Darwin's `sys_dcache_flush`, and map

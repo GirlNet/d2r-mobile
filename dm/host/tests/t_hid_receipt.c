@@ -16,7 +16,8 @@ uint64_t now_ns(void) { return clock_ns; }
 uint64_t guest_ns(void) { return clock_ns; }
 static int opmode=1;
 int dm_opmode(void) { return opmode; }
-int touch_fill(void *p, uint64_t n) { (void)p;(void)n;return 0; }
+static void *last_touch; static uint64_t last_touch_time;
+int touch_fill(void *p, uint64_t n) { last_touch=p;last_touch_time=n;memset(p,0,sizeof(TouchState16));((TouchState16 *)p)->sampling=123;return 1; }
 void dm_touch_set(const dm_touch *p,int n) { (void)p;(void)n; }
 void uimsg_subscribe(void (*f)(const char *,const char *,const char *)) { (void)f; }
 static int checks,fails;
@@ -53,6 +54,17 @@ static void exercise(int which) {
   n=load(path,rows,&limit);
   if(!which)CK(n==-1);
   else {CK(n==5);CK(limit==0);if(n==5){CK(rows[0].sampling==1&&rows[0].time==clock_ns&&rows[0].buttons==0);CK(rows[1].sampling==2&&rows[1].buttons==DM_BTN_B&&rows[1].lx==32767&&rows[1].ry==-12);CK(rows[2].sampling==4&&rows[2].buttons==0&&rows[2].lx==0);CK(rows[3].id==0x20&&rows[3].style==STYLE_HANDHELD&&rows[3].attrs==1&&rows[3].lx==-32767);CK(rows[4].id==0&&rows[4].style==STYLE_FULLKEY&&rows[4].attrs==0&&rows[4].sampling==6);}}
+ }
+ if (!which) {
+  struct { uint64_t before; NpadState s; uint64_t after; } guard={.before=0x12345678,.after=0x87654321};
+  id=0;opmode=1;h_hid_SetJoyHold(1);h_hid_SetJoyDual(&id);
+  dm_input_set(DM_BTN_A,1,2,3,4);h_hid_GetJoyDual(&guard.s,&id);
+  CK(!guard.s.attributes&&!guard.s.buttons&&!guard.s.lx&&!guard.s.rx);
+  CK(guard.before==0x12345678&&guard.after==0x87654321);
+  h_hid_GetFullKey(&guard.s,&id);CK(guard.s.attributes==1&&guard.s.buttons==DM_BTN_A&&guard.s.lx==1&&guard.s.ry==4);
+  // The single-snapshot entry must reach the same touch source with the same output pointer.
+  TouchState16 touch;memset(&touch,0,sizeof touch);h_hid_GetTouchOne(&touch);
+  CK(last_touch==&touch&&last_touch_time==clock_ns&&touch.sampling==123&&touch.count==0);
  }
  free(rows);unlink(path);printf("HID_RECEIPT case=%d checks=%d failures=%d\n",which,checks,fails);fflush(stdout);_exit(fails?1:0);
 }

@@ -526,7 +526,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
 
 // ---------- 同步 / 事件 ----------
 // ---------- Sync / events ----------
-NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { (void)d; *(sync_t *)s = (sync_t){MAGIC('S', 'Y', 'N', 'C'), 0, 0}; return 1; }
+NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { *(sync_t *)s = (sync_t){MAGIC('S', 'Y', 'N', 'C'), 0, 0, d}; return 1; }
 NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 // 围栏 = 「此前提交到队列的命令全部完成」：记下最近一次提交的栅栏值
 // Fence = "all commands previously submitted to the queue have completed": record the fence value of the most recent submit
@@ -538,6 +538,17 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     if (!o->fenced) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
     if (mtl_wait(o->fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
     return mtl_wait(o->fence, timeout) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+}
+NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) {
+    const queue_t *queue = (const queue_t *)q;
+    const sync_t *sync = (const sync_t *)s;
+    if (!queue || queue->magic != MAGIC('Q','U','E','U') || !sync ||
+        sync->magic != MAGIC('S','Y','N','C') || !sync->fenced || queue->dev != sync->dev ||
+        sync->fence > mtl_last_fence()) return 0;
+    // A fence captured before any submission is already satisfied. Otherwise
+    // enqueue a GPU dependency; this API must not block the submitting CPU.
+    if (sync->fence) mtl_queue_wait(sync->fence);
+    return 1;
 }
 NVN(nvnEventBuilderSetDefaults, void, NVNeventBuilder *b) { memset(b, 0, sizeof(ev_builder_t)); }
 NVN(nvnEventBuilderSetStorage, void, NVNeventBuilder *b, const NVNmemoryPool *p, int64_t off) { *(ev_builder_t *)b = (ev_builder_t){(const pool_t *)p, off}; }

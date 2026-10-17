@@ -446,6 +446,11 @@ HLE_FORCE("_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivatio
 HLE_FORCE("_ZN2nn3hid15GetNpadStyleSetERKj", "手柄样式查询；跟 DM_OPMODE 走", uint32_t, h_hid_GetStyle, const uint32_t *id) { return style_of(*id); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", "全键手柄状态；取 dm_input", void, h_hid_GetFullKey, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_FULLKEY); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", "掌机手柄状态；取 dm_input", void, h_hid_GetHandheld, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_HANDHELD); }
+// The host exposes one full-key/handheld pad. A separate Joy-Con pair is not
+// connected; it shares the 0x28-byte state layout and the normal sampling path.
+HLE_FORCE_OPTIONAL("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", "Host Joy-Con-pair state; disconnected when a full-key pad is selected", void, h_hid_GetJoyDual, NpadState *s, const uint32_t *id) { fill(s, *id, 1u << 2); }
+HLE_FORCE_OPTIONAL("_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE", "Full-key host input does not depend on single Joy-Con orientation", void, h_hid_SetJoyHold, int type) { (void)type; }
+HLE_FORCE_OPTIONAL("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", "Host full-key pad requires no Horizon Joy-Con pairing", void, h_hid_SetJoyDual, const uint32_t *id) { (void)id; }
 
 // 震动：设备数 0，游戏不会再初始化 / 发送
 // Vibration: device count 0, the game will not initialize / send any further
@@ -467,3 +472,4 @@ HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_E
     touch_fill(out, guest_ns());
     return 1;
 }
+HLE_FORCE_OPTIONAL("_ZN2nn3hid19GetTouchScreenStateILm16EEEvPNS0_16TouchScreenStateIXT_EEE", "Single touchscreen snapshot uses the same host touch latch", void, h_hid_GetTouchOne, TouchState16 *out) { (void)h_hid_GetTouch(out, 1); }

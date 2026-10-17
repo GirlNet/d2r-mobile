@@ -888,6 +888,20 @@ uint64_t mtl_sub_commit(void) {
 }
 
 uint64_t mtl_last_fence(void) { return g_fence; }
+void mtl_queue_wait(uint64_t fence) {
+    if (!fence) return;
+    // All NVN queues use this backend's event/fence sequence. Never schedule a
+    // wait on an unsubmitted future value, which would deadlock the GPU queue.
+    if (fence > g_fence) { MLOG("QueueWaitSync references an unsubmitted fence"); abort(); }
+    dm_boot_probe_block("guest_gpu_submission", "mtl_queue_wait");
+#if DM_NVN_M3
+    id<MTLCommandBuffer> cb = q_cb();
+    [cb encodeWaitForEvent:g_ev value:fence];
+    DM_GPU_SUBMIT([cb commit]);
+#else
+    DM_GPU_SUBMIT([g_q4 waitForEvent:g_ev value:fence]);
+#endif
+}
 int mtl_last_commit_error(void) { return atomic_load(&g_last_commit_error); }
 
 int mtl_wait(uint64_t fence, uint64_t timeout_ns) {

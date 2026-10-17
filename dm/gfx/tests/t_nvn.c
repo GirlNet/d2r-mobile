@@ -27,6 +27,7 @@ static void *proc(const char *n) { void *p = (void *)gpa(&dev, n); if (!p) { pri
 #include "t_sampler_state.inc"
 #include "t_texture_state.inc"
 #include "t_texture_linear.inc"
+#include "t_queue_sync.inc"
 
 // 命令内存回调：每次给一段 256 字节的新内存（强制多段 JUMP 链）
 // Command memory callback: hands out a new 256-byte memory segment each time (forces a multi-segment JUMP chain)
@@ -318,6 +319,7 @@ int main(int argc, char **argv) {
     // 2. Device
     NVNdeviceBuilder db; P(nvnDeviceBuilderSetDefaults)(&db); P(nvnDeviceBuilderSetFlags)(&db, 0);
     EXPECT("DeviceInitialize 成功", 1, P(nvnDeviceInitialize)(&dev, &db));
+    if (argc == 2 && !strcmp(argv[1], "--queue-sync-gpu")) return test_queue_sync_gpu();
     int v; P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_UNIFORM_BUFFER_ALIGNMENT, &v);
     EXPECT("uniform 缓冲对齐（X1 实测 256）", 256, v);
     P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_TEXTURE_DESCRIPTOR_SIZE, &v); EXPECT("贴图描述符大小（32）", 32, v);
@@ -351,6 +353,7 @@ int main(int argc, char **argv) {
     test_sampler_state();
     test_texture_state();
     test_texture_linear();
+    test_queue_sync_objects();
     int named = 0;
     for (unsigned i = 523; i < NVN_NFUNC; i++) {
         named += nvn_slot[i].fn == (void *)nvn_unimpl_entry && (void *)gpa(&dev,nvn_names[i]) == nvn_thunk[i];

@@ -184,6 +184,9 @@ HLE_FORCE_OPTIONAL("_ZN2nn5audio28GetAudioOutPlayedSampleCountEPKNS0_8AudioOutE"
     aout *a = ao(g);
     return atomic_load_explicit(&a->played_bytes, memory_order_acquire) / (2u * (unsigned)a->ch);
 }
+HLE_FORCE_OPTIONAL("_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE", "Bind a host event for the stable default audio device; never contact auddev", Result, h_au_DeviceEvent, void *event) {
+    hle_bind_system_event(event, 0); return RES_OK;
+}
 HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "开始播放", Result, h_au_Start, void *g) {
     aout *a = ao(g);
     pthread_mutex_lock(&a->m); int was = atomic_load_explicit(&a->state, memory_order_relaxed); atomic_store_explicit(&a->state, STATE_STARTED, memory_order_release); pthread_mutex_unlock(&a->m);
