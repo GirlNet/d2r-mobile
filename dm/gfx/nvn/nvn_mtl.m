@@ -2555,7 +2555,7 @@ static struct {
     uint64_t tex[6][NVN_TEX_SLOTS], samp[6][128], img[6][32];
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp;
-    float blend_color[4]; int64_t copy_stride, copy_image_stride; uint32_t depth_clamp;
+    float blend_color[4]; int64_t copy_stride, copy_image_stride; uint32_t depth_clamp,raster_discard;
     p_primitive_restart restart;
 } S;
 static void udc_note_draw(NvProg *pr) {
@@ -2690,7 +2690,8 @@ static id<MTLFunction> fragment_export_function(NvShader *shader,const pso_key *
 }
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
-    d.vertexFunction = vertex_fetch_function(vs,k); d.fragmentFunction = fsfn ? fsfn : fragment_export_function(fs,k);
+    d.vertexFunction = vertex_fetch_function(vs,k); d.fragmentFunction = k->raster_discard?nil:fsfn ? fsfn : fragment_export_function(fs,k);
+    d.rasterizationEnabled = !k->raster_discard;
     // 诊断 DM_NVN_HILITE=片元着色器键,…：这些绘制改用纯色片元（第 1–6 个键依次 品红 / 绿 / 青 / 黄 / 蓝 / 白），看几何落在哪里
     // Diagnostic DM_NVN_HILITE=fragment shader key,...: these draws use a solid-color fragment instead (keys 1–6 in order magenta / green / cyan / yellow / blue / white), to see where the geometry lands
     if (fs) { static char keys[6][24]; static int nk = -1; static id<MTLLibrary> hl;
@@ -2704,6 +2705,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
                 if (!hl) MLOG("【红】HILITE 着色器编译失败 %s", e.localizedDescription.UTF8String); }
             if (hl) d.fragmentFunction = [hl newFunctionWithName:[NSString stringWithFormat:@"hl%d", i]];
             break; } }
+    if(k->raster_discard)d.fragmentFunction=nil;
     d.rasterSampleCount = k->samples ? k->samples : 1;
     d.alphaToCoverageEnabled = k->a2c;
     for (int i = 0; i < 8; i++) {
@@ -2751,7 +2753,7 @@ static void pso_key_fill(pso_key *k, NvShader *vs, NvShader *fs, const uint32_t 
     memset(k, 0, sizeof *k);
     k->vs = (__bridge void *)vs; k->fs = (__bridge void *)fs;
     memcpy(k->cfmt, cfmt, sizeof k->cfmt); k->dfmt = dfmt; k->sfmt = sfmt; k->samples = samples;
-    k->blend_en = S.color.blend_en; k->chmask = S.chmask.mask; k->a2c = S.ms.a2c;
+    k->blend_en = S.color.blend_en; k->chmask = S.chmask.mask; k->a2c = S.ms.a2c;k->raster_discard=S.raster_discard;
     for (int i = 0; i < 8; i++) if (k->cfmt[i] || lmap) k->blend[i] = S.blend[i];
     const nvn_refl *rf = &vs->rf;
     for (int v = 0; v < rf->nv; v++) { int a = rf->v[v].nvn; if (a < 16 && a < S.nattr) { k->attr[a] = S.attr[a]; int st = S.attr[a].stream; if (st < 16) k->stream[st] = S.stream[st]; } }
@@ -3441,6 +3443,7 @@ static int state_op(uint32_t op, const void *a) {
         case OP_COPY_STRIDE: S.copy_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_COPY_IMAGE_STRIDE: S.copy_image_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_DEPTH_CLAMP: S.depth_clamp = *(const uint32_t *)a != 0; break;
+        case OP_RASTER_DISCARD: {uint32_t value=*(const uint32_t *)a!=0;if(S.raster_discard!=value){S.raster_discard=value;g_pso_dirty=1;}break;}
         case OP_PRIMITIVE_RESTART: S.restart = *(const p_primitive_restart *)a; break;
         default: return 0;
     }
@@ -5559,7 +5562,7 @@ void mtl_exec(const uint8_t *p) {
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
-            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART:
+            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART: case OP_RASTER_DISCARD:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
             case OP_COPY_T2B: copy_t2b(a); break;

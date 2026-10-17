@@ -30,7 +30,6 @@ P(nvnCommandBufferSetPointSize)(&command,0.25f);
 P(nvnCommandBufferSetLineWidth)(&command,0.25f);
 P(nvnCommandBufferSetAlphaRef)(&command,0.25f);
 P(nvnCommandBufferSetSampleMask)(&command,(int)257);
-P(nvnCommandBufferSetRasterizerDiscard)(&command,(uint32_t)257);
 P(nvnCommandBufferSetConservativeRasterEnable)(&command,(uint32_t)257);
 P(nvnCommandBufferSetConservativeRasterDilate)(&command,0.25f);
 P(nvnCommandBufferSetSubpixelPrecisionBias)(&command,(int)257,(int)257);

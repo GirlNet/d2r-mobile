@@ -30,6 +30,16 @@ class ReflectionPlanTests(unittest.TestCase):
     def plan(self, source, res=None, stage='ps'):
         return reflection_plan(job(stage), res or resource(stage), source)
 
+    def test_fragment_export_locations_and_diagnostic_types(self):
+        plan=self.plan('struct O { float4 a [[color(0)]]; float2 b [[color(7)]]; float z [[depth(any)]]; };')
+        self.assertEqual(plan['fragment_outputs'],[dict(location=0,msl_type='float4',msl_name='a'),dict(location=7,msl_type='float2',msl_name='b')])
+        self.assertFalse(plan['fragment_output_state_verified'])
+        self.assertFalse(plan['runtime_ready'])
+        for source in ('half4 a [[color(0)]];', 'float4 a [[color(8)]];',
+                       'float a [[color(0)]];float b [[color(0)]];'):
+            with self.assertRaises(ValueError):self.plan(source)
+        with self.assertRaises(ValueError):self.plan('float4 a [[color(0)]];',stage='vs')
+
     def test_vertex_input_locations_preserve_sparse_shader_slots(self):
         source='struct main0_in { float4 position [[attribute(0)]]; float2 joints [[attribute(7)]]; };'
         plan=self.plan(source,stage='vs')

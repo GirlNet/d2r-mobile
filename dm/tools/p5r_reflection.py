@@ -9,6 +9,7 @@ from nvn_handle_layout import decode_handle
 PREFIX = {'vs': 'vp', 'ps': 'fp', 'cs': 'cp'}
 MEMBER = re.compile(r'\s*(.+?)\s+(\w+)\s*\[\[id\((\d+)\)\]\];\s*', re.S)
 VERTEX_INPUT = re.compile(r'\b(float[234]?|u?int[234]?)\s+(\w+)\s+\[\[attribute\((\d+)\)\]\]\s*;')
+FRAGMENT_OUTPUT = re.compile(r'\b(float[234]?|u?int[234]?)\s+(\w+)\s+\[\[color\((\d+)\)\]\]\s*;')
 
 
 def integer(value, label, maximum=0x7fffffff):
@@ -47,6 +48,17 @@ def reflection_plan(job, resource, msl):
             raise ValueError('Duplicate or unsupported vertex input location')
         seen_locations.add(location)
         vertex_inputs.append(dict(location=location,msl_type=ty,msl_name=name))
+    fragment_outputs=[]
+    matches=list(FRAGMENT_OUTPUT.finditer(msl))
+    if len(matches)!=msl.count('[[color(') or (matches and stage!='ps'):
+        raise ValueError('Unsupported fragment output declaration/stage')
+    seen_locations=set()
+    for match in matches:
+        ty,name,location=match.group(1),match.group(2),int(match.group(3))
+        if not 0<=location<8 or location in seen_locations:
+            raise ValueError('Duplicate or unsupported fragment output location')
+        seen_locations.add(location)
+        fragment_outputs.append(dict(location=location,msl_type=ty,msl_name=name))
     descriptors, names = {}, {}
     for category in ('cbufs', 'sbufs', 'textures', 'images'):
         for index, item in enumerate(resource[category]):
@@ -159,6 +171,7 @@ def reflection_plan(job, resource, msl):
     return dict(schema_version=1, route='B', profile='p5r', key=key, stage=stage,
                 diagnostic_only=True, resource_facts_verified=False, runtime_ready=False,
                 vertex_inputs=vertex_inputs,vertex_input_state_verified=False,
+                fragment_outputs=fragment_outputs,fragment_output_state_verified=False,
                 bindings=bindings, missing_descriptors=missing, blockers=blockers,
                 binding_coverage_complete=not missing and all(b['kind'] != 'unresolved' for b in bindings),
                 threadgroup_size=job.get('local'),
