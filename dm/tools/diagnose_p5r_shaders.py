@@ -231,18 +231,37 @@ def query_requirements(shaders):
     return list(groups.values())
 
 
-def compile_metal(msl, directory, sdk, xcrun='xcrun', runner=run_command):
+def compile_metal(msl, directory, sdk, xcrun='xcrun', runner=run_command, metal_tools=None):
+    if sdk not in ('macosx','iphoneos'):
+        raise ValueError('Unsupported Metal SDK')
+    target='air64-apple-ios18.0' if sdk=='iphoneos' else 'air64-apple-macosx15.0'
+    if metal_tools is not None:
+        compiler,linker=(Path(metal_tools)/name for name in ('metal.exe','metallib.exe'))
+        if not compiler.is_file() or not linker.is_file():
+            raise ValueError('Metal tools directory must contain metal.exe and metallib.exe')
+        compile_prefix=[compiler,'-target',target]
+        link_prefix=[linker]
+    else:
+        compile_prefix=[xcrun,'-sdk',sdk,'metal']
+        link_prefix=[xcrun,'-sdk',sdk,'metallib']
     directory.mkdir(parents=True, exist_ok=True)
     air = directory / (msl.stem + '.air')
     library = directory / (msl.stem + '.metallib')
+    if air.exists() or library.exists():
+        raise FileExistsError('Metal outputs must be new; refusing stale compiler artifacts')
     minimum = ['-mios-version-min=18.0'] if sdk == 'iphoneos' else []
-    runner([xcrun, '-sdk', sdk, 'metal', '-c', '-fno-fast-math', *minimum, msl, '-o', air],
+    runner([*compile_prefix, '-c', '-fno-fast-math', *minimum, msl, '-o', air],
            directory / (msl.stem + '-metal.log'))
-    runner([xcrun, '-sdk', sdk, 'metallib', air, '-o', library],
+    if not air.is_file() or not air.stat().st_size:
+        raise RuntimeError('Metal compiler did not produce a nonempty AIR object')
+    runner([*link_prefix, air, '-o', library],
            directory / (msl.stem + '-metallib.log'))
-    if not library.is_file() or not library.stat().st_size:
-        raise RuntimeError('Metal compiler did not produce a nonempty library')
-    return dict(sdk=sdk, path=str(library), sha256=hashlib.sha256(library.read_bytes()).hexdigest(),
+    blob=library.read_bytes() if library.is_file() else b''
+    if len(blob)<=4 or blob[:4]!=b'MTLB':
+        raise RuntimeError('Metal linker did not produce an MTLB library')
+    return dict(sdk=sdk, path=str(library), sha256=hashlib.sha256(blob).hexdigest(),
+                source_sha256=hashlib.sha256(msl.read_bytes()).hexdigest(),strict_float=True,
+                target=target if metal_tools is not None else 'xcrun-sdk-'+sdk,
                 diagnostic_only=True, gpu_output_verified=False)
 
 
@@ -273,7 +292,7 @@ def reusable_msl(directory, row, key, source, binary, resource_path):
 
 
 def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='xcrun', runner=run_command,
-             workers=1, reuse_diagnostics=None):
+             workers=1, reuse_diagnostics=None, metal_tools=None):
     preparation, output = preparation.resolve(), output.resolve()
     repo = Path(__file__).resolve().parents[2]
     if output.is_relative_to(repo) or output.is_relative_to(preparation) or preparation.is_relative_to(output):
@@ -282,6 +301,14 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
         raise ValueError('Unsupported Metal SDK')
     if type(workers) is not int or not 1 <= workers <= 32:
         raise ValueError('Workers must be between 1 and 32')
+    metal_fingerprints={}
+    if metal_tools is not None:
+        if not sdks:raise ValueError('--metal-tools requires a Metal SDK selection')
+        metal_tools=Path(metal_tools).resolve()
+        for name in ('metal.exe','metallib.exe'):
+            path=metal_tools/name
+            if not path.is_file():raise ValueError('Metal tools directory must contain metal.exe and metallib.exe')
+            metal_fingerprints[name]=dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest())
     manifest, jobs = load_jobs(preparation)
     sources = {record['key']: {field: record[field] for field in
                ('control_sha256', 'code_sha256', 'c1_sha256')} for record in manifest['shaders']}
@@ -309,6 +336,7 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                   source_sha256=manifest['source_sha256'], build_id=manifest['build_id'],
                   resource_bindings_verified=False, graphics_verified=False, runnable_verified=False,
                   tools={}, shaders=[], errors=[], requested_metal_sdks=list(sdks),
+                  standalone_metal_tools=metal_fingerprints,
                   msl_options=MSL_OPTIONS, validation_options=VALIDATION_OPTIONS)
     report_path = output / 'diagnostic-report.json'
     save_json(report_path, report)
@@ -397,7 +425,7 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                 row['completed'].append('reflection_planned')
                 row['metal'] = []
                 for sdk in sdks:
-                    row['metal'].append(compile_metal(msl, output / ('metal-' + sdk), sdk, xcrun, runner))
+                    row['metal'].append(compile_metal(msl, output / ('metal-' + sdk), sdk, xcrun, runner,metal_tools))
                     row['completed'].append('metal_compiled_' + sdk)
                 row['status'] = 'diagnostic_passed'
             except (ValueError, OSError, RuntimeError, KeyError, TypeError) as error:
@@ -450,13 +478,14 @@ def main():
     parser.add_argument('--spirv-val', type=Path, required=True)
     parser.add_argument('--spirv-cross', type=Path, required=True)
     parser.add_argument('--metal-sdk', action='append', choices=['macosx', 'iphoneos'], default=[])
+    parser.add_argument('--metal-tools',type=Path,help='Installed Windows Apple tools directory containing metal.exe and metallib.exe; requires --metal-sdk')
     parser.add_argument('--workers', type=int, default=1, help='Independent shader validation workers (1..32)')
     parser.add_argument('--reuse-diagnostics', type=Path, help='Read-only previous run; reuse matching passed SPIR-V/MSL artifacts after hashes and tool identities match')
     args = parser.parse_args()
     try:
         report = diagnose(args.preparation, args.output, args.translator.resolve(), args.spirv_val.resolve(),
                           args.spirv_cross.resolve(), tuple(dict.fromkeys(args.metal_sdk)), workers=args.workers,
-                          reuse_diagnostics=args.reuse_diagnostics)
+                          reuse_diagnostics=args.reuse_diagnostics,metal_tools=args.metal_tools)
         print(json.dumps(dict(status=report['status'], summary=report.get('summary'),
                               report=str(args.output.resolve() / 'diagnostic-report.json')), indent=2))
         return 0 if report['status'] == 'diagnostic_passed' else 1

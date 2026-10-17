@@ -78,7 +78,40 @@ class DiagnosticTests(unittest.TestCase):
             prefix = {'vs': 'vp', 'ps': 'fp', 'cs': 'cp'}[stage]
             Path(command[-1]).write_text(MSL + f'\nstruct spvDescriptorSetBuffer0\n{{\ntexture2d<float> {prefix}_t_tcb_8 [[id(0)]];\nsampler {prefix}_t_tcb_8Smplr [[id(1)]];\n}};\n', encoding='utf-8')
         elif '-o' in command:
-            Path(command[-1]).write_bytes(b'synthetic compiled output')
+            Path(command[-1]).write_bytes(b'MTLBsynthetic compiled output' if command[-1].endswith('.metallib') else b'synthetic AIR')
+
+    def test_standalone_windows_compiler_uses_explicit_target_and_safe_path_arguments(self):
+        tools=self.root/'Metal tools with spaces';tools.mkdir()
+        for name in ('metal.exe','metallib.exe'):(tools/name).write_bytes(b'synthetic executable')
+        source=self.root/'synthetic source.metal';source.write_text(MSL);calls=[]
+        def runner(command,log,timeout=120):
+            calls.append([str(c) for c in command]);self.runner(command,log,timeout)
+        result=compile_metal(source,self.root/'metal output','iphoneos',runner=runner,metal_tools=tools)
+        self.assertEqual(calls[0][:3],[str(tools/'metal.exe'),'-target','air64-apple-ios18.0'])
+        self.assertIn('-fno-fast-math',calls[0]);self.assertIn(str(source),calls[0])
+        self.assertEqual(calls[1][0],str(tools/'metallib.exe'))
+        self.assertEqual(result['source_sha256'],hashlib.sha256(source.read_bytes()).hexdigest())
+        self.assertTrue(result['strict_float']);self.assertFalse(result['gpu_output_verified'])
+        with self.assertRaises(FileExistsError):compile_metal(source,self.root/'metal output','iphoneos',runner=runner,metal_tools=tools)
+
+    def test_metal_missing_objects_and_invalid_libraries_do_not_pass(self):
+        source=self.root/'synthetic.metal';source.write_text(MSL)
+        def empty(command,log,timeout=120):log.write_text('no artifact')
+        with self.assertRaisesRegex(RuntimeError,'AIR'):compile_metal(source,self.root/'empty','iphoneos',runner=empty)
+        def invalid(command,log,timeout=120):Path(command[-1]).write_bytes(b'not a Metal library')
+        with self.assertRaisesRegex(RuntimeError,'MTLB'):compile_metal(source,self.root/'invalid','iphoneos',runner=invalid)
+        with self.assertRaises(ValueError):compile_metal(source,self.root/'bad sdk','bad',runner=empty)
+        with self.assertRaises(ValueError):compile_metal(source,self.root/'missing','iphoneos',runner=empty,metal_tools=self.root)
+
+    def test_standalone_compiler_fingerprints_do_not_invalidate_spirv_reuse(self):
+        old=self.root/'previous';self.run_diagnostic(output=old)
+        tools=self.root/'standalone';tools.mkdir()
+        for name in ('metal.exe','metallib.exe'):(tools/name).write_bytes(b'synthetic executable')
+        report=diagnose(self.preparation,self.root/'standalone-output',self.tool,self.tool,self.tool,
+                        sdks=('iphoneos',),runner=self.runner,reuse_diagnostics=old,metal_tools=tools)
+        self.assertEqual(report['status'],'diagnostic_passed');self.assertEqual(report['summary']['reused_validation_and_msl'],1)
+        self.assertEqual(set(report['standalone_metal_tools']),{'metal.exe','metallib.exe'})
+        self.assertFalse(report['runnable_verified'])
 
     def run_diagnostic(self, runner=None, output=None, sdks=()):
         return diagnose(self.preparation, output or self.root / 'out', self.tool, self.tool, self.tool,
