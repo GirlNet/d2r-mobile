@@ -116,6 +116,37 @@ class DiagnosticTests(unittest.TestCase):
         self.run_diagnostic()
         self.assertEqual(before, {p: p.read_bytes() for p in self.preparation.rglob('*') if p.is_file()})
 
+    def test_reuse_requires_identical_validated_artifacts_and_keeps_source_read_only(self):
+        old=self.root/'previous';self.run_diagnostic(output=old)
+        before={p:p.read_bytes() for p in old.rglob('*') if p.is_file()}
+        calls=[]
+        def runner(command,log,timeout=120):
+            calls.append([str(x) for x in command]);return self.runner(command,log,timeout)
+        def reuse(name):
+            return diagnose(self.preparation,self.root/name,self.tool,self.tool,self.tool,
+                            runner=runner,reuse_diagnostics=old)
+        report=reuse('reused')
+        self.assertEqual(report['status'],'diagnostic_passed')
+        self.assertEqual(report['summary']['reused_validation_and_msl'],1)
+        self.assertFalse(any('--target-env' in c or '--output' in c for c in calls))
+        self.assertEqual(before,{p:p.read_bytes() for p in old.rglob('*') if p.is_file()})
+        for i,path in enumerate((old/'msl'/(self.jobs[0]['key']+'.metal'),
+                                  old/'reflection-plans'/(self.jobs[0]['key']+'.plan.json'))):
+            original=path.read_bytes();path.write_bytes(b'tampered');calls.clear()
+            report=reuse('corrupt'+str(i));path.write_bytes(original)
+            self.assertEqual(report['status'],'diagnostic_passed')
+            self.assertEqual(report['summary']['reused_validation_and_msl'],0)
+            self.assertTrue(any('--target-env' in c for c in calls))
+            self.assertTrue(any('--output' in c for c in calls))
+        report_path=old/'diagnostic-report.json';original=report_path.read_text()
+        for field,value in (('msl_options',[]),('source_sha256','other'),('validation_options',[])):
+            changed=json.loads(original);changed[field]=value;report_path.write_text(json.dumps(changed))
+            with self.assertRaises(ValueError):reuse('mismatch')
+            self.assertFalse((self.root/'mismatch').exists())
+        changed=json.loads(original);changed['tools']['validator']['sha256']='other';report_path.write_text(json.dumps(changed))
+        report=reuse('wrong-tool');self.assertEqual(report['status'],'failed')
+        self.assertIn('fingerprint mismatch',report['errors'][0]);report_path.write_text(original)
+
     def test_parallel_workers_preserve_order_failures_and_provenance(self):
         rows = []
         for value in range(4):

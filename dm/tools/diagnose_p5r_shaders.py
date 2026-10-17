@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import struct
 import sys
@@ -21,6 +22,7 @@ from prepare_p5r_shaders import CONTROL_SIZE, HEADER_FIELDS, STAGES, compute_wor
 
 MSL_OPTIONS = ['--msl', '--msl-version', '20300', '--msl-argument-buffers',
                '--msl-texture-buffer-native', '--msl-pad-fragment-output']
+VALIDATION_OPTIONS = ['--target-env', 'vulkan1.2']
 KEY = re.compile(r'[0-9a-f]{16}')
 
 
@@ -244,8 +246,34 @@ def compile_metal(msl, directory, sdk, xcrun='xcrun', runner=run_command):
                 diagnostic_only=True, gpu_output_verified=False)
 
 
+def reusable_msl(directory, row, key, source, binary, resource_path):
+    """Reuse only a passed validation whose exact inputs/outputs still match.
+
+    Reflection and original-instruction audits are always recalculated. The old
+    directory is read-only, and a missing/corrupt artifact falls back to tools.
+    """
+    try:
+        if row.get('status') != 'diagnostic_passed' or not {'spirv_validated', 'msl_generated', 'reflection_planned'} <= set(row.get('completed', [])):
+            return None
+        plan_path = directory / 'reflection-plans' / (key + '.plan.json')
+        if hashlib.sha256(plan_path.read_bytes()).hexdigest() != row['reflection_plan']['sha256']:
+            return None
+        plan = read_json(plan_path)
+        if plan['source'] != source:
+            return None
+        msl = directory / 'msl' / (key + '.metal')
+        paths = (binary, resource_path, msl)
+        if set(plan['artifacts']) != {p.name for p in paths}:
+            return None
+        if any(hashlib.sha256(p.read_bytes()).hexdigest() != plan['artifacts'][p.name] for p in paths):
+            return None
+        return msl
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='xcrun', runner=run_command,
-             workers=1):
+             workers=1, reuse_diagnostics=None):
     preparation, output = preparation.resolve(), output.resolve()
     repo = Path(__file__).resolve().parents[2]
     if output.is_relative_to(repo) or output.is_relative_to(preparation) or preparation.is_relative_to(output):
@@ -257,6 +285,19 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
     manifest, jobs = load_jobs(preparation)
     sources = {record['key']: {field: record[field] for field in
                ('control_sha256', 'code_sha256', 'c1_sha256')} for record in manifest['shaders']}
+    prior = None
+    if reuse_diagnostics is not None:
+        reuse_diagnostics = reuse_diagnostics.resolve()
+        if output.is_relative_to(reuse_diagnostics) or reuse_diagnostics.is_relative_to(output):
+            raise ValueError('Reuse source and output must be separate directories')
+        prior = read_json(reuse_diagnostics / 'diagnostic-report.json')
+        if (prior.get('schema_version') != 1 or prior.get('diagnostic_only') is not True
+                or prior.get('source_sha256') != manifest['source_sha256']
+                or prior.get('build_id') != manifest['build_id']
+                or prior.get('msl_options') != MSL_OPTIONS
+                or prior.get('validation_options') != VALIDATION_OPTIONS
+                or read_json(reuse_diagnostics / 'jobs.json') != jobs):
+            raise ValueError('Reuse source does not match the diagnostic jobs/provenance')
     # 提取文件保持只读；运行时文件名/链目录不出现在诊断输出中。
     # Extraction files remain read-only; diagnostic outputs use neither runtime filenames nor chain directories.
     output.mkdir(parents=True, exist_ok=False)
@@ -267,7 +308,8 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
     report = dict(schema_version=1, status='running', diagnostic_only=True,
                   source_sha256=manifest['source_sha256'], build_id=manifest['build_id'],
                   resource_bindings_verified=False, graphics_verified=False, runnable_verified=False,
-                  tools={}, shaders=[], errors=[], requested_metal_sdks=list(sdks))
+                  tools={}, shaders=[], errors=[], requested_metal_sdks=list(sdks),
+                  msl_options=MSL_OPTIONS, validation_options=VALIDATION_OPTIONS)
     report_path = output / 'diagnostic-report.json'
     save_json(report_path, report)
     try:
@@ -281,6 +323,19 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
         if not KEY.fullmatch(source_sha):
             raise ValueError('Invalid translator source fingerprint')
         report['tools']['translator']['source_sha16'] = source_sha
+        prior_rows = {}
+        if prior is not None:
+            for name, current in report['tools'].items():
+                old = prior.get('tools', {}).get(name, {})
+                if any(old.get(field) != current[field] for field in ('sha256', 'source_sha16') if field in current):
+                    raise ValueError('Reuse tool fingerprint mismatch: ' + name)
+            for row in prior.get('shaders', []):
+                key = row['key']
+                if key not in sources or key in prior_rows:
+                    raise ValueError('Unknown or duplicate reused shader row')
+                prior_rows[key] = row
+            report['reuse_source'] = dict(path=str(reuse_diagnostics),
+                report_sha256=hashlib.sha256((reuse_diagnostics / 'diagnostic-report.json').read_bytes()).hexdigest())
         try:
             runner([translator, jobs_path, spv], output / 'translation.log', timeout=max(600, len(jobs)))
         except RuntimeError as error:
@@ -297,7 +352,11 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                 row['texture_query_constraints'] = audit_texture_queries(job, resource, Path(job['code']).read_bytes())
                 row['texture_resource_constraints'] = audit_texture_resources(job, resource, Path(job['code']).read_bytes())
                 row['completed'].append('translated')
-                runner([validator, '--target-env', 'vulkan1.2', binary], output / (key + '-validation.log'))
+                reused = reusable_msl(reuse_diagnostics, prior_rows[key], key, sources[key], binary,
+                                      spv / (key + '.res.json')) if key in prior_rows else None
+                row['reused_validation_and_msl'] = reused is not None
+                if reused is None:
+                    runner([validator, *VALIDATION_OPTIONS, binary], output / (key + '-validation.log'))
                 row['completed'].append('spirv_validated')
                 if job['stage'] == 'cs':
                     row['spirv_compute_workgroup'] = spirv_compute_workgroup(binary)
@@ -306,7 +365,10 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                     row['completed'].append('compute_workgroup_validated')
                     row['compute_memory_audit'] = audit_compute_memory(Path(job['code']).read_bytes(), resource.get('decoded_size'))
                 msl = msl_dir / (key + '.metal')
-                runner([cross, binary, *MSL_OPTIONS, '--output', msl], output / (key + '-msl.log'))
+                if reused is None:
+                    runner([cross, binary, *MSL_OPTIONS, '--output', msl], output / (key + '-msl.log'))
+                else:
+                    shutil.copyfile(reused, msl)
                 if not msl.is_file() or not msl.stat().st_size:
                     raise ValueError('SPIRV-Cross did not produce MSL')
                 row['completed'].append('msl_generated')
@@ -349,6 +411,7 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                 if index % 128 == 0:
                     save_json(report_path, report)
         report['summary'] = dict(shaders=len(jobs), passed=sum(r['status'] == 'diagnostic_passed' for r in report['shaders']),
+                                 reused_validation_and_msl=sum(r.get('reused_validation_and_msl', False) for r in report['shaders']),
                                  stages=dict(Counter(j['stage'] for j in jobs)),
                                  shaders_with_textures=sum(bool(r.get('audit', {}).get('handles')) for r in report['shaders']),
                                  shaders_outside_d2r_texture_layout=sum(any(not h['d2r_texture_range_match']
@@ -383,10 +446,12 @@ def main():
     parser.add_argument('--spirv-cross', type=Path, required=True)
     parser.add_argument('--metal-sdk', action='append', choices=['macosx', 'iphoneos'], default=[])
     parser.add_argument('--workers', type=int, default=1, help='Independent shader validation workers (1..32)')
+    parser.add_argument('--reuse-diagnostics', type=Path, help='Read-only previous run; reuse matching passed SPIR-V/MSL artifacts after hashes and tool identities match')
     args = parser.parse_args()
     try:
         report = diagnose(args.preparation, args.output, args.translator.resolve(), args.spirv_val.resolve(),
-                          args.spirv_cross.resolve(), tuple(dict.fromkeys(args.metal_sdk)), workers=args.workers)
+                          args.spirv_cross.resolve(), tuple(dict.fromkeys(args.metal_sdk)), workers=args.workers,
+                          reuse_diagnostics=args.reuse_diagnostics)
         print(json.dumps(dict(status=report['status'], summary=report.get('summary'),
                               report=str(args.output.resolve() / 'diagnostic-report.json')), indent=2))
         return 0 if report['status'] == 'diagnostic_passed' else 1
