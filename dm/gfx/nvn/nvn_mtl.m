@@ -2540,6 +2540,7 @@ static struct {
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp;
     float blend_color[4]; int64_t copy_stride, copy_image_stride; uint32_t depth_clamp;
+    p_primitive_restart restart;
 } S;
 static void udc_note_draw(NvProg *pr) {
     if (R.has_rt) for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i]) { zskip_del(R.rt.color[i]->serial); g_zskip_cand_ok[i] = 0; }   // 零源集合：真画了就不再是全零 | Zero-source set: once really drawn it is no longer all zeros
@@ -3359,6 +3360,7 @@ static int state_op(uint32_t op, const void *a) {
         case OP_COPY_STRIDE: S.copy_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_COPY_IMAGE_STRIDE: S.copy_image_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_DEPTH_CLAMP: S.depth_clamp = *(const uint32_t *)a != 0; break;
+        case OP_PRIMITIVE_RESTART: S.restart = *(const p_primitive_restart *)a; break;
         default: return 0;
     }
     return 1;
@@ -4537,8 +4539,44 @@ static void ghost_flush(void) {   // 渲染通道结束前：把认到的图标�
     memcpy(&S, &save, sizeof S); args_dirty_all(); R.sc = sc; R.has_sc = has_sc; g_pso_dirty = g_dss_dirty = 1; g_gh.busy = 0;
     for (int i = 0; i < g_gh.n; i++) free(g_gh.c[i].S_); g_gh.n = 0;
 }
+typedef struct { uint64_t gpu,length; MTLIndexType type; } prepared_indices;
+static prepared_indices prepare_indices(const p_draw_idx *draw) {
+    prepared_indices result={0};
+    if(draw->count<0 || draw->itype<0 || draw->itype>2)MDIE("Invalid index count/type");
+    if(!draw->count)return result;
+    unsigned width=1u<<draw->itype;void *source;uint64_t offset,gpu;
+    uint64_t bytes=(uint64_t)draw->count*width;
+    if(!mtl_gpu_addr(draw->ibuf,bytes,&source,&offset,&gpu))MDIE("Index range outside a memory pool");
+    uint32_t native_restart=width==2?UINT16_MAX:UINT32_MAX;
+    if(width>1 && (dm_guest_d2r() || (S.restart.enabled && S.restart.index==native_restart)))
+        return (prepared_indices){gpu,bytes,width==2?MTLIndexTypeUInt16:MTLIndexTypeUInt32};
+    if(width==4 && !S.restart.enabled)MDIE("Disabled restart with 32-bit indices requires a vertex-pulling variant");
+    // No CPU readback: prior GPU-produced index data remains ordered. Widening
+    // also keeps a legitimate 0xffff vertex usable when 16-bit restart is off.
+    rp_end();if(g_blit){enc_b_end(g_blit);g_blit=nil;}
+    static id<MTLComputePipelineState> pipeline;
+    if(!pipeline){
+        NSString *msl=@"#include <metal_stdlib>\nusing namespace metal;\n"
+          "kernel void indices(device const uchar *s[[buffer(0)]],device uint *d[[buffer(1)]],constant uint4 &p[[buffer(2)]],uint i[[thread_position_in_grid]]){"
+          "if(i>=p.x)return;uint o=i*p.y,v=s[o];if(p.y>=2)v|=uint(s[o+1])<<8;if(p.y==4)v|=(uint(s[o+2])<<16)|(uint(s[o+3])<<24);d[i]=p.z&&v==p.w?0xffffffffu:v;}";
+        NSError *error=nil;id<MTLLibrary> library=[g_dev newLibraryWithSource:msl options:nil error:&error];
+        pipeline=library?[g_dev newComputePipelineStateWithFunction:[library newFunctionWithName:@"indices"] error:&error]:nil;
+        if(!pipeline)MDIE("Cannot compile index conversion: %s",error.localizedDescription.UTF8String);
+    }
+    id<MTLBuffer> destination=[g_dev newBufferWithLength:(NSUInteger)draw->count*4 options:MTLResourceStorageModePrivate];
+    if(!destination)MDIE("Cannot allocate converted indices");res_add(destination);
+    id<MTLBuffer> parameters;size_t param_offset=arena_alloc(16,&parameters);
+    uint32_t values[4]={(uint32_t)draw->count,width,S.restart.enabled,S.restart.index};
+    memcpy((uint8_t *)parameters.contents+param_offset,values,sizeof values);
+    CENC encoder=pg_compute();enc_c_pso(encoder,pipeline);
+    enc_c_args(encoder,gpu,0);enc_c_args(encoder,destination.gpuAddress,1);enc_c_args(encoder,parameters.gpuAddress+param_offset,2);
+    enc_c_dispatch(encoder,MTLSizeMake(((NSUInteger)draw->count+63)/64,1,1),MTLSizeMake(64,1,1));enc_c_end(encoder);
+    result=(prepared_indices){destination.gpuAddress,(uint64_t)draw->count*4,MTLIndexTypeUInt32};
+    defer_obj_release(destination);return result;
+}
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); return; }
+    prepared_indices indices=di?prepare_indices(di):(prepared_indices){0};
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
     if (g_ruler_truth == 0) {   // 尺子负对照（DM_NVN_RULER_NEG=<片元键>）：被测模式下丢掉该着色器的绘制，尺子必须报不等价 | Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
@@ -4789,12 +4827,8 @@ frz_plain:;
         if (dw->count) enc_r_draw(en, mp, dw->first, dw->count);
     } else {
         if (prim == 7) { RED_ONCE(20, "带索引的四边形未实现"); return; }
-        if (di->itype == 0) { RED_ONCE(21, "8 位索引未实现"); return; }
-        void *mb; uint64_t mo;
-        uint64_t gpu;
-        if (!mtl_gpu_addr(di->ibuf, 1, &mb, &mo, &gpu)) { RED_ONCE(22, "索引缓冲不在内存池里"); return; }
-        use_rec("buf", di->ibuf, (uint64_t)di->count * (di->itype == 1 ? 2 : 4), 0, NULL);
-        if (di->count) enc_r_draw_indexed(en, mp, di->count, di->itype == 1 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, gpu, ((__bridge id<MTLBuffer>)mb).length - mo,
+        use_rec("buf", di->ibuf, (uint64_t)di->count * (1u << di->itype), 0, NULL);
+        if (di->count) enc_r_draw_indexed(en, mp, di->count, indices.type, indices.gpu, indices.length,
                 di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
     }
     if (g_rt_range_pending) { PD("j rt_level_range pass=%llu vc=%u", g_stat_pass, (unsigned)(dw ? dw->count : di->count)); g_rt_range_pending=0; }
@@ -5444,7 +5478,7 @@ void mtl_exec(const uint8_t *p) {
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
-            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP:
+            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
             case OP_COPY_T2B: copy_t2b(a); break;

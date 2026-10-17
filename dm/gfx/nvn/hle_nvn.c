@@ -865,6 +865,9 @@ NVN(nvnCommandBufferCopyTextureToTexture, void, NVNcommandBuffer *c, const NVNte
 NVN(nvnCommandBufferSetCopyRowStride, void, NVNcommandBuffer *c, ptrdiff_t st) { REC(c, OP_COPY_STRIDE, p_copy_stride)->stride = st; }
 NVN(nvnCommandBufferSetCopyImageStride, void, NVNcommandBuffer *c, ptrdiff_t st) { REC(c, OP_COPY_IMAGE_STRIDE, p_copy_stride)->stride = st; }
 NVN(nvnCommandBufferSetDepthClamp, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_DEPTH_CLAMP, sizeof(uint32_t)) = enabled != 0; }
+NVN(nvnCommandBufferSetPrimitiveRestart, void, NVNcommandBuffer *c, uint32_t enabled, int index) {
+    *REC(c,OP_PRIMITIVE_RESTART,p_primitive_restart)=(p_primitive_restart){enabled!=0,(uint32_t)index};
+}
 NVN(nvnCommandBufferClearBuffer, void, NVNcommandBuffer *c, NVNbufferAddress address, size_t size, uint32_t value) {
     if (!size) return;
     if ((address & 3) || (size & 3) || size > UINT64_MAX-address) die("Invalid ClearBuffer range");
