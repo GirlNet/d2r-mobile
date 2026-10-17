@@ -258,7 +258,7 @@ static void test_pool_accessors(void) {
 #include <signal.h>
 static int captureDisabledCheck(void) {
     pid_t child=fork();if(child<0)return 1;
-    if (!child) { struct rlimit limit={0,0};setrlimit(RLIMIT_CORE,&limit);h_nvnCommandBufferSetConservativeRasterEnable(NULL,0);_exit(1); }
+    if (!child) { struct rlimit limit={0,0};setrlimit(RLIMIT_CORE,&limit);h_nvnCommandBufferSetLineWidth(NULL,.25f);_exit(1); }
     int status=0;if(waitpid(child,&status,0)!=child || !WIFSIGNALED(status) || WTERMSIG(status)!=SIGABRT)return 1;
     puts("NVN PROBE CAPTURE GATE OK: inactive capture rejected");return 0;
 }
