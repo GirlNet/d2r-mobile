@@ -50,6 +50,9 @@ class DiagnosticTests(unittest.TestCase):
                 save_json(path,dict(new=True))
             self.assertEqual(len(attempts),3)
             self.assertEqual(json.loads(path.read_text()),dict(new=True))
+            with patch.object(Path,'replace',side_effect=PermissionError('permanent lock')), patch('diagnose_p5r_shaders.time.sleep'):
+                with self.assertRaises(PermissionError):save_json(path,dict(not_saved=True))
+            self.assertEqual(json.loads(path.read_text()),dict(new=True))
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)

@@ -33,14 +33,14 @@ def read_json(path):
 def save_json(path, value):
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    for attempt in range(6):
+    for attempt in range(10):
         try:
             temporary.replace(path)
             return
         except PermissionError:
             # Windows readers/antivirus may hold a transient sharing lock.
             # Keep the previous complete checkpoint while retrying the rename.
-            if attempt == 5:
+            if attempt == 9:
                 raise
             time.sleep(0.01 * (2 ** attempt))
 
@@ -408,8 +408,13 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
         with ThreadPoolExecutor(max_workers=workers) as executor:
             for index, row in enumerate(executor.map(check_job, jobs), 1):
                 report['shaders'].append(row)
-                if index % 128 == 0:
-                    save_json(report_path, report)
+                if index % 512 == 0:
+                    try:
+                        save_json(report_path, report)
+                    except PermissionError:
+                        # A locked progress snapshot must not cancel completed
+                        # shader checks. The final report still has to persist.
+                        report['checkpoint_write_failures'] = report.get('checkpoint_write_failures', 0) + 1
         report['summary'] = dict(shaders=len(jobs), passed=sum(r['status'] == 'diagnostic_passed' for r in report['shaders']),
                                  reused_validation_and_msl=sum(r.get('reused_validation_and_msl', False) for r in report['shaders']),
                                  stages=dict(Counter(j['stage'] for j in jobs)),
