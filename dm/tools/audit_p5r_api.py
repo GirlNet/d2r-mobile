@@ -27,6 +27,8 @@ def audit(root):
     tests = (root / "dm/gfx/tests/t_startup_batch.inc").read_text(encoding="utf-8")
     capture_tests = (root / "dm/gfx/tests/t_probe_command_capture.inc").read_text(encoding="utf-8")
     assert set(captures) <= set(re.findall(r"P\((nvn\w+)\)", capture_tests)), "Capture interface lacks a typed regression call"
+    counter_names=re.search(r'const char \*names\[\]=\{(.*?)\}',capture_tests,re.S).group(1)
+    assert set(captures) == set(re.findall(r'"(nvn\w+)"',counter_names)), "Capture counter list must match current diagnostic interfaces"
     assert set(batch) <= set(re.findall(r"P\((nvn\w+)\)", tests)), "Batch interface lacks a direct typed regression call"
     sampler_tests = (root / "dm/gfx/tests/t_sampler_state.inc").read_text(encoding="utf-8")
     sampler_extensions = {

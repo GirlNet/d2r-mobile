@@ -869,6 +869,9 @@ NVN(nvnCommandBufferSetRasterizerDiscard, void, NVNcommandBuffer *c, uint32_t en
 NVN(nvnCommandBufferSetDepthBounds, void, NVNcommandBuffer *c, uint32_t enabled, float minimum, float maximum) {
     *REC(c,OP_DEPTH_BOUNDS,p_depth_bounds)=(p_depth_bounds){enabled!=0,minimum,maximum};
 }
+NVN(nvnCommandBufferDownsample, void, NVNcommandBuffer *c, const NVNtexture *src, const NVNtexture *dst) {
+    *REC(c,OP_DOWNSAMPLE,p_downsample)=(p_downsample){(const tex_t *)src,(const tex_t *)dst};
+}
 NVN(nvnCommandBufferSetPrimitiveRestart, void, NVNcommandBuffer *c, uint32_t enabled, int index) {
     *REC(c,OP_PRIMITIVE_RESTART,p_primitive_restart)=(p_primitive_restart){enabled!=0,(uint32_t)index};
 }

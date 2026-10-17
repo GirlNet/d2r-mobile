@@ -37,7 +37,6 @@ P(nvnCommandBufferSetRenderEnable)(&command,(uint32_t)257);
 P(nvnCommandBufferSetRenderEnableConditional)(&command,(NVNconditionalRenderMode)257,(NVNbufferAddress)257);
 P(nvnCommandBufferDiscardColor)(&command,(int)257);
 P(nvnCommandBufferDiscardDepthStencil)(&command);
-P(nvnCommandBufferDownsample)(&command,NULL,NULL);
 P(nvnCommandBufferTiledDownsample)(&command,NULL,NULL);
 P(nvnCommandBufferDownsampleTextureView)(&command,NULL,NULL,NULL,NULL);
 P(nvnCommandBufferTiledDownsampleTextureView)(&command,NULL,NULL,NULL,NULL);
@@ -62,6 +61,65 @@ P(nvnCommandBufferWaitEvent)(&command,NULL,(NVNeventWaitMode)257,(uint32_t)257);
 P(nvnMultisampleStateSetAlphaToCoverageDither)(&state,0x101);
 P(nvnMultisampleStateSetRasterSamples)(&state,4);
 if(P(nvnMultisampleStateGetAlphaToCoverageDither)(&state)!=1 || P(nvnMultisampleStateGetRasterSamples)(&state)!=4)return 1;
-const char *names[]={"nvnCommandBufferBindTransformFeedbackBuffer","nvnCommandBufferBindTransformFeedbackBuffers","nvnCommandBufferSetPatchSize","nvnCommandBufferSetInnerTessellationLevels","nvnCommandBufferSetOuterTessellationLevels","nvnCommandBufferBeginTransformFeedback","nvnCommandBufferEndTransformFeedback","nvnCommandBufferPauseTransformFeedback","nvnCommandBufferResumeTransformFeedback","nvnCommandBufferDrawTransformFeedback","nvnCommandBufferDrawArraysInstanced","nvnCommandBufferDrawArraysIndirect","nvnCommandBufferDrawElementsIndirect","nvnCommandBufferMultiDrawArraysIndirectCount","nvnCommandBufferMultiDrawElementsIndirectCount","nvnCommandBufferClearColori","nvnCommandBufferClearColorui","nvnCommandBufferDispatchComputeIndirect","nvnCommandBufferSetViewportSwizzles","nvnCommandBufferSetScissors","nvnCommandBufferSetDepthBounds","nvnCommandBufferSetDepthRanges","nvnCommandBufferSetTiledCacheAction","nvnCommandBufferSetTiledCacheTileSize","nvnCommandBufferSetPointSize","nvnCommandBufferSetLineWidth","nvnCommandBufferSetAlphaRef","nvnCommandBufferSetSampleMask","nvnCommandBufferSetRasterizerDiscard","nvnCommandBufferSetConservativeRasterEnable","nvnCommandBufferSetConservativeRasterDilate","nvnCommandBufferSetSubpixelPrecisionBias","nvnCommandBufferReportValue","nvnCommandBufferSetRenderEnable","nvnCommandBufferSetRenderEnableConditional","nvnCommandBufferDiscardColor","nvnCommandBufferDiscardDepthStencil","nvnCommandBufferDownsample","nvnCommandBufferTiledDownsample","nvnCommandBufferDownsampleTextureView","nvnCommandBufferTiledDownsampleTextureView","nvnCommandBufferWaitSync","nvnCommandBufferFenceSync","nvnCommandBufferSetShaderScratchMemory","nvnCommandBufferSaveZCullData","nvnCommandBufferRestoreZCullData","nvnCommandBufferDrawTexture","nvnCommandBufferSetProgramSubroutines","nvnCommandBufferBindCoverageModulationTable","nvnCommandBufferResolveDepthBuffer","nvnCommandBufferPushDebugGroupStatic","nvnCommandBufferPushDebugGroupDynamic","nvnCommandBufferPushDebugGroup","nvnCommandBufferPopDebugGroup","nvnCommandBufferPopDebugGroupId","nvnCommandBufferInsertDebugMarkerStatic","nvnCommandBufferInsertDebugMarkerDynamic","nvnCommandBufferInsertDebugMarker","nvnCommandBufferWaitEvent","nvnMultisampleStateSetAlphaToCoverageDither","nvnMultisampleStateSetRasterSamples"};unsigned covered=0;for(unsigned i=0;i<sizeof names/sizeof *names;i++){unsigned j=0;while(j<NVN_NFUNC && strcmp(nvn_names[j],names[i]))j++;if(j<NVN_NFUNC && atomic_load(&nvn_slot[j].cnt)>0)covered++;}
-if(covered!=61)return 1;puts("NVN PROBE CAPTURE OK: 61 typed calls captured; no GPU work");return 0;
+const char *names[]={
+    "nvnCommandBufferBindTransformFeedbackBuffer",
+    "nvnCommandBufferBindTransformFeedbackBuffers",
+    "nvnCommandBufferSetPatchSize",
+    "nvnCommandBufferSetInnerTessellationLevels",
+    "nvnCommandBufferSetOuterTessellationLevels",
+    "nvnCommandBufferBeginTransformFeedback",
+    "nvnCommandBufferEndTransformFeedback",
+    "nvnCommandBufferPauseTransformFeedback",
+    "nvnCommandBufferResumeTransformFeedback",
+    "nvnCommandBufferDrawTransformFeedback",
+    "nvnCommandBufferDrawArraysInstanced",
+    "nvnCommandBufferDrawArraysIndirect",
+    "nvnCommandBufferDrawElementsIndirect",
+    "nvnCommandBufferMultiDrawArraysIndirectCount",
+    "nvnCommandBufferMultiDrawElementsIndirectCount",
+    "nvnCommandBufferClearColori",
+    "nvnCommandBufferClearColorui",
+    "nvnCommandBufferDispatchComputeIndirect",
+    "nvnCommandBufferSetViewportSwizzles",
+    "nvnCommandBufferSetScissors",
+    "nvnCommandBufferSetDepthRanges",
+    "nvnCommandBufferSetTiledCacheAction",
+    "nvnCommandBufferSetTiledCacheTileSize",
+    "nvnCommandBufferSetPointSize",
+    "nvnCommandBufferSetLineWidth",
+    "nvnCommandBufferSetAlphaRef",
+    "nvnCommandBufferSetSampleMask",
+    "nvnCommandBufferSetConservativeRasterEnable",
+    "nvnCommandBufferSetConservativeRasterDilate",
+    "nvnCommandBufferSetSubpixelPrecisionBias",
+    "nvnCommandBufferReportValue",
+    "nvnCommandBufferSetRenderEnable",
+    "nvnCommandBufferSetRenderEnableConditional",
+    "nvnCommandBufferDiscardColor",
+    "nvnCommandBufferDiscardDepthStencil",
+    "nvnCommandBufferTiledDownsample",
+    "nvnCommandBufferDownsampleTextureView",
+    "nvnCommandBufferTiledDownsampleTextureView",
+    "nvnCommandBufferWaitSync",
+    "nvnCommandBufferFenceSync",
+    "nvnCommandBufferSetShaderScratchMemory",
+    "nvnCommandBufferSaveZCullData",
+    "nvnCommandBufferRestoreZCullData",
+    "nvnCommandBufferDrawTexture",
+    "nvnCommandBufferSetProgramSubroutines",
+    "nvnCommandBufferBindCoverageModulationTable",
+    "nvnCommandBufferResolveDepthBuffer",
+    "nvnCommandBufferPushDebugGroupStatic",
+    "nvnCommandBufferPushDebugGroupDynamic",
+    "nvnCommandBufferPushDebugGroup",
+    "nvnCommandBufferPopDebugGroup",
+    "nvnCommandBufferPopDebugGroupId",
+    "nvnCommandBufferInsertDebugMarkerStatic",
+    "nvnCommandBufferInsertDebugMarkerDynamic",
+    "nvnCommandBufferInsertDebugMarker",
+    "nvnCommandBufferWaitEvent",
+    "nvnMultisampleStateSetAlphaToCoverageDither",
+    "nvnMultisampleStateSetRasterSamples",
+};unsigned covered=0;for(unsigned i=0;i<sizeof names/sizeof *names;i++){unsigned j=0;while(j<NVN_NFUNC && strcmp(nvn_names[j],names[i]))j++;if(j<NVN_NFUNC && atomic_load(&nvn_slot[j].cnt)>0)covered++;}
+if(covered!=sizeof names/sizeof *names)return 1;printf("NVN PROBE CAPTURE OK: %u typed calls recorded; no guest GPU work\n",covered);return 0;
 }
