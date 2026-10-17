@@ -82,6 +82,14 @@ python dm/tools/diagnose_p5r_shaders.py "E:\p5r-work\shaders" "E:\p5r-work\diagn
 
 ## 可玩版本之前仍需完成
 
+2026-10-17 的后续设备日志已越过线性渲染目标的尺寸检查，在
+`nn::os::FlushDataCache` 读取 `CTR_EL0` 时触发非法指令。宿主现按可选强制
+接管符号将该接口转发给 Darwin 的 `sys_dcache_flush`，并将编译器
+`__clear_cache(begin,end)` 转成 `sys_icache_invalidate(begin,end-begin)`。
+这些接管覆盖模块重定位引用；不改写 SDK 内部的直接分支，也不启用 JIT。
+缓存范围转发、非对齐地址、空区间和装载器覆盖已有 SDK 定义的行为有合成测试；
+修复后的完整游戏启动、GPU 输出和可玩流程仍须设备验证。
+
 1. 将通用装载器和平台服务与暗黑 2 的启动钩子、固定地址、功能代码、TACT 资源及生成表分离。
 2. 验证 P5R 的 SDK 初始化、线程、文件系统、手柄、音频及视频与宿主的兼容性，补齐所需服务，不能依赖原版 Switch 驱动的导出。
 3. 找到 P5R 的着色器二进制和反射信息，生成专用翻译数据库，实现它使用的图形调用。暗黑 2 的 shader map/facts 不能作为 P5R 数据复用。

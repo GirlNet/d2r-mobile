@@ -82,7 +82,7 @@ jobs:
           set -euo pipefail
           xcrun clang -fsyntax-only -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
             dm/host/guest_bootstrap.c dm/host/main.c dm/host/loader.c dm/host/hle.c \
-            dm/host/hle_hid.c dm/host/hle_fs.c dm/host/hle_oe.c dm/host/hle_svc.c \
+            dm/host/hle_hid.c dm/host/hle_fs.c dm/host/hle_oe.c dm/host/hle_svc.c dm/host/hle_cache.c \
             dm/host/hle_audio.c dm/host/hle_misc.c
       - name: Run bootstrap and audio tests
         env:
@@ -153,6 +153,11 @@ jobs:
           xcrun clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I dm/host \
             dm/host/tests/t_stdalloc_forward.c -o "$RUNNER_TEMP/p5r-stdalloc-forward"
           "$RUNNER_TEMP/p5r-stdalloc-forward"
+      - name: Check Darwin data and instruction cache adapters
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_cache
+          dm/host/tests/build/t_cache
       - name: Check filesystem transactions and exact path behavior
         run: |
           set -euo pipefail

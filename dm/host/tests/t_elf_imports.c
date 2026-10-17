@@ -7,6 +7,7 @@ struct dm_flags g_flag;
 uint64_t unimpl_stubs[4096];
 void *hlecount_wrap(const char *kind, const char *name, void *fn) { (void)kind; (void)name; return fn; }
 HLE("synthetic_host", uint64_t, synthetic_host, void) { return 42; }
+HLE_FORCE_OPTIONAL("synthetic_cache_flush", "Synthetic platform cache takeover", void, synthetic_cache_flush, const void *address, size_t size) { (void)address; (void)size; }
 
 static uint64_t relocated(unsigned binding, unsigned section, unsigned type, int64_t addend, const char *name) {
     static uint8_t image[4096];
@@ -29,6 +30,8 @@ int main(void) {
         unsigned type=types[i];
         assert(relocated(binding,0,type,0,"synthetic_host")== (uint64_t)synthetic_host);
         assert(relocated(binding,1,type,0,"local_definition")== (uint64_t)g_mod[0].base+0x300);
+        assert(relocated(binding,0,type,0,"synthetic_cache_flush")== (uint64_t)synthetic_cache_flush);
+        assert(relocated(binding,1,type,0,"synthetic_cache_flush")== (uint64_t)synthetic_cache_flush);
     }
     for (unsigned i=0;i<3;i++) {
         unsigned type=types[i];

@@ -82,6 +82,16 @@ The pipeline now also writes `reflection-plans/<key>.plan.json`. Plans link hash
 
 ## Remaining work before a playable build
 
+The next device log on 2026-10-17 passed the linear render-target size check,
+then faulted on the `CTR_EL0` read in `nn::os::FlushDataCache`. Optional forced
+symbol adapters now forward this API to Darwin's `sys_dcache_flush`, and map
+the compiler ABI `__clear_cache(begin,end)` to
+`sys_icache_invalidate(begin,end-begin)`. These adapters cover relocated module
+references; they do not rewrite internal SDK direct branches or enable JIT.
+Synthetic tests cover range forwarding, unaligned and empty ranges, and loader
+takeover of existing SDK definitions. Complete startup, game GPU output and
+playable flows still require device validation after this fix.
+
 1. Separate the generic loader and platform services from D2R-specific bootstrap hooks, fixed addresses, feature code, TACT resources and generated tables.
 2. Verify P5R's SDK initialization, threading, filesystem, controller, audio and video behavior against the host; implement required services rather than relying on original Switch driver exports.
 3. Locate P5R shader binaries and reflection, build their translation database and implement the graphics calls they use. D2R's shader maps/facts cannot be reused as P5R data.
