@@ -1,7 +1,7 @@
 // 诊断捕获回归：通过实际静态跳板传入标量位和空资源引用，不执行资源访问或 GPU 工作。
 // Capture regressions use actual static thunks with scalar bits and null resource references, without resource accesses or GPU work.
 static int test_probe_command_capture(void) {
-gpa=(PFNNVNDEVICEGETPROCADDRESSPROC)h_nvnBootstrapLoader("nvnDeviceGetProcAddress");NVNcommandBuffer command;P(nvnCommandBufferInitialize)(&command,&dev);NVNmultisampleState state;P(nvnMultisampleStateSetDefaults)(&state);
+gpa=(PFNNVNDEVICEGETPROCADDRESSPROC)h_nvnBootstrapLoader("nvnDeviceGetProcAddress");NVNcommandBuffer command;P(nvnCommandBufferInitialize)(&command,&dev);
 P(nvnCommandBufferBindTransformFeedbackBuffer)(&command,(int)257,(NVNbufferAddress)257,(size_t)257);
 P(nvnCommandBufferBindTransformFeedbackBuffers)(&command,(int)257,(int)257,NULL);
 P(nvnCommandBufferSetPatchSize)(&command,(int)257);
@@ -58,9 +58,6 @@ P(nvnCommandBufferInsertDebugMarkerStatic)(&command,(uint32_t)257,NULL);
 P(nvnCommandBufferInsertDebugMarkerDynamic)(&command,(uint32_t)257,NULL);
 P(nvnCommandBufferInsertDebugMarker)(&command,NULL);
 P(nvnCommandBufferWaitEvent)(&command,NULL,(NVNeventWaitMode)257,(uint32_t)257);
-P(nvnMultisampleStateSetAlphaToCoverageDither)(&state,0x101);
-P(nvnMultisampleStateSetRasterSamples)(&state,4);
-if(P(nvnMultisampleStateGetAlphaToCoverageDither)(&state)!=1 || P(nvnMultisampleStateGetRasterSamples)(&state)!=4)return 1;
 const char *names[]={
     "nvnCommandBufferBindTransformFeedbackBuffer",
     "nvnCommandBufferBindTransformFeedbackBuffers",
@@ -118,8 +115,6 @@ const char *names[]={
     "nvnCommandBufferInsertDebugMarkerDynamic",
     "nvnCommandBufferInsertDebugMarker",
     "nvnCommandBufferWaitEvent",
-    "nvnMultisampleStateSetAlphaToCoverageDither",
-    "nvnMultisampleStateSetRasterSamples",
 };unsigned covered=0;for(unsigned i=0;i<sizeof names/sizeof *names;i++){unsigned j=0;while(j<NVN_NFUNC && strcmp(nvn_names[j],names[i]))j++;if(j<NVN_NFUNC && atomic_load(&nvn_slot[j].cnt)>0)covered++;}
 if(covered!=sizeof names/sizeof *names)return 1;printf("NVN PROBE CAPTURE OK: %u typed calls recorded; no guest GPU work\n",covered);return 0;
 }

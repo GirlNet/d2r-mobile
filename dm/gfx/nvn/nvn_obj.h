@@ -104,6 +104,13 @@ typedef struct { uint64_t target : 3, src_rgb : 7, dst_rgb : 7, src_a : 7, dst_a
 FITS(blend_st, NVNblendState);
 typedef struct { uint8_t enable, samples, a2c, a2c_dither, raster_samples, cov_mod, cov2color_en, cov2color_out, sl_en, sl_grid; } ms_st;
 FITS(ms_st, NVNmultisampleState);
+// This backend supports matching raster/attachment counts and no active NVN
+// alpha-to-coverage dithering.
+// Zero raster_samples inherits the attachment count. Inactive dither is inert.
+static inline unsigned nvn_multisample_unsupported(const ms_st *s, unsigned attachment_samples) {
+    return (s->raster_samples && s->raster_samples != attachment_samples ? 1u : 0u) |
+           (s->a2c && s->a2c_dither ? 2u : 0u);
+}
 typedef struct { uint32_t cull : 2, front : 1, mode : 2, offset_en : 3; } poly_st;           FITS(poly_st, NVNpolygonState);
 typedef struct {
     uint64_t dt : 1, dw : 1, df : 4, st : 1, sf_f : 4, sf_b : 4,

@@ -2765,6 +2765,9 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
 // 管线键：当前状态 S + 通道格式（普通通道；合并通道另带 lmap / 特化函数，由 pso_get 填）
 // Pipeline key: current state S + pass formats (normal pass; a merged pass additionally carries lmap / specialized function, filled in by pso_get)
 static void pso_key_fill(pso_key *k, NvShader *vs, NvShader *fs, const uint32_t cfmt[8], uint32_t dfmt, uint32_t sfmt, uint32_t samples, int lmap) {
+    if(!dm_guest_d2r() && !S.raster_discard && nvn_multisample_unsupported(&S.ms,samples?samples:1))
+        MDIE("Unsupported P5R multisample state: raster=%u attachment=%u alpha-to-coverage=%u dither=%u",
+             S.ms.raster_samples,samples?samples:1,S.ms.a2c,S.ms.a2c_dither);
     memset(k, 0, sizeof *k);
     k->vs = (__bridge void *)vs; k->fs = (__bridge void *)fs;
     memcpy(k->cfmt, cfmt, sizeof k->cfmt); k->dfmt = dfmt; k->sfmt = sfmt; k->samples = samples;
