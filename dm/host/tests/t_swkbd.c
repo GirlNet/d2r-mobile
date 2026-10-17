@@ -3,6 +3,7 @@
 // swkbd unit test (takes seconds): lay out a ShowKeyboardArg by hand following the SDK layout, have swkbd_show write back the String, and all expected bytes are computed by hand.
 // Build and run: cd dm/host/tests && clang -O1 -I.. -o /tmp/t_swkbd t_swkbd.c ../hle_swkbd.c && /tmp/t_swkbd
 #include "../hle.h"
+#include "../guest_bootstrap.h"
 #include <stdio.h>
 #ifdef _WIN32
 static int setenv(const char *key,const char *value,int overwrite) { return !overwrite&&getenv(key)?0:_putenv_s(key,value); }
@@ -46,6 +47,11 @@ static int bytes_eq(const uint8_t *want, size_t n) {   // 前 n 字节等于期�
 
 void guest_clock_freeze_for(int reason, int on) { (void)reason; (void)on; }   // 真实现在 hle_os.c；单测不关心时钟 | the real implementation is in hle_os.c; the unit test does not care about the clock
 int main(void) {
+#ifdef DM_P5R_ONLY
+    CHECK(dm_guest_profile_select("p5r"),"select the real P5R profile");
+#else
+    CHECK(dm_guest_profile_select("d2r"),"select the real D2R profile");
+#endif
     unsetenv("DM_KBD");
 
 
