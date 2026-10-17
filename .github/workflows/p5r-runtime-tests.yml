@@ -132,6 +132,8 @@ jobs:
           dm/gfx/tests/t_raster_discard_gpu
           make -C dm/gfx/tests t_downsample_gpu
           dm/gfx/tests/t_downsample_gpu
+          make -C dm/gfx/tests t_copy_draw_gpu
+          dm/gfx/tests/t_copy_draw_gpu
           dm/gfx/tests/t_nvn_gpu_setup --gpu-setup-probe "$RUNNER_TEMP/p5r-real-metal-setup"
           dm/gfx/tests/t_nvn_gpu_setup --pre-submit-probe "$RUNNER_TEMP/p5r-real-pre-submit"
           dm/gfx/tests/t_nvn_gpu_setup --capture-disabled-check
@@ -160,8 +162,8 @@ jobs:
       - name: Check production draw paths on Metal 4
         run: |
           set -euo pipefail
-          make -C dm/gfx/tests t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4
-          for test in t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4; do
+          make -C dm/gfx/tests t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4
+          for test in t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4; do
             set +e
             "dm/gfx/tests/$test"
             result=$?

@@ -5188,8 +5188,9 @@ static int copy_t2t_astc(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
     defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(pb);   // 本次提交跑完再放（视图不单独驻留，参数块撤驻留） | Release after this submit has finished running (views are not made resident separately; the parameter block is removed from residency)
     return 1;
 }
-// GPU：贴图 → 贴图（原先误列为空操作，选角页每帧 3 次）。等尺寸、不镜像、同格式 → 逐层 blit；其余语义（缩放带过滤、镜像、换格式）blit 表达不了，报红待实现
-// GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
+#include "nvn_copy_draw.inc"
+// Same-size physical copies use blit. Scaling, conversion and mirrors use the
+// attributed nxnative draw implementation with the shared Metal 3/4 backend.
 static void copy_t2t(const p_copy_t2t *c) {
     if (c->src) xv_check(c->src->serial, c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, "贴图拷贝源");
     rp_flush();   // 挂起的纯清除通道先落地（零源候选在通道结束时才进集合）；下面 blit() 本来也会结束通道 | Land the pending pure-clear render pass first (zero-source candidates only enter the set when the render pass ends); the blit() below would end the render pass anyway
@@ -5213,6 +5214,14 @@ static void copy_t2t(const p_copy_t2t *c) {
         int ok = 1;
         for (int z = 0; z < nz && ok; z++) ok = copy_t2t_astc(s, d, sl, sz0 + c->sr.zoffset + z, dl, dz0 + c->dr.zoffset + z, c->sr.xoffset, c->sr.yoffset, c->dr.xoffset, c->dr.yoffset, c->sr.width, c->sr.height);
         if (ok) return;
+    }
+    if ((c->sr.width!=c->dr.width || c->sr.height!=c->dr.height || s.pixelFormat!=d.pixelFormat ||
+         (c->flags&(NVN_COPY_FLAGS_MIRROR_X_BIT|NVN_COPY_FLAGS_MIRROR_Y_BIT))) && !s3 && !d3 &&
+        !(c->flags&~(NVN_COPY_FLAGS_ENGINE_2D_BIT|NVN_COPY_FLAGS_LINEAR_FILTER_BIT|NVN_COPY_FLAGS_MIRROR_X_BIT|NVN_COPY_FLAGS_MIRROR_Y_BIT))) {
+        if(s.pixelFormat==MTLPixelFormatDepth32Float_Stencil8 && !(s.usage&MTLTextureUsagePixelFormatView))
+            s=tex_upgrade_pfv(c->src,s,MTLPixelFormatX32_Stencil8);
+        if(copy_t2t_draw(s,d,sl,sz0,dl,dz0,&c->sr,&c->dr,!!(c->flags&NVN_COPY_FLAGS_LINEAR_FILTER_BIT),c->flags))return;
+        if(!dm_guest_d2r())MDIE("Unsupported or failed P5R scaled/converted texture copy");
     }
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
         || s.pixelFormat != d.pixelFormat || s3 != d3) {
