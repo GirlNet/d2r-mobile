@@ -14,6 +14,10 @@ int main(int argc,char **argv) {
     kinds[0]=2;assert(!nvn_vertex_bits_source(source,kinds,&output,&mask,error,sizeof error));assert(mask==66);
     assert(strstr(output,"int4 position [[attribute(0)]]"));assert(strstr(output,"in.position = as_type<float4>(dm_raw_vertex.position)"));
     char *again=NULL;assert(nvn_vertex_bits_source(output,kinds,&again,&mask,error,sizeof error));assert(!again);free(output);
+    const char *fragment="fragment float4 fragment0(float4 value [[stage_in]]) { return value; }\n";
+    char library[2048];snprintf(library,sizeof library,"%s%s%s",fragment,source,fragment);
+    assert(!nvn_vertex_bits_source(library,kinds,&output,&mask,error,sizeof error));
+    assert(strstr(output,fragment));assert(strstr(output,"uint2 bone [[attribute(3)]]"));free(output);
     const char *bad[]={"struct In { float x [[attribute(16)]]; }; vertex float v(In i [[stage_in]]){return i.x;}",
       "struct In { float x [[attribute(0)]]; float y [[attribute(0)]]; }; vertex float v(In i [[stage_in]]){return i.x;}",
       "struct In { float x [[attribute(0)]]; float y[2]; }; vertex float v(In i [[stage_in]]){return i.x;}",

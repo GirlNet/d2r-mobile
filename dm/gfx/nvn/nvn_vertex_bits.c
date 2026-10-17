@@ -35,17 +35,19 @@ int nvn_vertex_bits_source(const char *source,const uint8_t kinds[16],char **out
     if(output)*output=NULL;if(applied)*applied=0;
     if(!source||!kinds||!output)return fail(error,error_size,"Invalid vertex source arguments");
     int any=0;for(unsigned i=0;i<16;i++){if(kinds[i]>2)return fail(error,error_size,"Unknown vertex input class");any|=kinds[i];}
-    const char *stage=strstr(source,"[[stage_in]]");
-    if(!any||!stage)return copy_source(source,output);
-    if(strstr(stage+1,"[[stage_in]]")||strstr(source,"dm_raw_vertex")||strstr(source,"DMVertexBits_"))
+    if(!any)return copy_source(source,output);
+    const char *entry=strstr(source,"vertex ");
+    if(!entry||strstr(entry+7,"vertex "))return fail(error,error_size,"Missing or ambiguous vertex entry");
+    const char *body=strchr(entry,'{'),*stage=strstr(entry,"[[stage_in]]");
+    if(!body)return fail(error,error_size,"Missing vertex entry body");
+    if(!stage||stage>body)return copy_source(source,output);
+    const char *second=strstr(stage+1,"[[stage_in]]");
+    if((second&&second<body)||strstr(source,"dm_raw_vertex")||strstr(source,"DMVertexBits_"))
         return fail(error,error_size,"Ambiguous or already specialized vertex source");
     char variable[64],type[64];const char *variable_end,*type_end,*parameter=stage;
     if(!previous(source,&parameter,variable,&variable_end)||!previous(source,&parameter,type,&type_end))
         return fail(error,error_size,"Unsupported stage input parameter");
-    const char *entry=NULL,*search=source;
-    while((search=strstr(search,"vertex "))&&search<parameter){entry=search;search+=7;}
-    const char *body=strchr(stage,'{');if(!entry||!body)return fail(error,error_size,"Missing vertex entry body");
-    cursor structure={NULL};search=source;
+    cursor structure={NULL};const char *search=source;
     while((search=strstr(search,"struct"))) {
         cursor c={search+6};char name[64];search+=6;
         if(identifier(&c,name)&&!strcmp(name,type)&&literal(&c,"{")){
