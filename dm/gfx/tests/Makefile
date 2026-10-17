@@ -24,6 +24,9 @@ t_texture_views_gpu: t_texture_views_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
 t_shader_math_gpu: t_shader_math_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_shader_math_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 
+t_depth_clamp_gpu: t_depth_clamp_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_depth_clamp_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
 t_dirty_slots: t_dirty_slots.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
 	clang $(CFLAGS) -o $@ t_dirty_slots.c ../../host/crash.c ../nvn/nvn_dirty.c
 t_dirty_race: t_dirty_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
