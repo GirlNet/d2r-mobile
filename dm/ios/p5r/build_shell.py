@@ -25,7 +25,7 @@ def sources():
     result = [host / f for f in CORE] + [p for p in sorted(host.glob('hle_*.c')) if p.name not in EXCLUDE]
     for directory in ('dm/gfx', 'dm/gfx/nvn', 'dm/gfx/tex'):
         result += sorted(p for p in (REPO / directory).iterdir() if p.suffix in ('.c', '.m', '.S'))
-    return result + [REPO / 'dm/ios/p5r/diagnostics.c', REPO / 'dm/ios/p5r/boot_probe.m', REPO / 'dm/ios/p5r/app.m']
+    return result + [REPO / 'dm/ios/p5r/diagnostics.c', REPO / 'dm/ios/p5r/boot_probe.m', REPO / 'dm/ios/p5r/touch_controls.m', REPO / 'dm/ios/p5r/app.m']
 
 
 def fingerprint_sources(plan):

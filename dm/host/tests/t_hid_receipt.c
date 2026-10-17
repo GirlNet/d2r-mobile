@@ -4,6 +4,7 @@
 #define HLE_HID_SOURCE "../hle_hid.c"
 #endif
 #include HLE_HID_SOURCE
+#include "../guest_bootstrap.h"
 module_t g_mod[MAX_MOD]; int g_nmod;
 #include <unistd.h>
 #include <sys/wait.h>
@@ -31,6 +32,20 @@ static int load(const char *path,Row *rows,int *limit) {
  }fclose(f);return n;
 }
 static void exercise(int which) {
+ if(which==5) {
+  CK(dm_guest_profile_select("p5r"));NpadState state;uint32_t id=0;
+  dm_input_set(DM_BTN_A|DM_BTN_ZL,1200,-900,0,0);dm_pad_set(DM_BTN_B,0,0,-2300,700);
+  h_hid_GetFullKey(&state,&id);CK(state.attributes==1);
+  CK(state.buttons==(DM_BTN_A|DM_BTN_B|DM_BTN_ZL));CK(state.lx==1200&&state.ly==-900&&state.rx==-2300&&state.ry==700);
+  dm_input_release_all();dm_input_set(DM_BTN_X,0,0,0,0);dm_input_set(0,0,0,0,0);
+  dm_pad_set(DM_BTN_Y,0,0,0,0);dm_pad_set(0,0,0,0,0);
+  h_hid_GetFullKey(&state,&id);CK(state.buttons==(DM_BTN_X|DM_BTN_Y));
+  h_hid_GetFullKey(&state,&id);CK(!state.buttons);
+  dm_input_set(DM_BTN_A,100,200,300,400);dm_pad_set(DM_BTN_B,500,600,700,800);dm_input_release_all();
+  h_hid_GetFullKey(&state,&id);CK(!state.buttons&&!state.lx&&!state.ly&&!state.rx&&!state.ry);
+  int32_t x=1,y=1;dm_input_sampled_right(&x,&y);CK(!x&&!y);
+  printf("HID_RECEIPT P5R touch/pad/short-press/focus checks=%d failures=%d\n",checks,fails);fflush(stdout);_exit(fails?1:0);
+ }
  char path[256];snprintf(path,sizeof path,"%s/hid-receipt-%d.jsonl",getenv("TMPDIR")?getenv("TMPDIR"):"/tmp",getpid());unlink(path);
  unsetenv("DM_KEYS");unsetenv("DM_HID_RECEIPT_LOG");if(which)setenv("DM_HID_RECEIPT_LOG",path,1);if(which==2)setenv("DM_KEYS","A@0+10",1);
  NpadState s;uint32_t id=0;Row *rows=calloc(1024,sizeof *rows);int limit=0,n;
@@ -68,4 +83,4 @@ static void exercise(int which) {
  }
  free(rows);unlink(path);printf("HID_RECEIPT case=%d checks=%d failures=%d\n",which,checks,fails);fflush(stdout);_exit(fails?1:0);
 }
-int main(void){int fail=0;for(int i=0;i<5;i++){pid_t p=fork();if(!p)exercise(i);int s;waitpid(p,&s,0);fail+=!WIFEXITED(s)||WEXITSTATUS(s)!=0;}printf("HID_RECEIPT %s cases=5 failures=%d\n",fail?"FAIL":"PASS",fail);return !!fail;}
+int main(void){int fail=0;for(int i=0;i<6;i++){pid_t p=fork();if(!p)exercise(i);int s;waitpid(p,&s,0);fail+=!WIFEXITED(s)||WEXITSTATUS(s)!=0;}printf("HID_RECEIPT %s cases=6 failures=%d\n",fail?"FAIL":"PASS",fail);return !!fail;}

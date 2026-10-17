@@ -11,6 +11,7 @@
 #include "dm_i18n.h"
 #include "../../gfx/nvn/nvn_texture_selftest.h"
 #include "boot_probe.h"
+#import "touch_controls.h"
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -60,8 +61,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 @property double probePollTime;
 @property CADisplayLink *poll;
 @property NSDictionary *package;
+@property P5RTouchControls *touchControls;
 @end
 @implementation P5RController
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 - (void)viewDidLoad {
     [super viewDidLoad]; self.view.backgroundColor = UIColor.blackColor;
     P5RMetalView *canvas = [P5RMetalView new]; canvas.frame = self.view.bounds;
@@ -69,6 +72,9 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     metalLayer = (CAMetalLayer *)canvas.layer; metalLayer.device = MTLCreateSystemDefaultDevice();
     metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm; metalLayer.framebufferOnly = YES;
     [self.view addSubview:canvas];
+    self.touchControls=[[P5RTouchControls alloc] initWithFrame:self.view.bounds];
+    self.touchControls.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    self.touchControls.hidden=YES;[self.view addSubview:self.touchControls];
     self.status = [UILabel new]; self.status.textColor = UIColor.whiteColor; self.status.numberOfLines = 0;
     self.status.textAlignment = NSTextAlignmentCenter; self.status.translatesAutoresizingMaskIntoConstraints = NO;
     self.launch = [UIButton buttonWithType:UIButtonTypeSystem]; self.launch.translatesAutoresizingMaskIntoConstraints = NO;
@@ -116,6 +122,9 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
             self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RBootStopped"),self.probeDirectory.lastPathComponent];
     }
     GCExtendedGamepad *pad = GCController.controllers.firstObject.extendedGamepad;
+    BOOL hideTouch=!started || self.probingBoot || pad!=nil;
+    if(hideTouch && !self.touchControls.hidden)[self.touchControls resetInput];
+    self.touchControls.hidden=hideTouch;
     if (!pad || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) { dm_pad_set(0,0,0,0,0); return; }
     uint64_t buttons = 0;
     // 系统字段按位置命名；这里按 Switch 位置输出，右 A、下 B、上 X、左 Y。
@@ -135,6 +144,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         self.status.text = text("dmP5RRomfsMissing"); return;
     }
     started = 1; self.menu.hidden = YES;
+    self.touchControls.hidden=NO;
     NSString *save = [documents stringByAppendingPathComponent:@"save-p5r"], *temporary = [documents stringByAppendingPathComponent:@"temp-p5r"];
     for (NSString *directory in @[save, temporary]) [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
     setenv("DM_GUEST_PROFILE", "p5r", 1); setenv("DM_ROMFS", romfs.fileSystemRepresentation, 1);
@@ -232,7 +242,7 @@ static void *runHost(void *unused) {
     controller = [P5RController new]; self.window.rootViewController = controller; [self.window makeKeyAndVisible]; return YES;
 }
 - (void)applicationWillResignActive:(UIApplication *)application {
-    (void)application; dm_pad_set(0,0,0,0,0);
+    (void)application; [((P5RController *)controller).touchControls resetInput]; dm_input_release_all();
     if (started && !dm_boot_probe_active()) { guest_clock_freeze_for(1, 1); dm_audio_suspend(1); dm_gfx_suspend(1); }
 }
 - (void)applicationDidBecomeActive:(UIApplication *)application {

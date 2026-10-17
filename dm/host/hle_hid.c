@@ -53,6 +53,12 @@ static _Atomic uint64_t g_press_latch;
 // Controller (dm_input.h dm_pad_set): buttons and the four axes are packed into two atomics, and press edges are likewise latched until the game's next
 // read (short controller presses are not lost)
 static _Atomic uint64_t g_pad_btn, g_pad_axes, g_pad_latch;
+void dm_input_release_all(void) {
+    g_in.buttons=0;g_in.lx=0;g_in.ly=0;g_in.rx=0;g_in.ry=0;
+    atomic_store(&g_press_latch,0);atomic_store(&g_pad_btn,0);
+    atomic_store(&g_pad_axes,0);atomic_store(&g_pad_latch,0);
+    atomic_store(&g_sampled_right,0);
+}
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_pad_btn, buttons); atomic_fetch_or(&g_pad_latch, buttons & ~old);
     atomic_store(&g_pad_axes, (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48);
