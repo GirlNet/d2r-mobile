@@ -7,8 +7,9 @@ import sys
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from diagnose_p5r_shaders import audit_queries, audit_resources, compile_metal, diagnose, load_jobs, spirv_compute_workgroup
+from diagnose_p5r_shaders import audit_queries, audit_resources, compile_metal, diagnose, load_jobs, save_json, spirv_compute_workgroup
 from prepare_p5r_shaders import scan_segment, write_outputs
 from test_prepare_p5r_shaders import shader
 
@@ -35,6 +36,21 @@ def resources(job, handle=8):
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_checkpoint_retries_transient_sharing_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'report.json';path.write_text('{"old":true}')
+            replace=Path.replace;attempts=[]
+            def locked(source,destination):
+                attempts.append(1)
+                if len(attempts)<3:
+                    self.assertEqual(json.loads(path.read_text()),dict(old=True))
+                    raise PermissionError('synthetic Windows sharing lock')
+                return replace(source,destination)
+            with patch.object(Path,'replace',locked), patch('diagnose_p5r_shaders.time.sleep'):
+                save_json(path,dict(new=True))
+            self.assertEqual(len(attempts),3)
+            self.assertEqual(json.loads(path.read_text()),dict(new=True))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()

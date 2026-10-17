@@ -11,6 +11,7 @@ import re
 import subprocess
 import struct
 import sys
+import time
 from nvn_handle_layout import decode_handle
 from maxwell_memory_audit import audit_compute_memory
 from maxwell_texture_audit import audit_texture_queries, audit_texture_resources
@@ -30,7 +31,16 @@ def read_json(path):
 def save_json(path, value):
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    temporary.replace(path)
+    for attempt in range(6):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            # Windows readers/antivirus may hold a transient sharing lock.
+            # Keep the previous complete checkpoint while retrying the rename.
+            if attempt == 5:
+                raise
+            time.sleep(0.01 * (2 ** attempt))
 
 
 def load_jobs(preparation):
