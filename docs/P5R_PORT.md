@@ -95,6 +95,15 @@ cross-device, finalized and future fences. A synthetic two-queue copy checks
 dependency ordering. Game output and playable flows still require final device
 acceptance; synthetic cloud tests cannot establish those results.
 
+The original-instruction texture audit also covers TEX/TEXS/TLD/TLDS and
+supported query/derivative families. It matches shapes within the same shader
+and immediate handle, retaining 1D/buffer ambiguity, bank mismatches, conflicts,
+unknown and unsupported instructions. All 571 two-dimensional texture
+declarations in the 228 embedded programs have matching original shape bits.
+This does not validate bound objects, sampling formats, draw state or complete
+external-shader coverage, and does not promote diagnostic reflection to ready.
+New diagnostic reports record these constraints independently.
+
 The next device log on 2026-10-17 passed the linear render-target size check,
 then faulted on the `CTR_EL0` read in `nn::os::FlushDataCache`. Optional forced
 symbol adapters now forward this API to Darwin's `sys_dcache_flush`, and map

@@ -12,7 +12,7 @@ import struct
 import sys
 from nvn_handle_layout import decode_handle
 from maxwell_memory_audit import audit_compute_memory
-from maxwell_texture_audit import audit_texture_queries
+from maxwell_texture_audit import audit_texture_queries, audit_texture_resources
 from p5r_reflection import reflection_plan
 from prepare_p5r_shaders import CONTROL_SIZE, HEADER_FIELDS, STAGES, compute_workgroup, word
 
@@ -280,6 +280,7 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                 row['audit'] = audit_resources(job, resource)
                 row['query_audit'] = audit_queries(resource)
                 row['texture_query_constraints'] = audit_texture_queries(job, resource, Path(job['code']).read_bytes())
+                row['texture_resource_constraints'] = audit_texture_resources(job, resource, Path(job['code']).read_bytes())
                 row['completed'].append('translated')
                 runner([validator, '--target-env', 'vulkan1.2', binary], output / (key + '-validation.log'))
                 row['completed'].append('spirv_validated')
@@ -297,6 +298,7 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                 plan = reflection_plan(job, resource, msl.read_bytes().decode('utf-8'))
                 plan['query_audit'] = row['query_audit']
                 plan['texture_query_constraints'] = row['texture_query_constraints']
+                plan['texture_resource_constraints'] = row['texture_resource_constraints']
                 row['audit']['buffer_slot_mapping_verified'] = not plan['missing_descriptors'] and all(
                     b['slot_mapping_verified'] for b in plan['bindings']
                     if b.get('descriptor', {}).get('category') in ('cbufs', 'sbufs'))
@@ -341,6 +343,8 @@ def diagnose(preparation, output, translator, validator, cross, sdks=(), xcrun='
                                  accessor_default_calls=sum(r.get('query_audit', {}).get('default_calls', 0) for r in report['shaders']),
                                  sampler_query_answers_corroborated=sum(q['answer_corroborated']
                                      for r in report['shaders'] for q in r.get('texture_query_constraints', {}).get('queries', [])),
+                                 shader_texture_shapes_corroborated=sum(b['shader_shape_corroborated']
+                                     for r in report['shaders'] for b in r.get('texture_resource_constraints', {}).get('bindings', [])),
                                  shaders_using_accessor_defaults=sum(r.get('query_audit', {}).get('default_calls', 0) > 0 for r in report['shaders']))
         report['default_query_requirements'] = query_requirements(report['shaders'])
         report['status'] = 'diagnostic_passed' if report['summary']['passed'] == len(jobs) and not report['errors'] else 'failed'

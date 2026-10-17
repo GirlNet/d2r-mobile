@@ -3,7 +3,7 @@
 import struct
 import unittest
 
-from maxwell_texture_audit import audit_texture_queries
+from maxwell_texture_audit import audit_texture_queries, audit_texture_resources
 from test_maxwell_memory_audit import encoding
 
 
@@ -60,6 +60,50 @@ class TextureQueryConstraintTests(unittest.TestCase):
         for target, value in ((1, 'Texture2D'), (4, 'Texture2D, Shadow'), (7, 'Texture2D, Array'),
                               (9, 'Texture2D, Array, Shadow'), (12, 'TextureCube')):
             self.assertTrue(self.audit(instruction('Texs', target=target), value=value)['queries'][0]['answer_corroborated'])
+
+
+class TextureResourceShapeTests(unittest.TestCase):
+    def audit(self, *words, stage='cs', bank=-1, handle=8, ty=3, array=1, separate=False):
+        blob = struct.pack('<' + 'Q' * (len(words) + 1), 0, *words)
+        if stage != 'cs': blob = bytes(0x50) + blob
+        resource = dict(decoded_size=len(blob), textures=[dict(binding=4, handle=handle,
+            cbuf_slot=bank, type=ty, array=array, separate=separate)])
+        return audit_texture_resources(dict(stage=stage), resource, blob)
+
+    def test_direct_instructions_corroborate_shape_without_promoting_runtime(self):
+        for name in ('Texs', 'TexsF16', 'Tlds', 'TldsF16'):
+            word = instruction(name, target=1 if name.startswith('Texs') else 2)
+            result = self.audit(word, stage='ps')
+            self.assertTrue(result['all_shader_shapes_corroborated'])
+            self.assertEqual(result['bindings'][0]['evidence'][0]['offset'], 0x58)
+            self.assertFalse(result['runtime_ready'])
+            self.assertFalse(result['resource_facts_verified'])
+            self.assertFalse(result['bindings'][0]['bound_resource_verified'])
+            self.assertFalse(result['bindings'][0]['sample_format_verified'])
+
+    def test_tex_dimensions_and_depth_compare_are_independent_of_msl(self):
+        for dimension, ty in ((0, 1), (1, 0x101), (2, 3), (3, 0x103), (4, 4), (6, 5), (7, 0x105)):
+            for shadow in (0, 1):
+                word = encoding('Tex') | (8 << 36) | (dimension << 28) | (shadow << 50)
+                self.assertTrue(self.audit(word, ty=ty | (shadow << 10))['all_shader_shapes_corroborated'])
+
+    def test_1d_buffer_unknown_bindless_and_conflicting_types_are_retained(self):
+        cases = [(instruction(target=0),), (instruction(target=15),),
+                 (instruction(), instruction(target=7)), (instruction(), 0),
+                 (instruction(), encoding('TexB'))]
+        for words in cases:
+            self.assertFalse(self.audit(*words)['all_shader_shapes_corroborated'])
+        self.assertFalse(self.audit(encoding('Tld') | (8 << 36))['all_shader_shapes_corroborated'])
+
+    def test_queries_alone_and_different_banks_or_handles_cannot_prove_shapes(self):
+        self.assertFalse(self.audit(encoding('Txq') | (8 << 36))['all_shader_shapes_corroborated'])
+        for args in (dict(bank=0), dict(handle=9), dict(array=2), dict(separate=True), dict(ty=4)):
+            self.assertFalse(self.audit(instruction(), **args)['all_shader_shapes_corroborated'])
+
+    def test_multisample_bit_does_not_get_misread_as_shadow(self):
+        word = encoding('Tld') | (8 << 36) | (2 << 28) | (1 << 50)
+        self.assertTrue(self.audit(word, ty=3 | 0x200)['all_shader_shapes_corroborated'])
+        self.assertFalse(self.audit(word, ty=3 | 0x400)['all_shader_shapes_corroborated'])
 
 
 if __name__ == '__main__': unittest.main()
