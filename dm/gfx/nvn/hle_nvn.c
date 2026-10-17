@@ -866,6 +866,11 @@ NVN(nvnCommandBufferSetCopyRowStride, void, NVNcommandBuffer *c, ptrdiff_t st) {
 NVN(nvnCommandBufferSetCopyImageStride, void, NVNcommandBuffer *c, ptrdiff_t st) { REC(c, OP_COPY_IMAGE_STRIDE, p_copy_stride)->stride = st; }
 NVN(nvnCommandBufferSetDepthClamp, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_DEPTH_CLAMP, sizeof(uint32_t)) = enabled != 0; }
 NVN(nvnCommandBufferSetRasterizerDiscard, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_RASTER_DISCARD, sizeof(uint32_t)) = enabled != 0; }
+// These state records support the checked P5R default path. Unsupported active
+// states fail at the affected rendering operation, after later overrides apply.
+NVN(nvnCommandBufferSetSampleMask, void, NVNcommandBuffer *c, int mask) { *(uint32_t *)rec(c, OP_SAMPLE_MASK, sizeof(uint32_t)) = (uint32_t)mask; }
+NVN(nvnCommandBufferSetRenderEnable, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_RENDER_ENABLE, sizeof(uint32_t)) = B(enabled) != 0; }
+NVN(nvnCommandBufferSetConservativeRasterEnable, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_CONSERVATIVE_RASTER, sizeof(uint32_t)) = B(enabled) != 0; }
 NVN(nvnCommandBufferSetDepthBounds, void, NVNcommandBuffer *c, uint32_t enabled, float minimum, float maximum) {
     *REC(c,OP_DEPTH_BOUNDS,p_depth_bounds)=(p_depth_bounds){enabled!=0,minimum,maximum};
 }

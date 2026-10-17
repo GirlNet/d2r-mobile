@@ -147,6 +147,9 @@ P(nvnSyncSetDebugLabel)(&sync,"synthetic");
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferDrawElements)(&command,NVN_DRAW_PRIMITIVE_TRIANGLES,NVN_INDEX_TYPE_UNSIGNED_SHORT,6,0x12340000);const p_draw_idx *di=(const p_draw_idx *)(record+8);EXPECT("indexed draw",1,((op_hdr *)record)->op==OP_DRAW_IDX && di->count==6 && di->instances==1 && di->base_vertex==0 && di->ibuf==0x12340000);}
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferDrawElementsBaseVertex)(&command,NVN_DRAW_PRIMITIVE_TRIANGLES,NVN_INDEX_TYPE_UNSIGNED_SHORT,6,0x12340000,-5);EXPECT("base vertex draw",-5,((const p_draw_idx *)(record+8))->base_vertex);}
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetViewport)(&command,2,3,640,480);const p_viewports *vp=(const p_viewports *)(record+8);EXPECT("single viewport",1,((op_hdr *)record)->op==OP_VIEWPORTS && vp->n==1 && vp->v[0][0]==2 && vp->v[0][2]==640);}
+{CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetSampleMask)(&command,-1);EXPECT("sample mask command",1,((op_hdr *)record)->op==OP_SAMPLE_MASK && *(const uint32_t *)(record+8)==UINT32_MAX);}
+{CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetRenderEnable)(&command,0x101);EXPECT("render enable command",1,((op_hdr *)record)->op==OP_RENDER_ENABLE && *(const uint32_t *)(record+8)==1);}
+{CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetConservativeRasterEnable)(&command,0x100);EXPECT("conservative default command",1,((op_hdr *)record)->op==OP_CONSERVATIVE_RASTER && *(const uint32_t *)(record+8)==0);}
 
     EXPECT("host builder storage class",0x100,P(nvnTextureBuilderGetStorageClass)(&tb));
     EXPECT("host texture storage class",0x100,P(nvnTextureGetStorageClass)(&tex));

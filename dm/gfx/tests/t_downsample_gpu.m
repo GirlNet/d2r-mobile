@@ -31,6 +31,11 @@ int main(void){@autoreleasepool{
         void *memory=NULL;CHECK(!posix_memalign(&memory,getpagesize(),65536));memset(memory,0,65536);pool_t pool={.mem=memory,.size=65536};mtl_pool_add(memory,65536);
         NVNcommandBuffer cb;CHECK(h_nvnCommandBufferInitialize(&cb,NULL));h_nvnCommandBufferAddCommandMemory(&cb,(const NVNmemoryPool *)&pool,0,65536);h_nvnCommandBufferBeginRecording(&cb);
         const NVNtexture *colours[]={(const NVNtexture *)&textures[0]};h_nvnCommandBufferSetRenderTargets(&cb,1,colours,NULL,NULL,NULL);
+        // Unsupported states may be overwritten before rendering. Replay must
+        // use the final state; only relevant low sample-mask bits affect MSAA.
+        h_nvnCommandBufferSetSampleMask(&cb,0);h_nvnCommandBufferSetSampleMask(&cb,mode==1?(int)((1u<<samples)-1):-1);
+        h_nvnCommandBufferSetConservativeRasterEnable(&cb,1);h_nvnCommandBufferSetConservativeRasterEnable(&cb,0);
+        h_nvnCommandBufferSetRenderEnable(&cb,0);h_nvnCommandBufferSetRenderEnable(&cb,1);
         const float value[]={.25,.5,.75,1};h_nvnCommandBufferClearColor(&cb,0,value,15);
         if(!clear) {
             NVNmultisampleState state;h_nvnMultisampleStateSetDefaults(&state);h_nvnMultisampleStateSetMultisampleEnable(&state,1);h_nvnMultisampleStateSetSamples(&state,samples);

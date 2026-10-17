@@ -2556,6 +2556,7 @@ static struct {
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp;
     float blend_color[4]; int64_t copy_stride, copy_image_stride; uint32_t depth_clamp,raster_discard;
+    uint32_t sample_mask,render_enable,conservative_raster;
     p_primitive_restart restart;
     p_depth_bounds depth_bounds;
 } S;
@@ -2592,6 +2593,7 @@ static void udc_note_draw(NvProg *pr) {
 }
 static void state_reset(void) {
     memset(&S, 0, sizeof S);
+    S.sample_mask=UINT32_MAX;S.render_enable=1;
     g_pso_dirty = g_dss_dirty = 1;
     for (int i = 0; i < 8; i++) S.blend[i] = (blend_st){i, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_EQUATION_ADD, NVN_BLEND_EQUATION_ADD};
     S.color = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; S.chmask.mask = 0xffffffffu;
@@ -2765,6 +2767,12 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
 // 管线键：当前状态 S + 通道格式（普通通道；合并通道另带 lmap / 特化函数，由 pso_get 填）
 // Pipeline key: current state S + pass formats (normal pass; a merged pass additionally carries lmap / specialized function, filled in by pso_get)
 static void pso_key_fill(pso_key *k, NvShader *vs, NvShader *fs, const uint32_t cfmt[8], uint32_t dfmt, uint32_t sfmt, uint32_t samples, int lmap) {
+    if(!dm_guest_d2r()) {
+        if(!S.render_enable)MDIE("P5R disabled rendering is not implemented");
+        unsigned count=samples?samples:1;uint32_t active=count>=32?UINT32_MAX:(UINT32_C(1)<<count)-1;
+        if(!S.raster_discard && ((S.sample_mask&active)!=active || S.conservative_raster))
+            MDIE("Unsupported P5R raster state: sample-mask=%#x active=%#x conservative=%u",S.sample_mask,active,S.conservative_raster);
+    }
     if(!dm_guest_d2r() && !S.raster_discard && nvn_multisample_unsupported(&S.ms,samples?samples:1))
         MDIE("Unsupported P5R multisample state: raster=%u attachment=%u alpha-to-coverage=%u dither=%u",
              S.ms.raster_samples,samples?samples:1,S.ms.a2c,S.ms.a2c_dither);
@@ -3462,6 +3470,9 @@ static int state_op(uint32_t op, const void *a) {
         case OP_COPY_IMAGE_STRIDE: S.copy_image_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_DEPTH_CLAMP: S.depth_clamp = *(const uint32_t *)a != 0; break;
         case OP_RASTER_DISCARD: {uint32_t value=*(const uint32_t *)a!=0;if(S.raster_discard!=value){S.raster_discard=value;g_pso_dirty=1;}break;}
+        case OP_SAMPLE_MASK: if(S.sample_mask!=*(const uint32_t *)a){S.sample_mask=*(const uint32_t *)a;g_pso_dirty=1;}break;
+        case OP_RENDER_ENABLE: if(S.render_enable!=*(const uint32_t *)a){S.render_enable=*(const uint32_t *)a;g_pso_dirty=1;}break;
+        case OP_CONSERVATIVE_RASTER: if(S.conservative_raster!=*(const uint32_t *)a){S.conservative_raster=*(const uint32_t *)a;g_pso_dirty=1;}break;
         case OP_DEPTH_BOUNDS: S.depth_bounds=*(const p_depth_bounds *)a;break;
         case OP_PRIMITIVE_RESTART: S.restart = *(const p_primitive_restart *)a; break;
         default: return 0;
@@ -5545,6 +5556,9 @@ void mtl_exec(const uint8_t *p) {
         if (trace) PD("o cmd=%p pass=%llu op=%u size=%u", p, g_stat_pass, (unsigned)h.op, (unsigned)h.size);
         if (g_hoist_n && hoist_take(p)) { if (g_fz.active && p == g_fz.rt2_op) { g_fz.phase = 2; g_rt_merged = 0; PD("F %llu 合并通道进入后一个通道的绘制", g_stat_pass); } p += h.size; continue; }   // 已提前执行的纯清除通道 / 已并入的后一个通道开头   // 进入后一个通道：前一个通道的同目标续用到此为止，后一个通道读前一个通道附件由 fz_p2_draw 证本像素，不再按续用规则切开 | A pure-clear render pass already executed early / the start of a later pass already merged in   // Entering the later pass: the same-target continuation of the earlier pass ends here; the later pass reading the earlier pass's attachment is proven to be same-pixel by fz_p2_draw, and is no longer split by the continuation rule
         const void *a = p + 8;
+        if(!dm_guest_d2r() && !S.render_enable &&
+           (h.op==OP_CLEAR_COLOR || h.op==OP_CLEAR_DS || h.op==OP_CLEAR_TEX || h.op==OP_DOWNSAMPLE))
+            MDIE("P5R rendering operation under disabled render state is not implemented");
         switch (h.op) {
             case OP_END: g_exec_cur = NULL;
                 if (g_hoist_n && !g_ret_n && !g_nrest) {
@@ -5611,7 +5625,7 @@ void mtl_exec(const uint8_t *p) {
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
-            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART: case OP_RASTER_DISCARD: case OP_DEPTH_BOUNDS:
+            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART: case OP_RASTER_DISCARD: case OP_DEPTH_BOUNDS: case OP_SAMPLE_MASK: case OP_RENDER_ENABLE: case OP_CONSERVATIVE_RASTER:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
             case OP_COPY_T2B: copy_t2b(a); break;

@@ -28,12 +28,9 @@ P(nvnCommandBufferSetTiledCacheTileSize)(&command,(int)257,(int)257);
 P(nvnCommandBufferSetPointSize)(&command,0.25f);
 P(nvnCommandBufferSetLineWidth)(&command,0.25f);
 P(nvnCommandBufferSetAlphaRef)(&command,0.25f);
-P(nvnCommandBufferSetSampleMask)(&command,(int)257);
-P(nvnCommandBufferSetConservativeRasterEnable)(&command,(uint32_t)257);
 P(nvnCommandBufferSetConservativeRasterDilate)(&command,0.25f);
 P(nvnCommandBufferSetSubpixelPrecisionBias)(&command,(int)257,(int)257);
 P(nvnCommandBufferReportValue)(&command,(uint32_t)257,(NVNbufferAddress)257);
-P(nvnCommandBufferSetRenderEnable)(&command,(uint32_t)257);
 P(nvnCommandBufferSetRenderEnableConditional)(&command,(NVNconditionalRenderMode)257,(NVNbufferAddress)257);
 P(nvnCommandBufferDiscardColor)(&command,(int)257);
 P(nvnCommandBufferDiscardDepthStencil)(&command);
@@ -85,12 +82,9 @@ const char *names[]={
     "nvnCommandBufferSetPointSize",
     "nvnCommandBufferSetLineWidth",
     "nvnCommandBufferSetAlphaRef",
-    "nvnCommandBufferSetSampleMask",
-    "nvnCommandBufferSetConservativeRasterEnable",
     "nvnCommandBufferSetConservativeRasterDilate",
     "nvnCommandBufferSetSubpixelPrecisionBias",
     "nvnCommandBufferReportValue",
-    "nvnCommandBufferSetRenderEnable",
     "nvnCommandBufferSetRenderEnableConditional",
     "nvnCommandBufferDiscardColor",
     "nvnCommandBufferDiscardDepthStencil",
