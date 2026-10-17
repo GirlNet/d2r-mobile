@@ -128,7 +128,23 @@ static void test_scale3d(void) {
     printf("  （实玩第二段回放：慢帧均匀散开换级 %d 次，挤在一起换级 %d 次；旧控制器真机上 12 次）\n", a, b);
     CHECK(a == 0 && b == 0, "动态比例：实玩第二段的慢帧序列（帧率 59+）不论散开还是挤在一起都不换级");
 }
+// 保持一个外层临界区，再并发进出内层；最终计数须精确恢复，通知队列不受影响。
+// Hold an outer section while threads enter/leave inner sections; restore the exact depth without changing notifications.
+static void *exit_sections(void *arg) {
+    (void)arg;
+    for (int i=0;i<1000;i++) { h_oe_EnterExit(); h_oe_LeaveExit(); }
+    return NULL;
+}
 int main(void) {
+    CHECK(g_exit_depth==0,"退出临界区初始深度为零");
+    h_oe_EnterExit(); h_oe_EnterExit();
+    CHECK(g_exit_depth==2,"退出临界区允许嵌套");
+    h_oe_LeaveExit(); CHECK(g_exit_depth==1,"内层退出保留外层");
+    pthread_t exits[8]; unsigned started=0; int exit_ok=1;
+    while (started<8 && !pthread_create(&exits[started],NULL,exit_sections,NULL)) started++;
+    for (unsigned i=0;i<started;i++) exit_ok &= !pthread_join(exits[i],NULL);
+    CHECK(started==8 && exit_ok && g_exit_depth==1,"并发临界区进出保留精确外层深度");
+    h_oe_LeaveExit(); CHECK(g_exit_depth==0 && empty(),"最终退出清零且不制造系统通知");
     test_scale3d();
     unsetenv("DM_OE_SCRIPT"); reset();
     CHECK(empty(), "初始空队列：返回false且不改输出");

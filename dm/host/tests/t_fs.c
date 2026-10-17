@@ -92,6 +92,39 @@ int main(void) {
         CHECK(dm_overlay_file("none", p, sizeof p) == 0 && !p[0], "哪层都没有：返回 0、输出清空");
         setenv("DM_ROMFS_OVERLAY", overlay, 1); snprintf(want, sizeof want, "%s/mark", overlay); CHECK(dm_overlay_file("mark", p, sizeof p) == 1 && !strcmp(p, want), "单层（新机型）照旧");
         unsetenv("DM_ROMFS_OVERLAY"); CHECK(dm_overlay_file("mark", p, sizeof p) == 0, "没设覆盖层：返回 0"); setenv("DM_ROMFS_OVERLAY", overlay, 1); }
+    // 可选重载通过注册表按真实 ABI 调用；验证偏移、短读、EOF、错误及选项拒绝。
+    // Call optional overloads through their registrations with the actual ABI; check offsets, short reads, EOF, errors and option rejection.
+    {
+        Result (*read_opt)(size_t *, uint64_t, int64_t, void *, size_t, const uint32_t *) = hle_force_h_fs_ReadFileOption.fn;
+        Result (*exact_opt)(uint64_t, int64_t, void *, size_t, const uint32_t *) = hle_force_h_fs_ReadFileExactOption.fn;
+        Result (*exact)(uint64_t, int64_t, void *, size_t) = hle_force_h_fs_ReadFileExact.fn;
+        uint32_t opt = 0, bad_opt = 1; size_t n = 99; char b[16]; uint64_t h;
+        CHECK(!strcmp(hle_force_h_fs_ReadFileOption.name, "_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE"), "带计数与选项的符号名 / counted option symbol");
+        CHECK(!strcmp(hle_force_h_fs_ReadFileExactOption.name, "_ZN2nn2fs8ReadFileENS0_10FileHandleElPvmRKNS0_10ReadOptionE"), "完整读取带选项的符号名 / exact option symbol");
+        CHECK(!strcmp(hle_force_h_fs_ReadFileExact.name, "_ZN2nn2fs8ReadFileENS0_10FileHandleElPvm"), "完整读取默认选项的符号名 / exact default symbol");
+        CHECK(h_fs_OpenFile(&h, "rom:/data/base", MODE_READ) == RES_OK, "打开实际宿主句柄 / open real host handle");
+        memset(b, 0x55, sizeof b);
+        CHECK(read_opt(&n,h,5,b,4,&opt)==RES_OK && n==4 && !memcmp(b,"base",4) && b[4]==0x55, "计数重载按偏移读取 / counted offset read");
+        CHECK(lseek((int)h,0,SEEK_CUR)==0, "pread 不移动文件位置 / preserve file position");
+        memset(b,0x55,sizeof b);
+        CHECK(read_opt(&n,h,7,b,8,&opt)==RES_OK && n==2 && !memcmp(b,"se",2) && b[2]==0x55, "计数短读保留尾部 / counted short read");
+        CHECK(read_opt(&n,h,9,b,1,&opt)==RES_OK && n==0, "计数 EOF 成功返回零 / counted EOF");
+        CHECK(read_opt(&n,h,100,b,1,&opt)==RES_OK && n==0, "越过 EOF 的计数读取 / counted read beyond EOF");
+        CHECK(exact_opt(h,5,b,4,&opt)==RES_OK && !memcmp(b,"base",4), "完整读取带选项 / exact option read");
+        CHECK(exact(h,0,b,4)==RES_OK && !memcmp(b,"only",4), "完整读取默认选项 / exact default read");
+        CHECK(exact_opt(h,7,b,8,&opt)==0x177a02u, "完整读取短读的 SDK 错误码 / SDK short read result");
+        CHECK(exact(h,9,b,1)==0x177a02u, "完整读取 EOF 拒绝 / exact EOF rejected");
+        CHECK(exact(h,9,NULL,0)==RES_OK, "完整读取零长度 / zero length exact read");
+        n=99; memset(b,0x55,sizeof b);
+        CHECK(read_opt(&n,h,0,b,1,&bad_opt)==RES_FAIL && n==99 && b[0]==0x55, "未验证选项不读写输出 / reject unverified option without output changes");
+        CHECK(read_opt(&n,h,0,b,1,NULL)==RES_FAIL && n==99, "拒绝空选项 / reject null option");
+        CHECK(read_opt(&n,h,-1,b,1,&opt)==0x177a02u && n==99, "拒绝负偏移 / reject negative offset");
+        CHECK(read_opt(&n,h,INT64_MAX,b,1,&opt)==0x177a02u && n==99, "拒绝偏移溢出 / reject offset overflow");
+        CHECK(read_opt(&n,h,0,NULL,1,&opt)==RES_FAIL && n==99, "拒绝空缓冲 / reject null buffer");
+        CHECK(read_opt(NULL,h,0,b,1,&opt)==RES_FAIL, "拒绝空计数指针 / reject null count");
+        CHECK(read_opt(&n,UINT64_MAX,0,b,1,&opt)!=RES_OK && n==99, "无效句柄保留输出 / invalid handle preserves count");
+        h_fs_CloseFile(h);
+    }
     g_nmnt = 0;
     snprintf(save, sizeof save, "%s/save", root); snprintf(work, sizeof work, "%s.work", save);
     mkdir(save, 0755); snprintf(p, sizeof p, "%s/a", save); put(p, "old");

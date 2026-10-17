@@ -27,6 +27,7 @@
 #   · __LINKEDIT goes last and stays at the end of the file: the signing tool appends the signature after it.
 # Usage: guest_dylib.py <build output directory> <output directory> <module name...>     writes <output directory>/Guest.framework/{Guest,Info.plist}
 import hashlib, os, struct, sys
+from pathlib import Path
 
 PG = 0x4000
 MIN_IOS = 26 << 16   # 与工程的最低系统版本一致（ios/project.yml） | matches the project's minimum system version (ios/project.yml)
@@ -54,9 +55,9 @@ def dylib_cmd(cmd, name):
 def build(out, names):
     text, wsegs = [], []
     for n in names:
-        hdr = dict(l[2:].split() for l in open(os.path.join(out, n + '.fixups.tsv')) if l.startswith('# '))
+        hdr = dict(l[2:].split() for l in Path(out, n + '.fixups.tsv').read_text(encoding='utf-8').splitlines() if l.startswith('# '))
         te, po = int(hdr['TEXT_END'], 16), int(hdr['PATCH_OFF'], 16)
-        img = open(os.path.join(out, n + '.patched.bin'), 'rb').read(); sz = len(img); a, end = r16(te), r16(sz)
+        img = Path(out, n + '.patched.bin').read_bytes(); sz = len(img); a, end = r16(te), r16(sz)
         assert po % PG == 0 and a <= po <= end, (n, hex(te), hex(po), hex(sz))
         cut = lambda lo, hi: img[lo:min(hi, sz)].ljust(hi - lo, b'\0')
         text += [('__dm%sx0' % n, cut(0, a)), ('__dm%sx1' % n, cut(po, end))]

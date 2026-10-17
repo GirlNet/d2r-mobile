@@ -1,6 +1,14 @@
 // Switch 原生宿主公共头（多模块）。
 // Common header of the native Switch host (multi-module).
 #pragma once
+// 单独链接服务层的旧测试保留 D2R 默认；完整宿主由 guest_bootstrap.c 选择并锁定启动域。
+// Old tests linking services alone keep the D2R default; the full host selects and locks its profile in guest_bootstrap.c.
+extern int dm_guest_profile_p5r(void) __attribute__((weak_import));
+#ifdef DM_P5R_ONLY
+static inline int dm_guest_d2r(void) { return 0; }
+#else
+static inline int dm_guest_d2r(void) { return !dm_guest_profile_p5r || !dm_guest_profile_p5r(); }
+#endif
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>

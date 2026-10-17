@@ -19,6 +19,7 @@
 //   no settings file = first install, use the iOS system language (dm_sys_lang). Our text: Chinese for Simplified and Traditional Chinese, English for
 //   everything else.
 #include "dm_i18n.h"
+#include "dm.h"
 #include "dm_i18n_tab.h"
 #include <TargetConditionals.h>
 #include <stdio.h>
@@ -86,7 +87,7 @@ const char *dm_ui(const char *key) {
 }
 
 const char *dm_str(uint8_t *b, const char *key) {
-    if (!b) return dm_ui(key);
+    if (!b || !dm_guest_d2r()) return dm_ui(key);
     struct { const char *k; uint64_t n; } s = { key, strlen(key) };
     const char *r = ((const char *(*)(void *))(b + 0x7f5630))(&s);
     return r && *r && strcmp(r, key) ? r : dm_ui(key);   // 覆盖层里没有这个键（不该发生）就退回编译期表 | if the overlay lacks this key (should not happen), fall back to the compile-time table

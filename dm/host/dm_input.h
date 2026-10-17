@@ -19,6 +19,8 @@ uint64_t dm_input_samples(void);   // 游戏已取手柄的累计次数 | Cumula
 // Physical / virtual controller (iOS GameController, dm_gamepad.m): stored separately from touch input; when the game reads the controller, buttons are
 // ORed bitwise and a stick uses the controller's value if it is non-zero. All 0 when no controller is connected, so values are bit-for-bit the same as before
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
+// Focus loss: release both input sources and discard pending press edges.
+void dm_input_release_all(void);
 
 // 可选诊断DM_HID_RECEIPT_LOG=<可写JSONL路径>：真实GetNpadState返回收样。
 // 字段read_start_ns/time_ns同宿主now_ns()；前端publish窗口必须同helper，读取区间跨发布不得强配。

@@ -3,13 +3,51 @@
 # Unit tests: make compiles and runs them (seconds)
 # Source files are included by wildcard, same convention as GFX in the host Makefile (hle_nvn.c is #included directly by t_nvn.c, so it is excluded); adding new source files needs no change here
 CFLAGS=-O1 -g -Wall -Wno-unused-function -I../nvn/include
-GFX=$(filter-out ../nvn/hle_nvn.c,$(sort $(wildcard ../nvn/*.c ../nvn/*.m ../nvn/*.S ../tex/*.c ../tex/*.m)))
-GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/include/*.h ../tex/*.h)
+GFX=$(filter-out ../nvn/hle_nvn.c,$(sort $(wildcard ../nvn/*.c ../nvn/*.m ../nvn/*.S ../tex/*.c ../tex/*.m))) ../../host/guest_bootstrap.c
+GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/include/*.h ../tex/*.h) ../../host/guest_bootstrap.h t_queue_sync.inc t_copy_image_stride.inc t_clear_buffer.inc t_clear_texture_int.inc
 FW=-framework Metal -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
 # 宿主 crash.c 一并链入：写保护单测走生产同一套缺页钩子
 # Host crash.c is linked in as well: the write-protect unit tests go through the same page-fault hook as production
-t_nvn: t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
+t_nvn: t_texture_linear.inc t_texture_state.inc t_sampler_state.inc t_startup_batch.inc ../nvn/nvn_startup_batch.inc t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_nvn.c ../../host/crash.c $(GFX) $(FW)
+# 实际 Metal 3 后端初始化诊断：不提交客体指令，使用生产报告实现。
+# Probe actual Metal 3 backend setup without guest submission, using the production report implementation.
+t_nvn_gpu_setup: t_texture_linear.inc t_texture_state.inc t_sampler_state.inc t_probe_command_capture.inc t_startup_batch.inc ../nvn/nvn_startup_batch.inc t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c ../../ios/p5r/boot_probe.m ../../host/boot_probe.h $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_P5R_ONLY=1 -DDM_NVN_M3=1 -I../../host -fblocks -fobjc-arc -o $@ t_nvn.c ../../host/crash.c ../../ios/p5r/boot_probe.m $(GFX) $(FW)
+
+t_nvn_sampler_gpu: t_nvn_sampler_gpu.m ../nvn/nvn_sampler_mtl.h ../nvn/nvn_obj.h
+	clang $(CFLAGS) -fobjc-arc -o $@ t_nvn_sampler_gpu.m -framework Metal -framework Foundation
+
+t_texture_views_gpu: t_texture_views_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_texture_views_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
+
+t_shader_math_gpu: t_shader_math_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_shader_math_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
+
+t_depth_clamp_gpu: t_depth_clamp_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_depth_clamp_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
+t_depth_bounds_gpu: t_depth_bounds_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_depth_bounds_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
+t_primitive_restart_gpu: t_primitive_restart_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_primitive_restart_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
+t_vertex_fetch_gpu: t_vertex_fetch_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_vertex_fetch_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
+t_fragment_export_gpu: t_fragment_export_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_fragment_export_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
+t_raster_discard_gpu: t_raster_discard_gpu.m ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_raster_discard_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
+t_downsample_gpu: t_downsample_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_downsample_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
+%_m4: %.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=0 -mmacosx-version-min=26.0 -fobjc-arc -o $@ $< ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
 t_dirty_slots: t_dirty_slots.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
 	clang $(CFLAGS) -o $@ t_dirty_slots.c ../../host/crash.c ../nvn/nvn_dirty.c
 t_dirty_race: t_dirty_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h

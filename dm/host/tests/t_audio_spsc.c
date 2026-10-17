@@ -115,6 +115,7 @@ int main(void) {
     pthread_create(&c, NULL, consumer, &t);
     pthread_create(&r, NULL, release_reader, &t);
     pthread_join(p, NULL); pthread_join(c, NULL); pthread_join(r, NULL);
+    if (h_au_Played(out) != t.total_bytes / 4) atomic_store(&t.failed, 1);
     atomic_store(&t.a->state, STATE_STOPPED);
     h_au_Close(out);
     int sig = atomic_load(&g_sig), after = atomic_load(&g_after_last), released = atomic_load(&t.released), failed = atomic_load(&t.failed);

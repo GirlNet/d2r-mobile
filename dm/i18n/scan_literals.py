@@ -13,7 +13,7 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 CJK = re.compile(r'[　-〿一-鿿＀-￯]')
 # 最内层调用是这些的字面量不上屏（日志、报错、断言、调试输出、控件守卫的日志标签）
 # Literals whose innermost call is one of these never reach the screen (logs, errors, assertions, debug output, log tags of widget guards)
-SINK = {'LOG', 'LOGV', 'plog', 'NSLog', 'fprintf', 'printf', 'die', 'HLE_FORCE', 'HLE_WEAK', 'HLE_STUB', 'dprintf', 'dm_prof_mark', 'perror', 'puts',
+SINK = {'LOG', 'LOGV', 'plog', 'NSLog', 'fprintf', 'printf', 'die', 'HLE_FORCE', 'HLE_FORCE_OPTIONAL', 'HLE_WEAK', 'HLE_STUB', 'dprintf', 'dm_prof_mark', 'perror', 'puts',
         'SystemExit', 'print', 'Exception', 'RuntimeError', 'ValueError', 'AssertionError', 'warn', 'log', 'dm_log', 'boot_log', 'SMOKE', '_Static_assert', 'static_assert'}
 C_FILES = ['host/*.c', 'host/*.m', 'ios/Sources/*.m', 'ios/Sources/*.c']
 PY_FILES = ['ios/tools/touch_layout.py', 'ios/tools/wide_stash.py', 'ios/tools/pouch_layout.py', 'ios/tools/gen_romfs_overlay.py', 'ios/tools/drop_light.py',
@@ -43,7 +43,23 @@ def strip_py(s):
     lits = []; lines = s.splitlines(True); off = [0]
     for l in lines: off.append(off[-1] + len(l))
     prev = None
+    fstart = getattr(tokenize, 'FSTRING_START', -1)
+    fend = getattr(tokenize, 'FSTRING_END', -1)
+    fdepth, fpos = 0, None
     for t in tokenize.generate_tokens(io.StringIO(s).readline):
+        # 新版 Python 将 f-string 拆成多种 token；还原最外层源码片段，保持旧版扫描范围与位置。
+        # Newer Python splits f-strings into multiple token types; restore the outer source span to preserve old scan coverage and positions.
+        if t.type == fstart:
+            if not fdepth: fpos = off[t.start[0] - 1] + t.start[1]
+            fdepth += 1
+            continue
+        if t.type == fend and fdepth:
+            fdepth -= 1
+            if not fdepth:
+                end = off[t.end[0] - 1] + t.end[1]
+                lits.append((fpos, s[fpos:end])); prev = tokenize.STRING
+            continue
+        if fdepth: continue
         if t.type == tokenize.STRING:
             doc = prev in (None, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.NL) and t.string.lstrip('rbuRBUfF')[:3] in ('"""', "'''")
             if not doc: lits.append((off[t.start[0] - 1] + t.start[1], t.string))
@@ -70,7 +86,7 @@ def hits():
             s = open(f, encoding='utf-8', errors='replace').read(); text, lits = (strip_c if kind == 'c' else strip_py)(s)
             for pos, lit in lits:
                 if not CJK.search(lit) or caller(text, pos) in SINK: continue
-                out.append((os.path.relpath(f, ROOT), s.count('\n', 0, pos) + 1, lit, caller(text, pos)))
+                out.append((os.path.relpath(f, ROOT).replace(os.sep, '/'), s.count('\n', 0, pos) + 1, lit, caller(text, pos)))
     return out
 
 def main():

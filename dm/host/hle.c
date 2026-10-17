@@ -1,6 +1,7 @@
 // 导入解析（已实现接宿主、其余接记名桩）与宿主门分派。
 // Import resolution (implemented ones go to the host, the rest go to named stubs) and host gate dispatch.
 #include "dm.h"
+#include "boot_probe.h"
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include <dlfcn.h>
@@ -17,6 +18,8 @@ static uint8_t g_stub_seen[MAX_STUB];
 extern uint64_t unimpl_stubs[MAX_STUB];   // 每桩 8 字节 | 8 bytes per stub
 
 uint64_t unimpl_c(unsigned idx, uint64_t *regs) {
+    dm_boot_probe_block("unresolved_import", g_stub_name[idx]);
+    if (!dm_guest_d2r()) die("P5R unresolved import: %s", g_stub_name[idx]);
     if (!g_stub_seen[idx]++)
         LOG("UNIMPL %s (x0=%#llx x1=%#llx x2=%#llx)", g_stub_name[idx], regs[0], regs[1], regs[2]);
     return 0;
@@ -26,7 +29,7 @@ uint64_t unimpl_c(unsigned idx, uint64_t *regs) {
 // Per module, one cache of symbol number → resolved address
 static uint64_t g_cache[MAX_MOD][8192];
 
-uint64_t resolve_import(module_t *m, const char *name) {
+uint64_t resolve_import(module_t *m, const char *name, int weak) {
     static const hle_ent *sec; static unsigned long secsz;
     if (!sec) sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &secsz);
     for (unsigned i = 0; i < secsz / sizeof(hle_ent); i++)
@@ -34,6 +37,9 @@ uint64_t resolve_import(module_t *m, const char *name) {
             if (g_flag.imports) { Dl_info di; dladdr(sec[i].fn, &di); LOG("import %s -> %s", name, di.dli_sname); }
             void *hlecount_wrap(const char *, const char *, void *); return (uint64_t)hlecount_wrap("HLE", name, sec[i].fn);   // DM_HLECOUNT 时为计数桩（含 libc 直通表） | With DM_HLECOUNT it is a counting stub (including the libc passthrough table)
         }
+    // ELF gABI：缺定义的弱符号取零；不能创建非零桩，让 SDK 误以为可选回调存在。
+    // ELF gABI: undefined weak symbols resolve to zero; a nonzero stub would falsely advertise an optional SDK callback.
+    if (weak) return 0;
     // 已为同名分过桩就复用
     // Reuse the stub if one was already allocated for the same name
     void *hlecount_wrap(const char *, const char *, void *);

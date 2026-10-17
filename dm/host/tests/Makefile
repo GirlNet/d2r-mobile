@@ -18,6 +18,15 @@ run: \
 	$(B)/t_doorspot \
 	$(B)/t_fs \
 	$(B)/t_fs_case \
+	$(B)/t_guest_bootstrap \
+	$(B)/t_elf_imports \
+	$(B)/t_stdalloc_forward \
+	$(B)/t_cache \
+	$(B)/t_offline_services \
+	$(B)/t_shader_control \
+	$(B)/t_nvn_handles \
+	$(B)/t_nvn_buffers \
+	$(B)/t_nvn_combined_refl \
 	$(B)/t_hid_receipt \
 	$(B)/t_hid_script \
 	$(B)/t_hud_dead \
@@ -60,6 +69,16 @@ run: \
 	DM_ROMFS="$(DM_ROOT)/data/switch/3.3.94012/Update/RomFS" $(B)/t_romfs_validate
 	$(B)/t_audio
 	$(B)/t_audio_spsc
+	$(B)/t_guest_bootstrap d2r
+	$(B)/t_guest_bootstrap p5r
+	$(B)/t_elf_imports
+	$(B)/t_stdalloc_forward
+	$(B)/t_cache
+	$(B)/t_offline_services
+	$(B)/t_shader_control
+	$(B)/t_nvn_handles
+	$(B)/t_nvn_buffers
+	$(B)/t_nvn_combined_refl
 	$(B)/t_swkbd
 	$(B)/t_altstack
 	$(B)/t_movie
@@ -79,6 +98,31 @@ run: \
 	$(PY) oe_notify.py $(B)/main.orig.bin
 $(B)/t_i18n: t_i18n.c ../dm_i18n.c ../dm_i18n.h ../dm_i18n_tab.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_i18n.c ../dm_i18n.c
+
+$(B)/t_guest_bootstrap: t_guest_bootstrap.c ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
+	clang -std=c11 -Wall -Wextra -Werror -o $@ t_guest_bootstrap.c ../guest_bootstrap.c
+$(B)/t_elf_imports: t_elf_imports.c ../loader.c ../hle.c ../dm.h ../hle.h ../boot_probe.h | $(B)
+	clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I .. -o $@ t_elf_imports.c ../hle.c
+$(B)/t_stdalloc_forward: t_stdalloc_forward.c ../hle_svc.c ../dm.h ../hle.h ../boot_probe.h | $(B)
+	clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I .. -o $@ t_stdalloc_forward.c
+$(B)/t_cache: t_cache.c ../hle_cache.c ../dm.h ../hle.h ../boot_probe.h | $(B)
+	clang -DDM_P5R_ONLY=1 -Wall -Wextra -Werror -I .. -o $@ t_cache.c
+$(B)/t_offline_services: t_offline_services.c ../hle_net.c ../hle_account.c ../hle_misc.c ../dm.h ../hle.h | $(B)
+	clang -DDM_P5R_ONLY=1 -Wall -Wextra -Werror -I .. -o $@ t_offline_services.c
+$(B)/t_vi: t_vi.c ../hle_vi.c ../dm.h ../hle.h | $(B)
+	clang -DDM_P5R_ONLY=1 -Wall -Wextra -Werror -I .. -o $@ t_vi.c
+$(B)/t_shader_control: t_shader_control.c ../../gfx/nvn/nvn_shader_control.h | $(B)
+	clang -std=c11 -Wall -Wextra -Werror -o $@ t_shader_control.c
+$(B)/t_nvn_handles: t_nvn_handles.c ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
+	clang -std=c11 -Wall -Wextra -Werror -o $@ t_nvn_handles.c
+$(B)/t_nvn_buffers: t_nvn_buffers.c ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
+	clang -std=c11 -Wall -Wextra -Werror -o $@ t_nvn_buffers.c
+$(B)/t_nvn_compute_gpu: t_nvn_compute_gpu.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
+	clang -mmacosx-version-min=26.0 -O1 -g -Wall -fobjc-arc -o $@ t_nvn_compute_gpu.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
+$(B)/t_nvn_texture_gpu: t_nvn_texture_gpu.m ../../gfx/nvn/nvn_texture_selftest.m ../../gfx/nvn/nvn_texture_selftest.h ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_buffer_bindings.h | $(B)
+	clang -mmacosx-version-min=26.0 -O1 -g -Wall -Werror -fobjc-arc -fblocks -o $@ t_nvn_texture_gpu.m ../../gfx/nvn/nvn_texture_selftest.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
+$(B)/t_nvn_combined_refl: t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_buffer_bindings.h ../../gfx/nvn/nvn_shader_control.h | $(B)
+	clang -O1 -g -Wall -fobjc-arc -o $@ t_nvn_combined_refl.m ../../gfx/nvn/nvn_refl.m -framework Metal -framework Foundation
 $(B)/t_hud_dead: t_hud_dead.c ../dm_hud.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_hud_dead.c
 $(B)/t_textbox: t_textbox.c ../dm_textbox_core.c ../dm_textbox_core.h | $(B)
@@ -101,16 +145,18 @@ $(B)/t_cloudsync: t_cloudsync.c ../dm_cloudsync.c ../dm.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_cloudsync.c ../dm_cloudsync.c
 $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_touch.c ../hle_touch.c
-$(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../hle.h ../dm.h ../dm_i18n.c | $(B)
-	clang -O1 -Wno-unused-function -I.. -o $@ t_fs.c t_fs_stub.c ../dm_i18n.c
+$(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../hle.h ../dm.h ../boot_probe.h ../guest_bootstrap.c ../guest_bootstrap.h ../dm_i18n.c | $(B)
+	clang -O1 -Wno-unused-function -I.. -o $@ t_fs.c t_fs_stub.c ../guest_bootstrap.c ../dm_i18n.c
 $(B)/t_audio: t_audio.c ../hle_audio.c ../hle.h ../dm.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_audio.c -framework AudioToolbox
 $(B)/t_audio_spsc: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_audio_spsc.c -framework AudioToolbox
 $(B)/t_audio_spsc_tsan: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h | $(B)
 	clang -O1 -g -O1 -fsanitize=thread -Wno-unused-function -I.. -o $@ t_audio_spsc.c -framework AudioToolbox
-$(B)/t_swkbd: t_swkbd.c ../hle_swkbd.c ../hle.h ../dm.h | $(B)
-	clang -O1 -Wno-unused-function -I.. -o $@ t_swkbd.c ../hle_swkbd.c
+$(B)/t_swkbd: t_swkbd.c ../hle_swkbd.c ../hle.h ../dm.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
+	clang -O1 -Wno-unused-function -I.. -o $@ t_swkbd.c ../hle_swkbd.c ../guest_bootstrap.c
+$(B)/t_swkbd_p5r: t_swkbd.c ../hle_swkbd.c ../hle.h ../dm.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
+	clang -DDM_P5R_ONLY=1 -O1 -Wno-unused-function -I.. -o $@ t_swkbd.c ../hle_swkbd.c ../guest_bootstrap.c
 $(B)/t_movie: t_movie.c ../hle_movie.c ../hle.h ../dm.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_movie.c ../hle_movie.c
 $(B)/t_altstack: t_altstack.c t_altstack_stub.c ../crash.c ../dm.h | $(B)
@@ -127,19 +173,19 @@ $(B)/t_condvar: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h | $(B)
 $(B)/t_condvar_old: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h | $(B)
 	clang -O1 -Wno-unused-function -DDM_TEST_HOOKS -DDM_TEST_CV_OLD_ORDER -I.. -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c
 
-$(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../hle.h ../dm.h ../dm_i18n.c | $(B)
-	clang -O1 -Wno-unused-function -I.. -o $@ t_fs_case.c ../dm_i18n.c
+$(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../hle.h ../dm.h ../boot_probe.h ../guest_bootstrap.c ../guest_bootstrap.h ../dm_i18n.c | $(B)
+	clang -O1 -Wno-unused-function -I.. -o $@ t_fs_case.c ../guest_bootstrap.c ../dm_i18n.c
 $(B)/t_romfs_validate: t_romfs_validate.c ../romfs_validate.c ../romfs_validate.h ../dm_i18n.c ../dm_i18n_tab.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_romfs_validate.c ../romfs_validate.c ../dm_i18n.c
 
-$(B)/t_hid_script: t_hid_script.c t_touch_tick_stub.c ../hle_hid.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../hle.h ../dm.h ../dm_input.h ../front.h | $(B)
-	clang -O1 -Wno-unused-function -I.. -I../../ios/Sources -o $@ t_hid_script.c t_touch_tick_stub.c ../dm_cursor.c ../dm_hud.c ../touch_mac.c ../../ios/Sources/dm_touch_controls.c -lm
+$(B)/t_hid_script: t_hid_script.c t_touch_tick_stub.c ../hle_hid.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../hle.h ../dm.h ../dm_input.h ../front.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
+	clang -O1 -Wno-unused-function -I.. -I../../ios/Sources -o $@ t_hid_script.c t_touch_tick_stub.c ../dm_cursor.c ../dm_hud.c ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../guest_bootstrap.c -lm
 
-$(B)/t_oe: t_oe.c ../hle_oe.c ../hle.h ../dm.h | $(B)
-	clang -O1 -Wno-unused-function -I.. -o $@ t_oe.c
+$(B)/t_oe: t_oe.c ../hle_oe.c ../hle.h ../dm.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
+	clang -O1 -Wno-unused-function -I.. -o $@ t_oe.c ../guest_bootstrap.c
 
-$(B)/t_hid_receipt: t_hid_receipt.c t_touch_tick_stub.c ../hle_hid.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../hle.h ../dm.h ../dm_input.h ../front.h | $(B)
-	clang -O1 -Wno-unused-function -I.. -I../../ios/Sources -o $@ t_hid_receipt.c t_touch_tick_stub.c ../dm_cursor.c ../dm_hud.c ../touch_mac.c ../../ios/Sources/dm_touch_controls.c -lm
+$(B)/t_hid_receipt: t_hid_receipt.c t_touch_tick_stub.c ../hle_hid.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../hle.h ../dm.h ../dm_input.h ../front.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
+	clang -O1 -Wno-unused-function -I.. -I../../ios/Sources -o $@ t_hid_receipt.c t_touch_tick_stub.c ../dm_cursor.c ../dm_hud.c ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../guest_bootstrap.c -lm
 $(B)/t_touch_mac: t_touch_mac.c ../touch_mac.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../../ios/Sources/dm_touch_controls.c ../../ios/Sources/dm_touch_controls.h ../../host/dm_input.h | $(B)   # 测试 #include 了 touch_mac.c 与 dm_touch_controls.c，须列为依赖（漏列致改源不重编） | the test #includes touch_mac.c and dm_touch_controls.c, which must be listed as dependencies (omitting them means source changes do not trigger a rebuild)
 	clang -std=c11 -Wall -Wextra -Werror -I.. -I../../ios/Sources -o $@ t_touch_mac.c ../dm_cursor.c ../dm_hud.c -lm
 $(B)/t_target_rank: t_target_rank.c ../hle_target.c ../dm.h | $(B)

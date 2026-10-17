@@ -33,6 +33,17 @@ static class SwshXlate
     sealed class Accessor : IGpuAccessor
     {
         readonly byte[] _code; readonly JsonObject _job; int _binding = 1; public readonly List<string> Notes = new();
+        // 记录实际调用的查询及回答来源；作业输入不等于经独立验证的游戏事实。
+        // Record queries actually called and their answer sources; job inputs are not independently verified game facts.
+        public readonly JsonArray Queries = new();
+        T Answer<T>(string query, T value, string source, int? handle = null, int? bank = null)
+        {
+            var row = new JsonObject { ["query"] = query, ["value"] = JsonSerializer.SerializeToNode(value), ["source"] = source };
+            if (handle.HasValue) row["handle"] = handle.Value;
+            if (bank.HasValue) row["cbuf_slot"] = bank.Value;
+            Queries.Add(row);
+            return value;
+        }
         readonly byte[] _c1;
         public Accessor(byte[] code, JsonObject job) { _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); }
         // c1 常数段（着色器包控制段前 0x100 字节）：间接跳转 BRX 的跳转表在这里（LDC c[1]）；不提供时翻译器解不出跳转目标、控制流出错（粒子着色器死循环）
@@ -45,9 +56,9 @@ static class SwshXlate
         public SetBindingPair CreateStorageBufferBinding(int index) => new(0, _binding++);
         public SetBindingPair CreateTextureBinding(int count, bool isBuffer) { int b = _binding; _binding += count; return new(0, b); }
         public ReadOnlySpan<ulong> GetCode(ulong address, int minimumSize) => MemoryMarshal.Cast<byte, ulong>(new ReadOnlySpan<byte>(_code)[(int)address..]);
-        public int QuerySamplerArrayLengthFromPool() => 32;
-        public int QueryTextureArrayLengthFromBuffer(int slot) => 32;
-        public int QueryTextureArrayLengthFromPool() => 32;
+        public int QuerySamplerArrayLengthFromPool() => Answer("sampler_array_length_pool", 32, "fixed_default");
+        public int QueryTextureArrayLengthFromBuffer(int slot) => Answer("texture_array_length_buffer", 32, "fixed_default", bank: slot);
+        public int QueryTextureArrayLengthFromPool() => Answer("texture_array_length_pool", 32, "fixed_default");
 
         string Get(string table, int slot) => _job[table] is JsonObject t && t[slot.ToString()] is JsonNode n ? (n is JsonObject o ? (string)o["type"] : (string)n) : null;
         int TexSlot(int handle, int cbufSlot)
@@ -59,32 +70,58 @@ static class SwshXlate
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1)
         {
             int slot = TexSlot(handle, cbufSlot);
-            string t = slot >= 0 ? Get("tex", slot) ?? Get("img", slot) : null;
-            if (t == null) { Notes.Add($"贴图句柄 {handle:X}（常量段 {cbufSlot}，槽 {slot}）无 PC 类型，按 2D"); return SamplerType.Texture2D; }
-            return t switch
+            string tex = slot >= 0 ? Get("tex", slot) : null;
+            string t = tex ?? (slot >= 0 ? Get("img", slot) : null);
+            if (t == null)
+            {
+                Notes.Add($"贴图句柄 {handle:X}（常量段 {cbufSlot}，槽 {slot}）无 PC 类型，按 2D");
+                Answer("sampler_type", SamplerType.Texture2D.ToString(), "missing_default", handle, cbufSlot);
+                return SamplerType.Texture2D;
+            }
+            SamplerType? type = t switch
             {
                 "1d" => SamplerType.Texture1D, "1darray" => SamplerType.Texture1D | SamplerType.Array,
                 "buffer" => SamplerType.TextureBuffer, "2d" => SamplerType.Texture2D, "2darray" => SamplerType.Texture2D | SamplerType.Array,
                 "2dms" => SamplerType.Texture2D | SamplerType.Multisample, "2dmsarray" => SamplerType.Texture2D | SamplerType.Multisample | SamplerType.Array,
                 "3d" => SamplerType.Texture3D, "cube" => SamplerType.TextureCube, "cubearray" => SamplerType.TextureCube | SamplerType.Array,
-                _ => SamplerType.Texture2D,
+                _ => null,
             };
+            var result = type ?? SamplerType.Texture2D;
+            Answer("sampler_type", result.ToString(), type.HasValue ? (tex != null ? "job_tex" : "job_img") : "invalid_default", handle, cbufSlot);
+            return result;
         }
         public TextureFormat QueryTextureFormat(int handle, int cbufSlot = -1)
         {
             int slot = TexSlot(handle, cbufSlot);
             string f = _job["img"] is JsonObject t && slot >= 0 && t[slot.ToString()] is JsonObject o ? (string)o["fmt"] : null;
-            if (f == null) { Notes.Add($"图像句柄 {handle:X} 槽 {slot} 无 PC 格式，按 R8G8B8A8Unorm"); return TextureFormat.R8G8B8A8Unorm; }
-            return Enum.TryParse(f, true, out TextureFormat tf) ? tf : TextureFormat.R8G8B8A8Unorm;
+            TextureFormat parsed = default;
+            bool valid = f != null && Enum.TryParse(f, true, out parsed);
+            TextureFormat result = valid ? parsed : TextureFormat.R8G8B8A8Unorm;
+            if (f == null) Notes.Add($"图像句柄 {handle:X} 槽 {slot} 无 PC 格式，按 R8G8B8A8Unorm");
+            Answer("texture_format", result.ToString(), valid ? "job_img" : f == null ? "missing_default" : "invalid_default", handle, cbufSlot);
+            return result;
         }
-        int Local(int i) => _job["local"] is JsonArray a && a.Count > i ? (int)a[i] : 1;
+        int Local(int i) => _job["local"] is JsonArray a && a.Count > i
+            ? Answer("compute_local_size_" + "xyz"[i], (int)a[i], "job_local")
+            : Answer("compute_local_size_" + "xyz"[i], 1, "missing_default");
         public int QueryComputeLocalSizeX() => Local(0);
         public int QueryComputeLocalSizeY() => Local(1);
         public int QueryComputeLocalSizeZ() => Local(2);
-        public int QueryComputeSharedMemorySize() => _job["shared"] is JsonNode n ? (int)n : 0;   // 配对 PC 的 groupshared 声明之和 | sum of the paired PC shader's groupshared declarations
+        // 保持原 IGpuAccessor 回答不变，同时暴露此前隐含的资源/管线缺省值。
+        // Preserve IGpuAccessor answers while exposing previously implicit resource/pipeline defaults.
+        public int QueryComputeLocalMemorySize() => Answer("compute_local_memory_size", 0x1000, "fixed_default");
+        public uint QueryConstantBufferUse() => Answer("constant_buffer_use", 0u, "fixed_default");
+        public bool QueryHasConstantBufferDrawParameters() => Answer("constant_buffer_draw_parameters", false, "fixed_default");
+        public bool QueryHasUnalignedStorageBuffer() => Answer("unaligned_storage_buffer", false, "fixed_default");
+        public bool QueryTextureCoordNormalized(int handle, int cbufSlot = -1)
+            => Answer("texture_coord_normalized", true, "fixed_default", handle, cbufSlot);
+        public bool QueryTransformFeedbackEnabled() => Answer("transform_feedback_enabled", false, "fixed_default");
+        public int QueryComputeSharedMemorySize() => _job["shared"] is JsonNode n
+            ? Answer("compute_shared_memory_size", (int)n, "job_shared") : Answer("compute_shared_memory_size", 0, "missing_default");
         static AttributeType Attr(string s) => s switch { "sint" => AttributeType.Sint, "uint" => AttributeType.Uint, _ => AttributeType.Float };
         public GpuGraphicsState QueryGraphicsState()
         {
+            Answer("graphics_state", "fixed_pipeline_defaults_with_job_attr_fout", "fixed_default");
             Array32<AttributeType> attr = default; Array8<AttributeType> fout = default;
             if (_job["attr"] is JsonObject a) foreach (var kv in a) attr[int.Parse(kv.Key)] = Attr((string)kv.Value);
             if (_job["fout"] is JsonObject f) foreach (var kv in f) fout[int.Parse(kv.Key)] = Attr((string)kv.Value);
@@ -124,7 +161,9 @@ static class SwshXlate
                 File.WriteAllBytes(Path.Combine(outDir, key + ".spv"), p.BinaryCode);
                 var res = new JsonObject
                 {
-                    ["key"] = key, ["stage"] = (string)job["stage"], ["notes"] = new JsonArray(acc.Notes.ConvertAll(n => (JsonNode)n).ToArray()),
+                    ["key"] = key, ["stage"] = (string)job["stage"], ["decoded_size"] = ctx.Size,
+                    ["notes"] = new JsonArray(acc.Notes.ConvertAll(n => (JsonNode)n).ToArray()),
+                    ["query_audit_schema"] = 1, ["query_audit"] = acc.Queries,
                     ["cbufs"] = new JsonArray(), ["sbufs"] = new JsonArray(), ["textures"] = new JsonArray(), ["images"] = new JsonArray(),
                     ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
                 };

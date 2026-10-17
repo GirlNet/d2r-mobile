@@ -116,3 +116,5 @@ ios/Sources/dm_shader_prep.m	*	公开版壳专用的「首次准备着色器」�
 host/dm_rift.c	（第 1 波）	只进日志：刷守护者那行标第几波（分波时）
 host/dm_rift.c	（第 2 波）	同上
 host/dm_rift.c	（第 3 波）	同上
+ios/tools/gen_romfs_overlay.py	ASTC 版覆盖层的新数据档	构建期 assert 失败消息，不进入游戏界面 | Build-time assertion failure, never shown in the game UI
+ios/tools/drop_light.py	掉落光变体：	资源生成函数返回的命令行统计，由生成脚本打印 | Command-line summary returned by asset generation and printed by build scripts

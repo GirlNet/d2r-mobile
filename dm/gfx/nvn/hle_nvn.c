@@ -1,5 +1,5 @@
 // NVN 接口层：接管 main 导入的 nvnBootstrapLoader，sdk 里的 NVN 驱动整块不执行。
-// 523 个 NVN 名字一律返回计数跳板（nvn_thunks.S），跳板再转到这里的实现：
+// 已登记的 NVN 名字一律返回计数跳板（nvn_thunks.S），跳板再转到这里的实现：
 //   · 有语义的（设备 / 内存池 / 贴图与采样器 / 队列 / 窗口 / 同步 / 事件 / 命令缓冲内存）按 NVN 语义实现，对象是真的；
 //   · 只改 GPU 状态、没有 CPU 可见结果的（状态对象、绑定、绘制、清除…）录成命令，提交时回放；
 //   · 其余（main 只加载不调用的 307 个 + 头文件无原型的）接 nvn_unimpl_entry：被调到即报红打印名字。
@@ -9,7 +9,7 @@
 // 每个实现都按 nvn_protos.h 的原型做编译期签名检查（NVNboolean 参数按 uint32_t 收、只看低 8 位）。
 // 环境开关：DM_NVN_FRAMES=N 前 N 帧逐帧打印调用表（默认 3）；DM_NVN_TSV=路径 每帧调用表与计时写 TSV（DM_NVN_TSV_CALLS=0 只写计时）；DM_SLOWFRAME=1 只把掉帧的逐帧分项写进日志；DM_NVN_LOG=1 记对象创建。
 // NVN interface layer: takes over the nvnBootstrapLoader imported by main; the NVN driver in sdk is not executed at all.
-// All 523 NVN names return counting thunks (nvn_thunks.S), and the thunks forward to the implementations here:
+// All registered NVN names return counting thunks (nvn_thunks.S), and the thunks forward to the implementations here:
 //   - those with semantics (device / memory pools / textures and samplers / queue / window / sync / events / command buffer memory) are implemented per NVN semantics, and the objects are real;
 //   - those that only change GPU state and have no CPU-visible result (state objects, bindings, draws, clears...) are recorded as commands and replayed at submit;
 //   - the rest (the 307 that main only loads but never calls + those without a prototype in the header) go to nvn_unimpl_entry: reports a failure and prints the name when called.
@@ -26,6 +26,9 @@
 #include "nvn_pace.h"
 #include "../../host/front.h"
 #include "nvn_dirty.h"
+#include "nvn_handle_bindings.h"
+#include "nvn_texture_sampling.h"
+#include "../../host/boot_probe.h"
 #include <mach/mach_time.h>
 #include <mach/mach.h>
 #include <TargetConditionals.h>
@@ -58,6 +61,7 @@ static uint8_t g_unimpl_seen[NVN_NFUNC];
 
 uint64_t nvn_unimpl_c(nvn_slot_t *slot, uint64_t x0, uint64_t x1, uint64_t x2) {
     unsigned i = (unsigned)(slot - nvn_slot);
+    dm_boot_probe_block("unimplemented_nvn", nvn_names[i]);
     if (!g_unimpl_seen[i]++) LOG("【红】NVN 未实现被调用：%s (x0=%#llx x1=%#llx x2=%#llx)", nvn_names[i], x0, x1, x2);
     return 0;
 }
@@ -119,13 +123,67 @@ HLE_FORCE("nvnBootstrapLoader", "NVN 图形接口整块换成宿主空设备（�
 // ---------- Device ----------
 NVN(nvnDeviceBuilderSetDefaults, void, NVNdeviceBuilder *b) { memset(b, 0, sizeof(dev_builder_t)); }
 NVN(nvnDeviceBuilderSetFlags, void, NVNdeviceBuilder *b, int f) { ((dev_builder_t *)b)->flags = f; }
+static pthread_mutex_t g_fast_clear_lock = PTHREAD_MUTEX_INITIALIZER;
 NVN(nvnDeviceInitialize, NVNboolean, NVNdevice *d, const NVNdeviceBuilder *b) {
+    if (!d || !b) return 0;
+    pthread_mutex_lock(&g_fast_clear_lock);
     dev_t_ *o = (dev_t_ *)d; memset(o, 0, sizeof *o);
     o->magic = MAGIC('D', 'E', 'V', 0); o->flags = ((const dev_builder_t *)b)->flags;
+    pthread_mutex_unlock(&g_fast_clear_lock);
     OLOG("DeviceInitialize %p flags=%#x", (void *)d, o->flags);
     return 1;
 }
-NVN(nvnDeviceFinalize, void, NVNdevice *d) { ((dev_t_ *)d)->magic = 0; }
+// 注册成功必须有设备内的真实记录；重复项复用，满表或无效输入不修改原记录。
+// 按颜色类型和格式保留原始位；深度仅接受有限的 [0,1] 值。全局锁保护多线程注册与设备重建。
+// Successful registration requires a real per-device record; reuse duplicates and preserve records on full tables or invalid input.
+// Retain raw color bits by argument type and format; depth accepts finite [0,1] values only. A global lock protects registration and device rebuilds.
+static NVNboolean fast_clear_result(const char *name, int ok) {
+    if (dm_boot_probe_active()) dm_boot_probe_note(ok ? "nvn_fast_clear_registered" : "nvn_fast_clear_rejected", name);
+    return ok;
+}
+static int fast_clear_color(NVNdevice *d, const void *color, NVNformat format, uint32_t kind) {
+    int bw, bh;
+    if (!d || !color || !nvn_fmt_bpb(format, &bw, &bh) || bw != 1 || bh != 1 ||
+        (format >= NVN_FORMAT_STENCIL8 && format <= NVN_FORMAT_DEPTH32F_STENCIL8)) return 0;
+    fast_clear_color_t entry = {.kind=kind, .format=(uint32_t)format}; memcpy(entry.bits, color, sizeof entry.bits);
+    pthread_mutex_lock(&g_fast_clear_lock);
+    dev_t_ *o = (dev_t_ *)d; fast_clear_t *f = &o->fast_clear; int ok = 0;
+    if (o->magic == MAGIC('D', 'E', 'V', 0) && f->color_count <= NVN_FAST_CLEAR_COLOR_CAP) {
+        for (uint32_t i=0; i<f->color_count; i++)
+            if (!memcmp(&f->colors[i], &entry, sizeof entry)) { ok=1; break; }
+        if (!ok && f->color_count < NVN_FAST_CLEAR_COLOR_CAP) { f->colors[f->color_count++]=entry; ok=1; }
+    }
+    pthread_mutex_unlock(&g_fast_clear_lock);
+    return ok;
+}
+NVN(nvnDeviceRegisterFastClearColor, NVNboolean, NVNdevice *d, const float *color, NVNformat format) {
+    return fast_clear_result("nvnDeviceRegisterFastClearColor", fast_clear_color(d, color, format, 0));
+}
+NVN(nvnDeviceRegisterFastClearColori, NVNboolean, NVNdevice *d, const int *color, NVNformat format) {
+    _Static_assert(sizeof(int) == 4, "NVN signed color ABI");
+    return fast_clear_result("nvnDeviceRegisterFastClearColori", fast_clear_color(d, color, format, 1));
+}
+NVN(nvnDeviceRegisterFastClearColorui, NVNboolean, NVNdevice *d, const uint32_t *color, NVNformat format) {
+    return fast_clear_result("nvnDeviceRegisterFastClearColorui", fast_clear_color(d, color, format, 2));
+}
+NVN(nvnDeviceRegisterFastClearDepth, NVNboolean, NVNdevice *d, float depth) {
+    int ok = 0;
+    if (d && depth >= 0.0f && depth <= 1.0f) {
+        uint32_t bits; memcpy(&bits, &depth, sizeof bits);
+        pthread_mutex_lock(&g_fast_clear_lock);
+        dev_t_ *o = (dev_t_ *)d; fast_clear_t *f = &o->fast_clear;
+        if (o->magic == MAGIC('D', 'E', 'V', 0) && f->depth_count <= NVN_FAST_CLEAR_DEPTH_CAP) {
+            for (uint32_t i=0; i<f->depth_count; i++) if (f->depths[i] == bits) { ok=1; break; }
+            if (!ok && f->depth_count < NVN_FAST_CLEAR_DEPTH_CAP) { f->depths[f->depth_count++]=bits; ok=1; }
+        }
+        pthread_mutex_unlock(&g_fast_clear_lock);
+    }
+    return fast_clear_result("nvnDeviceRegisterFastClearDepth", ok);
+}
+NVN(nvnDeviceFinalize, void, NVNdevice *d) {
+    if (!d) return;
+    pthread_mutex_lock(&g_fast_clear_lock); memset(d, 0, sizeof(dev_t_)); pthread_mutex_unlock(&g_fast_clear_lock);
+}
 NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const char *name) {
     (void)d; return (PFNNVNGENERICFUNCPTRPROC)nvn_lookup(name);
 }
@@ -157,6 +215,12 @@ NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out)
     OLOG("DeviceGetInteger %#x -> %d", w, *out);
 }
 NVN(nvnDeviceGetImageHandle, NVNimageHandle, const NVNdevice *d, int id) { (void)d; return (NVNimageHandle)id; }
+NVN(nvnDeviceGetTextureHandle, NVNtextureHandle, const NVNdevice *d, int texture, int sampler) {
+    (void)d; return nvn_combined_handle(texture, sampler);
+}
+NVN(nvnDeviceGetTexelFetchHandle, NVNtextureHandle, const NVNdevice *d, int texture) {
+    (void)d; return nvn_combined_handle(texture, 0);
+}
 // 分离贴图 / 采样器句柄：值 = 描述符号（采样器号放 20 位以上，与组合句柄的位布局一致）
 // Separate texture / sampler handles: value = descriptor index (the sampler index goes in bit 20 and above, consistent with the bit layout of combined handles)
 NVN(nvnDeviceGetSeparateTextureHandle, NVNseparateTextureHandle, const NVNdevice *d, int id) { (void)d; return (NVNseparateTextureHandle){(uint64_t)id}; }
@@ -170,21 +234,112 @@ NVN(nvnDeviceFinalizeCommandHandle, void, NVNdevice *d, NVNcommandHandle h) { (v
 
 // ---------- 内存池 ----------
 // ---------- Memory pools ----------
-NVN(nvnMemoryPoolBuilderSetDefaults, void, NVNmemoryPoolBuilder *b) { memset(b, 0, sizeof(pool_builder_t)); }
+NVN(nvnMemoryPoolBuilderSetDefaults, void, NVNmemoryPoolBuilder *b) {
+    if (!b) return;
+    pool_builder_t *o=(pool_builder_t *)b;
+    memset((uint8_t *)o+sizeof o->dev,0,sizeof *o-sizeof o->dev);
+}
 NVN(nvnMemoryPoolBuilderSetDevice, void, NVNmemoryPoolBuilder *b, NVNdevice *d) { ((pool_builder_t *)b)->dev = d; }
 NVN(nvnMemoryPoolBuilderSetStorage, void, NVNmemoryPoolBuilder *b, void *m, size_t n) { ((pool_builder_t *)b)->mem = m; ((pool_builder_t *)b)->size = n; }
 NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool_builder_t *)b)->flags = f; }
+NVN(nvnMemoryPoolBuilderGetDevice, NVNdevice *, const NVNmemoryPoolBuilder *b) { return b ? ((const pool_builder_t *)b)->dev : NULL; }
+NVN(nvnMemoryPoolBuilderGetMemory, void *, const NVNmemoryPoolBuilder *b) { return b ? ((const pool_builder_t *)b)->mem : NULL; }
+NVN(nvnMemoryPoolBuilderGetSize, size_t, const NVNmemoryPoolBuilder *b) { return b ? ((const pool_builder_t *)b)->size : 0; }
+NVN(nvnMemoryPoolBuilderGetFlags, NVNmemoryPoolFlags, const NVNmemoryPoolBuilder *b) { return b ? (NVNmemoryPoolFlags)((const pool_builder_t *)b)->flags : 0; }
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
     const pool_builder_t *s = (const pool_builder_t *)b; pool_t *o = (pool_t *)p;
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
+    if (dm_boot_probe_active()) { char detail[128]; snprintf(detail,sizeof detail,"bytes=%llu flags=%#x",(unsigned long long)o->size,o->flags); dm_boot_probe_note("nvn_memory_pool",detail); }
     if (o->mem) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
     if (!o->mem && !(o->flags & 0x200)) LOG("【红】MemoryPoolInitialize 非虚拟池没有存储 flags=%#x size=%#llx", o->flags, o->size);
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     return 1;
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) { if (((pool_t *)p)->mem) { nvn_dirty_remove_range(((pool_t *)p)->mem); mtl_pool_del(((pool_t *)p)->mem); } ((pool_t *)p)->magic = 0; }
-NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { (void)p; (void)off; (void)n; }
-NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { return (NVNbufferAddress)((const pool_t *)p)->mem; }
+// 查询只读已保存的池字段；共享存储无需复制。刷新不代表等待 GPU 工作完成。
+// Queries only read retained pool fields; shared storage needs no copy. Flushing does not imply waiting for GPU completion.
+static const pool_t *pool_valid(const NVNmemoryPool *p) {
+    const pool_t *o=(const pool_t *)p; return o && o->magic==MAGIC('P','O','O','L') ? o : NULL;
+}
+NVN(nvnMemoryPoolGetSize, size_t, const NVNmemoryPool *p) { const pool_t *o=pool_valid(p); return o ? o->size : 0; }
+NVN(nvnMemoryPoolGetFlags, NVNmemoryPoolFlags, const NVNmemoryPool *p) {
+    const pool_t *o=pool_valid(p);
+    if (o && dm_boot_probe_active()) { char detail[128]; snprintf(detail,sizeof detail,"bytes=%llu flags=%#x",(unsigned long long)o->size,o->flags); dm_boot_probe_note("nvn_memory_pool_flags",detail); }
+    return o ? (NVNmemoryPoolFlags)o->flags : 0;
+}
+NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p) {
+    const pool_t *o=pool_valid(p);
+    return o && !(o->flags & (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) ? o->mem : NULL;
+}
+NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { const pool_t *o=pool_valid(p); return o ? (NVNbufferAddress)(uintptr_t)o->mem : 0; }
+static void pool_mapped_range(const NVNmemoryPool *p, ptrdiff_t off, size_t n) {
+    const pool_t *o=pool_valid(p);
+    if (!o || off<0 || (uint64_t)off>o->size || n>o->size-(uint64_t)off) dm_boot_probe_block("invalid_pool_range","pool flush/invalidate outside storage");
+}
+NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { pool_mapped_range(p,off,n); }
+NVN(nvnMemoryPoolInvalidateMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { pool_mapped_range(p,off,n); }
+NVN(nvnMemoryPoolSetDebugLabel, void, NVNmemoryPool *p, const char *label) { (void)p; (void)label; }
+
+// ---------- 缓冲：复用池的共享存储，按减法检查区间以避免溢出 ----------
+// ---------- Buffers: reuse shared pool storage and check ranges by subtraction to avoid overflow ----------
+NVN(nvnBufferBuilderSetDevice, void, NVNbufferBuilder *b, NVNdevice *d) { if (b) ((buffer_builder_t *)b)->dev=d; }
+NVN(nvnBufferBuilderSetDefaults, void, NVNbufferBuilder *b) {
+    if (!b) return;
+    buffer_builder_t *o=(buffer_builder_t *)b;
+    memset((uint8_t *)o+sizeof o->dev,0,sizeof *o-sizeof o->dev);
+}
+NVN(nvnBufferBuilderSetStorage, void, NVNbufferBuilder *b, NVNmemoryPool *p, ptrdiff_t off, size_t n) {
+    if (b) { buffer_builder_t *o=(buffer_builder_t *)b; o->pool=p; o->off=off; o->size=n; }
+}
+NVN(nvnBufferBuilderGetDevice, NVNdevice *, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->dev : NULL; }
+NVN(nvnBufferBuilderGetMemoryPool, NVNmemoryPool *, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->pool : NULL; }
+NVN(nvnBufferBuilderGetMemoryOffset, ptrdiff_t, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->off : 0; }
+NVN(nvnBufferBuilderGetSize, size_t, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->size : 0; }
+static int buffer_storage_valid(const NVNmemoryPool *p, ptrdiff_t off, size_t n) {
+    if (!p || off<0 || !n) return 0;
+    const pool_t *o=(const pool_t *)p;
+    return o->magic==MAGIC('P','O','O','L') && o->mem &&
+        !(o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) &&
+        (uint64_t)off<=o->size && n<=o->size-(uint64_t)off &&
+        (uint64_t)off<=UINTPTR_MAX-(uintptr_t)o->mem && n<=UINTPTR_MAX-((uintptr_t)o->mem+(uintptr_t)off);
+}
+static const buffer_t *buffer_valid(const NVNbuffer *b) {
+    const buffer_t *o=(const buffer_t *)b;
+    return o && o->magic==MAGIC('B','U','F',0) && buffer_storage_valid(o->pool,o->off,o->size) ? o : NULL;
+}
+NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *b, const NVNbufferBuilder *builder) {
+    if (!b || !builder) return 0;
+    const buffer_builder_t *s=(const buffer_builder_t *)builder;
+    if (!s->dev || ((const dev_t_ *)s->dev)->magic!=MAGIC('D','E','V',0) || !buffer_storage_valid(s->pool,s->off,s->size)) return 0;
+    buffer_t next={.magic=MAGIC('B','U','F',0),.pool=s->pool,.off=s->off,.size=s->size,.serial=nvn_new_serial()};
+    memcpy(b,&next,sizeof next);
+    if (dm_boot_probe_active()) { char detail[128]; snprintf(detail,sizeof detail,"offset=%lld bytes=%llu",(long long)next.off,(unsigned long long)next.size); dm_boot_probe_note("nvn_buffer_initialized",detail); }
+    return 1;
+}
+NVN(nvnBufferFinalize, void, NVNbuffer *b) { if (b) memset(b,0,sizeof(buffer_t)); }
+NVN(nvnBufferGetAddress, NVNbufferAddress, const NVNbuffer *b) {
+    const buffer_t *o=buffer_valid(b); return o ? (NVNbufferAddress)((uintptr_t)((const pool_t *)o->pool)->mem+(uintptr_t)o->off) : 0;
+}
+NVN(nvnBufferMap, void *, const NVNbuffer *b) {
+    const buffer_t *o=buffer_valid(b);
+    return o && !(((const pool_t *)o->pool)->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ? (void *)(uintptr_t)h_nvnBufferGetAddress(b) : NULL;
+}
+NVN(nvnBufferGetMemoryPool, NVNmemoryPool *, const NVNbuffer *b) { const buffer_t *o=buffer_valid(b); return o ? o->pool : NULL; }
+NVN(nvnBufferGetMemoryOffset, ptrdiff_t, const NVNbuffer *b) { const buffer_t *o=buffer_valid(b); return o ? o->off : 0; }
+NVN(nvnBufferGetSize, size_t, const NVNbuffer *b) { const buffer_t *o=buffer_valid(b); return o ? o->size : 0; }
+NVN(nvnBufferGetDebugID, uint64_t, const NVNbuffer *b) { const buffer_t *o=buffer_valid(b); return o ? o->serial : 0; }
+NVN(nvnBufferSetDebugLabel, void, NVNbuffer *b, const char *label) { (void)b; (void)label; }
+// Metal 共享池已保持 CPU/GPU 一致；刷新和失效不复制数据、不释放池、不提交命令。
+// Metal shared pools are CPU/GPU coherent; flush and invalidate neither copy data, release pools nor submit commands.
+static void buffer_mapped_range(const NVNbuffer *b, ptrdiff_t off, size_t n) {
+    const buffer_t *o=buffer_valid(b);
+    if (!o || off<0 || (size_t)off>o->size || n>o->size-(size_t)off) {
+        dm_boot_probe_block("invalid_buffer_range","buffer flush/invalidate outside storage");
+        return;
+    }
+}
+NVN(nvnBufferFlushMappedRange, void, const NVNbuffer *b, ptrdiff_t off, size_t n) { buffer_mapped_range(b,off,n); }
+NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *b, ptrdiff_t off, size_t n) { buffer_mapped_range(b,off,n); }
 
 // ---------- 描述符池 ----------
 // ---------- Descriptor pools ----------
@@ -205,6 +360,7 @@ NVN(nvnSamplerPoolRegisterSampler, void, const NVNsamplerPool *sp, int id, const
 NVN(nvnTextureBuilderSetDefaults, void, NVNtextureBuilder *b) {
     NVNdevice *dev = TB(b)->dev; memset(b, 0, sizeof(tex_builder_t)); TB(b)->dev = dev;
     TB(b)->d.target = NVN_TEXTURE_TARGET_2D; TB(b)->d.width = TB(b)->d.height = TB(b)->d.depth = TB(b)->d.levels = 1;
+    TB(b)->sampling = (tex_sampling_t){.swizzle={2,3,4,5},.has_swizzle=1};
 }
 NVN(nvnTextureBuilderSetDevice, void, NVNtextureBuilder *b, NVNdevice *d) { TB(b)->dev = d; }
 NVN(nvnTextureBuilderSetFlags, void, NVNtextureBuilder *b, int f) { TB(b)->d.flags = f; }
@@ -234,6 +390,12 @@ NVN(nvnTextureBuilderGetStorageSize, size_t, const NVNtextureBuilder *b) {
     nvn_texlayout L; nvn_tex_layout(&((const tex_builder_t *)b)->d, &L);
     if (!L.bpb) LOG("【红】TextureBuilderGetStorageSize 未知格式 %#x", ((const tex_builder_t *)b)->d.format);
     log_layout((const tex_builder_t *)b, &L);
+    if (dm_boot_probe_active()) {
+        const nvn_texdesc *d=&((const tex_builder_t *)b)->d;char detail[256];
+        snprintf(detail,sizeof detail,"target=%d format=%#x flags=%#x size=%ux%ux%u levels=%u stride=%u bytes=%llu alignment=%u",
+                 d->target,d->format,d->flags,d->width,d->height,d->depth,d->levels,d->stride,(unsigned long long)L.size,L.align);
+        dm_boot_probe_note("nvn_texture_storage_size",detail);
+    }
     return L.size;
 }
 NVN(nvnTextureBuilderGetStorageAlignment, size_t, const NVNtextureBuilder *b) {
@@ -246,6 +408,7 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
     memset(o, 0, sizeof *o);
     o->magic = MAGIC('T', 'E', 'X', 0); o->d = s->d; o->pool = s->pool; o->off = s->off;
     o->has_layout = s->has_layout; memcpy(o->layout, s->layout, 8);
+    o->sampling = s->sampling;
     nvn_tex_layout(&o->d, &o->L);
     o->mem = s->pool && s->pool->mem ? s->pool->mem + s->off : NULL;
     o->serial = nvn_new_serial();
@@ -261,7 +424,9 @@ NVN(nvnTextureGetDepth, int, const NVNtexture *t) { return (int)CTX(t)->d.depth;
 NVN(nvnTextureGetStorageSize, int, const NVNtexture *t) { return (int)CTX(t)->L.size; }
 NVN(nvnTextureCompare, NVNboolean, const NVNtexture *a, const NVNtexture *b) {
     const tex_t *x = CTX(a), *y = CTX(b);
-    return !memcmp(&x->d, &y->d, sizeof x->d) && x->mem == y->mem;
+    if (memcmp(&x->d,&y->d,sizeof x->d) || x->mem!=y->mem || x->sampling.depth_mode!=y->sampling.depth_mode) return 0;
+    for(unsigned i=0;i<4;i++)if(nvn_texture_component(&x->sampling,i)!=nvn_texture_component(&y->sampling,i))return 0;
+    return 1;
 }
 // 头文件无原型；main 0x174899c 一类调用点把返回值与 1 比，不等则置某状态位 0x100。含义未核，先给 1
 // No prototype in the header; call sites such as main 0x174899c compare the return value with 1 and set some status bit 0x100 if not equal. Meaning unverified; return 1 for now
@@ -275,6 +440,7 @@ NVN(nvnTextureViewSetTarget, void, NVNtextureView *v, NVNtextureTarget t) { VW(v
 NVN(nvnTextureViewGetLayers, NVNboolean, const NVNtextureView *v, int *min, int *n) {
     const view_t *o = (const view_t *)v; *min = o->min_layer; *n = o->nlayers; return o->set_layers;
 }
+#include "nvn_texture_state.inc"
 NVN(nvnTextureGetViewOffset, ptrdiff_t, const NVNtexture *t, const NVNtextureView *v) {
     const tex_t *o = CTX(t); const view_t *w = (const view_t *)v;
     if (!w) return 0;
@@ -318,7 +484,20 @@ NVN(nvnSamplerBuilderSetLodBias, void, NVNsamplerBuilder *b, float v) { SB(b)->l
 NVN(nvnSamplerBuilderSetCompare, void, NVNsamplerBuilder *b, NVNcompareMode m, NVNcompareFunc f) { SB(b)->cmp_mode = m; SB(b)->cmp_func = f; }
 NVN(nvnSamplerBuilderSetBorderColor, void, NVNsamplerBuilder *b, const float *c) { memcpy(SB(b)->border, c, 16); }
 NVN(nvnSamplerBuilderSetMaxAnisotropy, void, NVNsamplerBuilder *b, float v) { SB(b)->aniso = v; }
-NVN(nvnSamplerBuilderSetLodSnap, void, NVNsamplerBuilder *b, float v) { (void)b; (void)v; }   // Metal 无对应，忽略 | No Metal equivalent, ignored
+NVN(nvnSamplerBuilderSetLodSnap, void, NVNsamplerBuilder *b, float v) { SB(b)->lod_snap = v; }
+NVN(nvnSamplerBuilderSetReductionFilter, void, NVNsamplerBuilder *b, NVNsamplerReduction v) { SB(b)->reduction = (unsigned)v & 15; }
+NVN(nvnSamplerBuilderGetReductionFilter, NVNsamplerReduction, const NVNsamplerBuilder *b) { return (NVNsamplerReduction)((const samp_builder_t *)b)->p.reduction; }
+NVN(nvnSamplerBuilderGetLodSnap, float, const NVNsamplerBuilder *b) { return ((const samp_builder_t *)b)->p.lod_snap; }
+// SDK border accessors copy four raw words, including when queried through another numeric type.
+NVN(nvnSamplerBuilderSetBorderColori, void, NVNsamplerBuilder *b, const int *v) { memcpy(SB(b)->border,v,16); }
+NVN(nvnSamplerBuilderSetBorderColorui, void, NVNsamplerBuilder *b, const uint32_t *v) { memcpy(SB(b)->border,v,16); }
+NVN(nvnSamplerBuilderGetBorderColori, void, const NVNsamplerBuilder *b, int *v) { memcpy(v,((const samp_builder_t *)b)->p.border,16); }
+NVN(nvnSamplerBuilderGetBorderColorui, void, const NVNsamplerBuilder *b, uint32_t *v) { memcpy(v,((const samp_builder_t *)b)->p.border,16); }
+NVN(nvnSamplerGetBorderColori, void, const NVNsampler *s, int *v) { memcpy(v,((const samp_t *)s)->p.border,16); }
+NVN(nvnSamplerGetBorderColorui, void, const NVNsampler *s, uint32_t *v) { memcpy(v,((const samp_t *)s)->p.border,16); }
+NVN(nvnSamplerGetReductionFilter, NVNsamplerReduction, const NVNsampler *s) { return (NVNsamplerReduction)((const samp_t *)s)->p.reduction; }
+NVN(nvnSamplerGetDebugID, uint64_t, const NVNsampler *s) { return ((const samp_t *)s)->serial; }
+NVN(nvnSamplerPoolRegisterSamplerBuilder, void, const NVNsamplerPool *sp, int id, const NVNsamplerBuilder *b) { (void)sp; mtl_reg_samp(id,&((const samp_builder_t *)b)->p); }
 NVN(nvnSamplerBuilderGetMinMagFilter, void, const NVNsamplerBuilder *b, NVNminFilter *mi, NVNmagFilter *ma) {
     const samp_par *o = &((const samp_builder_t *)b)->p; *mi = (NVNminFilter)o->minf; *ma = (NVNmagFilter)o->magf;
 }
@@ -326,9 +505,9 @@ NVN(nvnSamplerBuilderGetWrapMode, void, const NVNsamplerBuilder *b, NVNwrapMode 
     const samp_par *o = &((const samp_builder_t *)b)->p; *s = (NVNwrapMode)o->ws; *t = (NVNwrapMode)o->wt; *r = (NVNwrapMode)o->wr;
 }
 NVN(nvnSamplerInitialize, NVNboolean, NVNsampler *s, const NVNsamplerBuilder *b) {
-    samp_t *o = (samp_t *)s; o->magic = MAGIC('S', 'M', 'P', 0); o->p = ((const samp_builder_t *)b)->p; return 1;
+    samp_t *o = (samp_t *)s; o->p = ((const samp_builder_t *)b)->p; o->serial = nvn_new_serial(); return 1;
 }
-NVN(nvnSamplerFinalize, void, NVNsampler *s) { ((samp_t *)s)->magic = 0; }
+NVN(nvnSamplerFinalize, void, NVNsampler *s) { ((samp_t *)s)->serial = 0; }
 
 // ---------- 程序 ----------
 // ---------- Programs ----------
@@ -340,13 +519,14 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     prog_t *o = (prog_t *)p;
     if (n < 0 || n > 6) { LOG("【红】ProgramSetShaders 阶段数 %d", n); return 0; }
     mtl_prog_release(o); o->nstage = n; memcpy(o->sd, sd, n * sizeof *sd); o->serial = nvn_new_serial();
+    if (dm_boot_probe_active()) { char detail[64]; snprintf(detail,sizeof detail,"stages=%d serial=%llu",n,(unsigned long long)o->serial); dm_boot_probe_note("nvn_program_shaders",detail); }
     OLOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)p, n, n ? (unsigned long long)sd[0].data : 0ull);
     return 1;
 }
 
 // ---------- 同步 / 事件 ----------
 // ---------- Sync / events ----------
-NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { (void)d; *(sync_t *)s = (sync_t){MAGIC('S', 'Y', 'N', 'C'), 0, 0}; return 1; }
+NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { *(sync_t *)s = (sync_t){MAGIC('S', 'Y', 'N', 'C'), 0, 0, d}; return 1; }
 NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 // 围栏 = 「此前提交到队列的命令全部完成」：记下最近一次提交的栅栏值
 // Fence = "all commands previously submitted to the queue have completed": record the fence value of the most recent submit
@@ -358,6 +538,17 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     if (!o->fenced) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
     if (mtl_wait(o->fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
     return mtl_wait(o->fence, timeout) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+}
+NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) {
+    const queue_t *queue = (const queue_t *)q;
+    const sync_t *sync = (const sync_t *)s;
+    if (!queue || queue->magic != MAGIC('Q','U','E','U') || !sync ||
+        sync->magic != MAGIC('S','Y','N','C') || !sync->fenced || queue->dev != sync->dev ||
+        sync->fence > mtl_last_fence()) return 0;
+    // A fence captured before any submission is already satisfied. Otherwise
+    // enqueue a GPU dependency; this API must not block the submitting CPU.
+    if (sync->fence) mtl_queue_wait(sync->fence);
+    return 1;
 }
 NVN(nvnEventBuilderSetDefaults, void, NVNeventBuilder *b) { memset(b, 0, sizeof(ev_builder_t)); }
 NVN(nvnEventBuilderSetStorage, void, NVNeventBuilder *b, const NVNmemoryPool *p, int64_t off) { *(ev_builder_t *)b = (ev_builder_t){(const pool_t *)p, off}; }
@@ -393,6 +584,7 @@ NVN(nvnQueueBuilderGetQueueMemorySize, size_t, const NVNqueueBuilder *b) {
 NVN(nvnQueueBuilderSetQueueMemory, void, NVNqueueBuilder *b, void *m, size_t n) { QB(b)->mem = m; QB(b)->mem_sz = n; }
 NVN(nvnQueueInitialize, NVNboolean, NVNqueue *q, const NVNqueueBuilder *b) {
     *(queue_t *)q = (queue_t){MAGIC('Q', 'U', 'E', 'U'), ((const queue_builder_t *)b)->dev, 0};
+    dm_boot_probe_note("nvn_queue_initialized","CPU queue object initialized; no submission");
     OLOG("QueueInitialize %p", (void *)q); return 1;
 }
 NVN(nvnQueueFinalize, void, NVNqueue *q) { ((queue_t *)q)->magic = 0; }
@@ -596,7 +788,9 @@ NVN(nvnCommandBufferBindStorageBuffers, void, NVNcommandBuffer *c, NVNshaderStag
     for (int i = 0; i < n; i++) *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size};
 }
 static void bind_handles(NVNcommandBuffer *c, int op, int st, int first, int n, const uint64_t *h) {
-    if (n < 0 || n > 32) { LOG("【红】绑定句柄数 %d", n); return; }
+    int limit = op == OP_BIND_IMG ? NVN_IMAGE_SLOTS : op == OP_BIND_TEX ? NVN_TEX_SLOTS : NVN_SEPARATE_TEX_SLOTS;
+    if (!nvn_handle_range(st, first, n, limit) || (n && !h)) { LOG("【红】绑定句柄数 %d", n); return; }
+    if (!n) return;
     p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st; r->first = first; r->n = n; memcpy(r->h, h, 8 * n);
 }
 // 图像（可写贴图）：句柄 = 贴图池号（GetImageHandle 原样返回；游戏不调 RegisterImage，图像与贴图共用登记）
@@ -605,7 +799,18 @@ NVN(nvnCommandBufferBindImages, void, NVNcommandBuffer *c, NVNshaderStage st, in
     bind_handles(c, OP_BIND_IMG, st, first, n, (const uint64_t *)h);
 }
 NVN(nvnCommandBufferBindSeparateTextures, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNseparateTextureHandle *h) {
+    if (!nvn_handle_range(st, first, n, NVN_SEPARATE_TEX_SLOTS)) { LOG("【红】绑定句柄数 %d", n); return; }
     bind_handles(c, OP_BIND_TEX, st, first, n, (const uint64_t *)h);
+}
+NVN(nvnCommandBufferBindSeparateTexture, void, NVNcommandBuffer *c, NVNshaderStage st, int index, NVNseparateTextureHandle h) {
+    h_nvnCommandBufferBindSeparateTextures(c, st, index, 1, &h);
+}
+NVN(nvnCommandBufferBindTextures, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNtextureHandle *h) {
+    if (!nvn_handle_range(st, first, n, NVN_COMBINED_TEX_SLOTS)) { LOG("【红】绑定句柄数 %d", n); return; }
+    bind_handles(c, OP_BIND_TEX, st, NVN_COMBINED_TEX_FIRST + first, n, (const uint64_t *)h);
+}
+NVN(nvnCommandBufferBindTexture, void, NVNcommandBuffer *c, NVNshaderStage st, int index, NVNtextureHandle h) {
+    h_nvnCommandBufferBindTextures(c, st, index, 1, &h);
 }
 NVN(nvnCommandBufferBindSeparateSamplers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNseparateSamplerHandle *h) {
     bind_handles(c, OP_BIND_SAMP, st, first, n, (const uint64_t *)h);
@@ -644,10 +849,13 @@ NVN(nvnCommandBufferCopyTextureToBuffer, void, NVNcommandBuffer *c, const NVNtex
 // 用给定值清贴图区域（浮点 / 无符号整数两版；mask = 通道写掩码）
 // Clear a texture region with the given value (float / unsigned integer versions; mask = channel write mask)
 NVN(nvnCommandBufferClearTexture, void, NVNcommandBuffer *c, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r, const float *rgba, int mask) {
-    p_clear_tex *o = REC(c, OP_CLEAR_TEX, p_clear_tex); o->tex = (const tex_t *)t; copy_view(&o->view, &o->has_view, v); o->r = *r; o->mask = mask; o->is_uint = 0; memcpy(o->c.f, rgba, 16);
+    p_clear_tex *o = REC(c, OP_CLEAR_TEX, p_clear_tex); o->tex = (const tex_t *)t; copy_view(&o->view, &o->has_view, v); o->r = *r; o->mask = mask; o->value_type = 0; memcpy(o->c.f, rgba, 16);
 }
 NVN(nvnCommandBufferClearTextureui, void, NVNcommandBuffer *c, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r, const uint32_t *rgba, int mask) {
-    p_clear_tex *o = REC(c, OP_CLEAR_TEX, p_clear_tex); o->tex = (const tex_t *)t; copy_view(&o->view, &o->has_view, v); o->r = *r; o->mask = mask; o->is_uint = 1; memcpy(o->c.u, rgba, 16);
+    p_clear_tex *o = REC(c, OP_CLEAR_TEX, p_clear_tex); o->tex = (const tex_t *)t; copy_view(&o->view, &o->has_view, v); o->r = *r; o->mask = mask; o->value_type = 1; memcpy(o->c.u, rgba, 16);
+}
+NVN(nvnCommandBufferClearTexturei, void, NVNcommandBuffer *c, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r, const int *rgba, int mask) {
+    p_clear_tex *o = REC(c, OP_CLEAR_TEX, p_clear_tex); o->tex = (const tex_t *)t; copy_view(&o->view, &o->has_view, v); o->r = *r; o->mask = mask; o->value_type = 2; memcpy(o->c.i, rgba, 16);
 }
 NVN(nvnCommandBufferCopyTextureToTexture, void, NVNcommandBuffer *c, const NVNtexture *s, const NVNtextureView *sv, const NVNcopyRegion *sr,
     const NVNtexture *d, const NVNtextureView *dv, const NVNcopyRegion *dr, int flags) {
@@ -655,6 +863,23 @@ NVN(nvnCommandBufferCopyTextureToTexture, void, NVNcommandBuffer *c, const NVNte
     copy_view(&o->sv, &o->has_sv, sv); copy_view(&o->dv, &o->has_dv, dv); o->sr = *sr; o->dr = *dr; o->flags = flags;
 }
 NVN(nvnCommandBufferSetCopyRowStride, void, NVNcommandBuffer *c, ptrdiff_t st) { REC(c, OP_COPY_STRIDE, p_copy_stride)->stride = st; }
+NVN(nvnCommandBufferSetCopyImageStride, void, NVNcommandBuffer *c, ptrdiff_t st) { REC(c, OP_COPY_IMAGE_STRIDE, p_copy_stride)->stride = st; }
+NVN(nvnCommandBufferSetDepthClamp, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_DEPTH_CLAMP, sizeof(uint32_t)) = enabled != 0; }
+NVN(nvnCommandBufferSetRasterizerDiscard, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_RASTER_DISCARD, sizeof(uint32_t)) = enabled != 0; }
+NVN(nvnCommandBufferSetDepthBounds, void, NVNcommandBuffer *c, uint32_t enabled, float minimum, float maximum) {
+    *REC(c,OP_DEPTH_BOUNDS,p_depth_bounds)=(p_depth_bounds){enabled!=0,minimum,maximum};
+}
+NVN(nvnCommandBufferDownsample, void, NVNcommandBuffer *c, const NVNtexture *src, const NVNtexture *dst) {
+    *REC(c,OP_DOWNSAMPLE,p_downsample)=(p_downsample){(const tex_t *)src,(const tex_t *)dst};
+}
+NVN(nvnCommandBufferSetPrimitiveRestart, void, NVNcommandBuffer *c, uint32_t enabled, int index) {
+    *REC(c,OP_PRIMITIVE_RESTART,p_primitive_restart)=(p_primitive_restart){enabled!=0,(uint32_t)index};
+}
+NVN(nvnCommandBufferClearBuffer, void, NVNcommandBuffer *c, NVNbufferAddress address, size_t size, uint32_t value) {
+    if (!size) return;
+    if ((address & 3) || (size & 3) || size > UINT64_MAX-address) die("Invalid ClearBuffer range");
+    *REC(c, OP_CLEAR_BUF, p_clear_buf)=(p_clear_buf){address,size,value};
+}
 NVN(nvnCommandBufferSetBlendColor, void, NVNcommandBuffer *c, const float *v) { memcpy(REC(c, OP_BLEND_COLOR, p_blend_color)->rgba, v, 16); }
 
 // ---------- 状态对象：就地打包（nvn_obj.h） ----------
@@ -750,6 +975,7 @@ void dm_gfx_suspend(int on) {
     if (on) { mtl_drain(); LOG("[nvn] 图形挂起：在途 GPU 工作已清空"); } else LOG("[nvn] 图形恢复");
 }
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
+    dm_boot_probe_block("guest_gpu_submission","nvnQueueSubmitCommands");
     gfx_enter();
     uint64_t t0 = now_ns(), c0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID), i0, y0, s0 = thr_sys_ns(); thr_counts(&i0, &y0);
     ((queue_t *)q)->submits++;
@@ -771,11 +997,13 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
 // Commands that only affect GPU state / only execute on the GPU: the null device only counts them (the thunk has already counted)
 static void nvn_nop(void) {}
 static const char *const g_nops[] = {
+#ifndef DM_P5R_ONLY
+    // P5R 诊断必须使用受限捕获或具名停止；保留原 D2R 空实现表。
+    // P5R diagnostics require gated capture or named stops; preserve the original D2R no-op table.
     "nvnCommandBufferSetPatchSize",
     "nvnCommandBufferMultiDrawArraysIndirectCount",
     "nvnCommandBufferMultiDrawElementsIndirectCount",
     "nvnCommandBufferDispatchComputeIndirect",
-    "nvnCommandBufferSetDepthBounds",
     "nvnCommandBufferDownsampleTextureView",
     "nvnCommandBufferWaitSync",
     "nvnCommandBufferSetShaderScratchMemory",
@@ -784,6 +1012,7 @@ static const char *const g_nops[] = {
     "nvnCommandBufferInsertDebugMarkerDynamic",
     "nvnCommandBufferWaitEvent",
     "nvnWindowFinalize",
+#endif
 };
 __attribute__((constructor)) static void nvn_nops_register(void) {
     // 空实现在槽表初始化后覆盖未实现桩；名字写错（不在 main 名字表里）启动即报红中止
@@ -802,7 +1031,7 @@ __attribute__((constructor)) static void nvn_nops_register(void) {
     if (getenv("DM_NVN_PROF"))
         for (unsigned i = 0; i < NVN_NFUNC; i++)
             if (nvn_slot[i].fn != (void *)nvn_unimpl_entry && strcmp(nvn_names[i], "nvnQueuePresentTexture")) { nvn_real[i] = nvn_slot[i].fn; nvn_slot[i].fn = (void *)nvn_prof_entry; }
-    LOG("[nvn] 空设备：名字 %u，已实现 %u（语义 %u + 空实现 %u），其余 %u 个接报红桩",
+    LOG("[nvn] 空设备：名字 %u，登记处理器 %u（含受限诊断 %u + 空实现 %u），其余 %u 个接报红桩；不代表 GPU 已验证",
         NVN_NFUNC, g_nsem + nnop, g_nsem, nnop, NVN_NFUNC - g_nsem - nnop);
 }
 
@@ -1200,3 +1429,9 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     if (f >= 8 && slow_on()) slow_emit(f - 8);
     prev_out = now_ns();
 }
+
+#include "nvn_startup_batch.inc"
+
+#ifdef DM_P5R_ONLY
+#include "nvn_probe_commands.inc"
+#endif

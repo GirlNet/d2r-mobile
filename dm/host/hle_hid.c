@@ -17,6 +17,11 @@ _Atomic int g_dm_l_presses;
 enum { NPAD_HANDHELD = 0x20 };
 enum { STYLE_FULLKEY = 1u << 0, STYLE_HANDHELD = 1u << 1 };
 enum { ATTR_CONNECTED = 1u << 0 };
+HLE_FORCE_OPTIONAL("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",
+    "Host controller has no motion sensors; report an empty handle list without HID IPC", int, h_hid_GetSixAxisHandles,
+    void *handles, int capacity, const uint32_t *id, uint32_t styles) {
+    (void)handles;(void)capacity;(void)id;(void)styles;return 0;
+}
 
 // nn::hid::NpadFullKeyState / NpadHandheldState 布局相同
 // nn::hid::NpadFullKeyState / NpadHandheldState have the same layout
@@ -53,6 +58,12 @@ static _Atomic uint64_t g_press_latch;
 // Controller (dm_input.h dm_pad_set): buttons and the four axes are packed into two atomics, and press edges are likewise latched until the game's next
 // read (short controller presses are not lost)
 static _Atomic uint64_t g_pad_btn, g_pad_axes, g_pad_latch;
+void dm_input_release_all(void) {
+    g_in.buttons=0;g_in.lx=0;g_in.ly=0;g_in.rx=0;g_in.ry=0;
+    atomic_store(&g_press_latch,0);atomic_store(&g_pad_btn,0);
+    atomic_store(&g_pad_axes,0);atomic_store(&g_pad_latch,0);
+    atomic_store(&g_sampled_right,0);
+}
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_pad_btn, buttons); atomic_fetch_or(&g_pad_latch, buttons & ~old);
     atomic_store(&g_pad_axes, (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48);
@@ -371,6 +382,22 @@ static void receipt(const NpadState *s, uint32_t id, uint32_t style, uint64_t km
 void (*dm_pad_hook)(uint64_t, uint64_t *, int32_t *, int32_t *, int32_t *, int32_t *);
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
     pthread_once(&g_receipt_once, receipt_init);
+    // P5R 直接接前端手柄数据，不进入暗黑 UI 消息、物品、技能及光标改写链。
+    // P5R reads front-end controller data directly, bypassing D2R UI messages, items, skills and cursor rewriting.
+    if (!dm_guest_d2r()) {
+        uint64_t start = g_receipt_file ? now_ns() : 0;
+        memset(s, 0, sizeof *s); s->sampling = ++g_sampling;
+        if (!(style_of(id) & style)) { receipt(s, id, style, 0, start); return; }
+        s->buttons = g_in.buttons | atomic_exchange(&g_press_latch, 0) | atomic_load(&g_pad_btn) | atomic_exchange(&g_pad_latch, 0);
+        s->lx = g_in.lx; s->ly = g_in.ly; s->rx = g_in.rx; s->ry = g_in.ry;
+        uint64_t axes = atomic_load(&g_pad_axes);
+        if (!(s->lx || s->ly)) { s->lx = (int16_t)axes; s->ly = (int16_t)(axes >> 16); }
+        if (!(s->rx || s->ry)) { s->rx = (int16_t)(axes >> 32); s->ry = (int16_t)(axes >> 48); }
+        s->attributes = ATTR_CONNECTED;
+        atomic_store_explicit(&g_sampled_right, (uint32_t)s->rx | ((uint64_t)(uint32_t)s->ry << 32), memory_order_release);
+        receipt(s, id, style, 0, start);
+        return;
+    }
     ui_taps_step();
     dm_ui_frontend_pump();
     { void dm_textinput_pump(void); dm_textinput_pump(); }   // 文本框补「弹键盘」那一下、数量框设值（dm_textinput.c） | the extra "bring up keyboard" press for text boxes, setting the value of quantity boxes (dm_textinput.c)
@@ -430,6 +457,11 @@ HLE_FORCE("_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivatio
 HLE_FORCE("_ZN2nn3hid15GetNpadStyleSetERKj", "手柄样式查询；跟 DM_OPMODE 走", uint32_t, h_hid_GetStyle, const uint32_t *id) { return style_of(*id); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", "全键手柄状态；取 dm_input", void, h_hid_GetFullKey, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_FULLKEY); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", "掌机手柄状态；取 dm_input", void, h_hid_GetHandheld, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_HANDHELD); }
+// The host exposes one full-key/handheld pad. A separate Joy-Con pair is not
+// connected; it shares the 0x28-byte state layout and the normal sampling path.
+HLE_FORCE_OPTIONAL("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", "Host Joy-Con-pair state; disconnected when a full-key pad is selected", void, h_hid_GetJoyDual, NpadState *s, const uint32_t *id) { fill(s, *id, 1u << 2); }
+HLE_FORCE_OPTIONAL("_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE", "Full-key host input does not depend on single Joy-Con orientation", void, h_hid_SetJoyHold, int type) { (void)type; }
+HLE_FORCE_OPTIONAL("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", "Host full-key pad requires no Horizon Joy-Con pairing", void, h_hid_SetJoyDual, const uint32_t *id) { (void)id; }
 
 // 震动：设备数 0，游戏不会再初始化 / 发送
 // Vibration: device count 0, the game will not initialize / send any further
@@ -451,3 +483,4 @@ HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_E
     touch_fill(out, guest_ns());
     return 1;
 }
+HLE_FORCE_OPTIONAL("_ZN2nn3hid19GetTouchScreenStateILm16EEEvPNS0_16TouchScreenStateIXT_EEE", "Single touchscreen snapshot uses the same host touch latch", void, h_hid_GetTouchOne, TouchState16 *out) { (void)h_hid_GetTouch(out, 1); }

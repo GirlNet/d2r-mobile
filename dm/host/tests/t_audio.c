@@ -10,11 +10,56 @@ void *objmap_get(const void *k) { for (int i = 0; i < 8; i++) if (om[i].k == k) 
 void objmap_put(const void *k, void *v) { for (int i = 0; i < 8; i++) if (!om[i].k) { om[i].k = k; om[i].v = v; return; } }
 void *objmap_del(const void *k) { for (int i = 0; i < 8; i++) if (om[i].k == k) { om[i].k = 0; return om[i].v; } return NULL; }
 static _Atomic int g_sig;
+static void *bound_event;
+static int bound_autoclear;
 void hle_signal_system_event(void *g) { (void)g; atomic_fetch_add_explicit(&g_sig, 1, memory_order_seq_cst); }
-void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; }   // 真实现要客体线程 + SDK 内核事件；单测只数触发次数 | the real implementation needs a guest thread + SDK kernel event; the unit test only counts triggers
+void hle_bind_system_event(void *g, int autoclear) { bound_event = g; bound_autoclear = autoclear; }   // The real implementation binds SDK kernel events; this test records the ABI.
+// 精确核对 PCM 帧计数，不依赖时钟或声卡；停止/空队列的补零不计，半帧字节跨块保留。
+// Check exact PCM frame counts without a clock/audio device; stopped/empty-queue silence does not count, and partial frames carry across buffers.
+static int test_played_count(void) {
+    const int channels[] = {1, 2, 6};
+    char out[64]; uint8_t prm[16], pcm[36] = {0}, dst[48]; gbuf b[2];
+    for (unsigned c = 0; c < sizeof channels / sizeof channels[0]; c++) {
+        h_au_InitParam(prm); *(uint16_t *)(prm + 4) = channels[c];
+        if (h_au_OpenDefault(out, prm) || h_au_Played(out)) return 1;
+        h_au_SetBuf(&b[0], pcm, sizeof pcm, 5);
+        h_au_SetBuf(&b[1], pcm + 5, sizeof pcm - 5, 31);
+        if (!h_au_Append(out, &b[0]) || !h_au_Append(out, &b[1])) return 1;
+        aout *a = ao(out); pull(a, dst, 3);
+        if (h_au_Played(out)) return 1;
+        atomic_store(&a->state, STATE_STARTED);
+        pull(a, dst, 3);
+        if (h_au_Played(out) != 3u / (2u * channels[c])) return 1;
+        pull(a, dst, 4);
+        if (h_au_Played(out) != 7u / (2u * channels[c]) || h_au_Released(out) != &b[0]) return 1;
+        atomic_store(&a->state, STATE_STOPPED); pull(a, dst, 8);
+        if (h_au_Played(out) != 7u / (2u * channels[c])) return 1;
+        atomic_store(&a->state, STATE_STARTED); pull(a, dst, sizeof dst);
+        if (h_au_Played(out) != 36u / (2u * channels[c]) || h_au_Released(out) != &b[1]) return 1;
+        pull(a, dst, sizeof dst);
+        if (h_au_Played(out) != 36u / (2u * channels[c])) return 1;
+        atomic_store(&a->state, STATE_STOPPED); h_au_Close(out);
+    }
+    if (h_au_OpenDefault(out, prm) || h_au_Played(out)) return 1;
+    h_au_Close(out);
+    puts("PLAYED COUNT OK: mono/stereo/6-channel, partial frames, stop/resume, underrun, reopen");
+    return 0;
+}
 int main(void) {
+    if (test_played_count()) return 1;
     char out[64], ev[64]; uint8_t prm[16]; gbuf b[3]; static int16_t pcm[3][4800 * 2];
+    memset(ev, 0xa5, sizeof ev);
+    if (h_au_DeviceEvent(ev) || bound_event != ev || bound_autoclear || g_sig) return 1;
+    for (unsigned i = 0; i < sizeof ev; i++) if ((uint8_t)ev[i] != 0xa5) return 1;
     h_au_InitParam(prm);
+    // 默认设备的两种 ABI 重载均建立真正的宿主对象；事件只在带事件版本绑定。
+    // Both default-device ABI overloads create real host objects; only the event overload binds an event.
+    if (h_au_OpenDefault(out, prm)) return 1;
+    if (strcmp(h_au_Name(out), "DeviceOut") || ao(out)->event) return 1;
+    h_au_Close(out);
+    if (h_au_OpenDefaultEvent(out, ev, prm)) return 1;
+    if (strcmp(h_au_Name(out), "DeviceOut") || ao(out)->event != ev) return 1;
+    h_au_Close(out);
     if (h_au_Open(out, ev, NULL, prm)) return 1;
     if (h_au_Ch(out) != 2 || h_au_Rate(out) != 48000 || h_au_State(out) != STATE_STOPPED) { puts("FAIL 参数"); return 1; }
     for (int i = 0; i < 3; i++) { h_au_SetBuf(&b[i], pcm[i], sizeof pcm[i], sizeof pcm[i]); if (!h_au_Append(out, &b[i])) return 1; }
@@ -28,6 +73,7 @@ int main(void) {
         printf("释放 #%d：期望 块%d 按序 → 真结果 块%ld %s\n", got, got, (long)(r - b), ok ? "✓" : "✗");
         fail |= !ok; got++;
     }
+    fail |= h_au_Played(out) != 14400;
     h_au_Close(out);
     int sig1 = atomic_load_explicit(&g_sig, memory_order_acquire);
     printf("释放 %d/3，事件触发 %d 次（期望 3）\n", got, sig1);
@@ -52,9 +98,10 @@ int main(void) {
         order_ok &= r == &b2[got2]; got2++;
     }
     double total = (now_ns() - t0) / 1e6;
+    int count_ok = h_au_Played(out2) == 28800;
     h_au_Close(out2);
     int sig2 = atomic_load_explicit(&g_sig, memory_order_acquire);
-    int ok2 = got2 == 6 && order_ok && sig2 == 6 && total > 520;
+    int ok2 = got2 == 6 && order_ok && sig2 == 6 && total > 520 && count_ok;
     printf("暂停 / 恢复：释放 %d/6 按序=%d 事件 %d（期望 6）总时长下限 520 ms，真结果 %.0f ms %s\n", got2, order_ok, sig2, total, ok2 ? "✓" : "✗");
     return !ok2;
 }

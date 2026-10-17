@@ -32,14 +32,21 @@ void guest_clock_freeze_for(int reason, int on);   // 按原因冻结（1 后台
 
 // 强制接管：即使 SDK 模块里有定义，装载时所有对该符号的引用（JUMP_SLOT/GLOB_DAT/ABS64）一律解析到宿主实现。
 // 只用于服务层 nn::（fs/oe/aoc/pctl… 的服务客户端）；SDK 的 libc++、nn::os 内部不进这张表。
-// 每条必须写接管理由；表里有、但没有任何模块引用的条目，装载时报红中止（清单写错要响亮）。
+// 每条必须写接管理由；D2R 域中必需表未被引用的条目会中止，可选重载表及其它游戏域允许没有引用。
 // Forced takeover: even if the SDK module has a definition, all references to that symbol at load time (JUMP_SLOT/GLOB_DAT/ABS64) are resolved to the host implementation.
 // Used only for the service-layer nn:: (service clients of fs/oe/aoc/pctl...); the SDK's libc++ and nn::os internals do not go into this table.
-// Every entry must state the reason for the takeover; an entry in the table that no module references makes loading report a failure and abort (a wrong list must fail loudly).
+// Every entry must state the reason; unreferenced required entries abort in the D2R profile, while optional overloads and other game profiles may have no references.
 typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
 #define HLE_FORCE(mangled, why, ret, cname, ...)                                                   \
     static ret cname(__VA_ARGS__);                                                                \
     __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
+    static ret cname(__VA_ARGS__)
+
+// 新 SDK 的可选重载仍强制接管，旧游戏没有引用时不视为清单错误；保持原 swforce 记录布局。
+// Optional overloads in other SDK versions are still forcibly taken over, but absence in older games is not an error; preserves swforce record layout.
+#define HLE_FORCE_OPTIONAL(mangled, why, ret, cname, ...)                                         \
+    static ret cname(__VA_ARGS__);                                                               \
+    __attribute__((used, section("__DATA,swforceopt"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
     static ret cname(__VA_ARGS__)
 
 // 运行模式（0 掌机 / 1 主机）：hle_oe.c 持有，hid 的手柄样式跟它走；前端可在运行中切换

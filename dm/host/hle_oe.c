@@ -6,6 +6,7 @@
 // Environment switches: DM_OPMODE=0 handheld / 1 console (default 1, corresponding to the console-mode render profile); DM_LANG=language code (default zh-Hans).
 #include "hle.h"
 #include "dm_uiscreen.h"
+HLE_FORCE_OPTIONAL("_ZN2nn2oe17FinishStartupLogoEv", "Host UIKit owns startup presentation; no Horizon applet/display service", void, h_oe_FinishStartupLogo, void) {}
 
 // 运行模式是运行时状态（前端可改：iOS 过热降级切掌机）：唯一来源在此，启动时从 DM_OPMODE 取一次，之后不再读环境变量
 // The operation mode is runtime state (the front end can change it: iOS overheat downgrade switches to handheld): the single source is here, taken once from DM_OPMODE at startup, the environment variable is not read again afterwards
@@ -74,6 +75,23 @@ void dm_focus_set(int st) {
     mq_push(MSG_FOCUS);
 }
 static int opmode(void) { return dm_opmode(); }
+
+// 宿主没有 Horizon 的退出请求会话；本地维护进程级嵌套计数，不进入 SDK 的空服务对象。
+// The host has no Horizon exit-request session; keep a local process-wide nesting count instead of entering the SDK's null service object.
+static pthread_mutex_t g_exit_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t g_exit_depth;
+HLE_FORCE_OPTIONAL("_ZN2nn2oe31EnterExitRequestHandlingSectionEv", "退出请求临界区；宿主维护配对嵌套，不调用 Horizon 服务", void, h_oe_EnterExit, void) {
+    pthread_mutex_lock(&g_exit_lock);
+    if (g_exit_depth == UINT32_MAX) die("Exit request section nesting overflow");
+    g_exit_depth++;
+    pthread_mutex_unlock(&g_exit_lock);
+}
+HLE_FORCE_OPTIONAL("_ZN2nn2oe31LeaveExitRequestHandlingSectionEv", "退出请求临界区；宿主维护配对嵌套，不调用 Horizon 服务", void, h_oe_LeaveExit, void) {
+    pthread_mutex_lock(&g_exit_lock);
+    if (!g_exit_depth) die("Unbalanced exit request section");
+    g_exit_depth--;
+    pthread_mutex_unlock(&g_exit_lock);
+}
 
 // 截图 / 录像开关：宿主无系统截图服务，空操作
 // Screenshot / video recording switches: the host has no system screenshot service, no-op
@@ -198,6 +216,7 @@ static _Atomic int g_scale3d_level;
 static _Atomic int g_scale3d_resumed;
 void dm_3d_scale_resumed(void) { atomic_store(&g_scale3d_resumed, 1); }   // 前端：刚回前台。回来头几秒的慢帧是恢复（表面重建、缓存变冷），不是 GPU 吃紧：停判 3 秒 | front end: just returned to foreground. Slow frames in the first few seconds back are recovery (surface rebuild, caches gone cold), not GPU pressure: suspend judging for 3 seconds
 void dm_3d_scale_feed(double iv_ms) {   // 出图线程每帧调（diag.c dm_perf_present 转来）：实际上屏间隔 ms，−1 = 被丢弃，0 = 无读数 | called by the present thread every frame (forwarded from diag.c dm_perf_present): actual present interval in ms, −1 = dropped, 0 = no reading
+    if (!dm_guest_d2r()) return;
     static scale3d_ctl c = {.max_level = 2}; static int on = -1; static long inj0 = -1, inj1 = -1;
     if (on < 0) { const char *e = getenv("DM_3D_SCALE_DYN"), *j = getenv("DM_3D_SCALE_DYN_INJECT"); on = !(e && !strcmp(e, "0")) && !getenv("DM_THERMAL_NOFALLBACK");
         if (j) { inj0 = atol(j); inj1 = strchr(j, '-') ? atol(strchr(j, '-') + 1) : inj0; } }
@@ -217,6 +236,7 @@ void dm_3d_scale_hot(int hot) { (void)hot; }   // 过热不再直接降档（改
 static _Atomic float g_scale3d_cur = 1.0f;
 float dm_3d_scale_cur(void) { return atomic_load(&g_scale3d_cur); }
 static void scale3d_tick(void) {
+    if (!dm_guest_d2r()) return;
     static float want_cfg = -1, cur = 1.0f; static module_t *main;
     if (want_cfg < 0) {
         const char *e = getenv("DM_3D_SCALE"); want_cfg = TARGET_OS_IPHONE ? 0.75f : 1.0f;
@@ -249,8 +269,8 @@ HLE_FORCE("_ZN2nn2oe25TryPopNotificationMessageEPj", "系统通知队列；前�
     // The resolution parameter bits live in the thread slot, and the game reads them on the thread that fetches notifications to change the render size (on receiving 31 "performance mode changed", from main+0xe10ddc; 30 only updates a flag).
     // When they are read: each time the handler is entered, once after the first notification is fetched (0xe10d5c / 0xe10d60), and notifications fetched later in the loop still use the values from that read. So every time one is taken, the value due at this moment is written into the current thread's slot --
     // writing only when 31 is taken is not enough: when 31 is queued behind another notification (e.g. focus 15), the parameter bits have already been read after fetching 15 (iOS app: the front end did not switch to 16:9, in the Mac host run 31 happened to be queued first).
-    if (ok) for (int i = 0; i < 2; i++) if (g_keyres[i]) pthread_setspecific(g_keyres[i], (void *)dm_game_res(i));
-    if (ok && *msg == MSG_PERFMODE) dm_uiscreen_res_reread();
+    if (ok && dm_guest_d2r()) for (int i = 0; i < 2; i++) if (g_keyres[i]) pthread_setspecific(g_keyres[i], (void *)dm_game_res(i));
+    if (ok && *msg == MSG_PERFMODE && dm_guest_d2r()) dm_uiscreen_res_reread();
     if (ok) LOG("oe 通知被游戏取走：%u", *msg);   // 状态变化很少，逐条打不刷屏 | state changes are rare, printing each one does not flood the log
     return ok;
 }

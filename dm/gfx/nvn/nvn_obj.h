@@ -14,7 +14,22 @@
 #define FITS(T, H) _Static_assert(sizeof(T) <= sizeof(H), #T " 超出 " #H " 的保留大小")
 
 typedef struct { uint32_t flags; } dev_builder_t;                       FITS(dev_builder_t, NVNdeviceBuilder);
-typedef struct { uint32_t magic, flags, origin, depth_mode; void *dbg_cb, *dbg_data; } dev_t_;  FITS(dev_t_, NVNdevice);
+// 宿主清除登记只保存原始位、格式与参数类型；容量是宿主策略，不代表 Tegra 压缩硬件。
+// 清除命令仍自带数值，Metal 使用现有普通清除路径，不依赖此表生成 GPU 工作。
+// Host clear registration stores raw bits, format and argument type; capacity is host policy, not Tegra compression hardware.
+// Clear commands still carry their values and Metal uses the existing ordinary clear path; this table creates no GPU work.
+enum { NVN_FAST_CLEAR_COLOR_CAP = 64, NVN_FAST_CLEAR_DEPTH_CAP = 16 };
+typedef struct { uint32_t kind, format, bits[4]; } fast_clear_color_t;
+typedef struct {
+    uint32_t color_count, depth_count;
+    fast_clear_color_t colors[NVN_FAST_CLEAR_COLOR_CAP];
+    uint32_t depths[NVN_FAST_CLEAR_DEPTH_CAP];
+} fast_clear_t;
+typedef struct {
+    uint32_t magic, flags, origin, depth_mode; void *dbg_cb, *dbg_data;
+    fast_clear_t fast_clear;
+} dev_t_;
+FITS(dev_t_, NVNdevice);
 
 typedef struct { NVNdevice *dev; uint32_t flags; uint64_t cmd_sz, comp_sz, ctl_sz, flush; void *mem; uint64_t mem_sz; } queue_builder_t;
 FITS(queue_builder_t, NVNqueueBuilder);
@@ -23,29 +38,44 @@ typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; } queue_t;   
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
 typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; } pool_t;                FITS(pool_t, NVNmemoryPool);
 
+// 缓冲是现有池的有界视图，不拥有存储，也不创建或提交额外 GPU 对象。
+// A buffer is a bounded view of an existing pool; it owns no storage and creates or submits no additional GPU objects.
+typedef struct { NVNdevice *dev; NVNmemoryPool *pool; ptrdiff_t off; size_t size; } buffer_builder_t;
+FITS(buffer_builder_t, NVNbufferBuilder);
+typedef struct { uint32_t magic; NVNmemoryPool *pool; ptrdiff_t off; size_t size; uint64_t serial; } buffer_t;
+FITS(buffer_t, NVNbuffer);
+
 typedef struct { const pool_t *pool; int64_t off; int32_t n; } dpool_t;                       // 贴图 / 采样器描述符池 | Texture / sampler descriptor pool
 FITS(dpool_t, NVNtexturePool); FITS(dpool_t, NVNsamplerPool);
 
+typedef struct { int32_t swizzle[4], depth_mode; uint8_t has_swizzle; } tex_sampling_t;
 typedef struct {
-    NVNdevice *dev; nvn_texdesc d; pool_t *pool; int64_t off;
+    NVNdevice *dev; nvn_texdesc d; pool_t *pool; int64_t off; tex_sampling_t sampling;
     uint8_t has_layout, layout[8];
 } tex_builder_t;                                                                             FITS(tex_builder_t, NVNtextureBuilder);
 typedef struct {
-    uint32_t magic; nvn_texdesc d; nvn_texlayout L; uint8_t *mem; pool_t *pool; int64_t off; uint8_t has_layout, layout[8];
+    uint32_t magic; nvn_texdesc d; nvn_texlayout L; uint8_t *mem; pool_t *pool; int64_t off; uint8_t has_layout, layout[8]; tex_sampling_t sampling;
     uint64_t serial;                     // 初始化序号：回放层按它在宿主表里找 MTLTexture（游戏可能按值拷贝对象，不能存对象指针） | Initialization serial: the replay layer uses it to find the MTLTexture in the host table (the game may copy the object by value, so object pointers cannot be stored)
 } tex_t;                                                                                     FITS(tex_t, NVNtexture);
-typedef struct { uint8_t set_levels, set_layers, set_format, set_target; int32_t base_level, nlevels, min_layer, nlayers, format, target; } view_t;
+typedef struct {
+    uint8_t set_levels, set_layers, set_format, set_target;
+    int32_t base_level, nlevels, min_layer, nlayers, format, target;
+    uint8_t set_swizzle, set_depth_mode, swizzle[4], depth_mode;
+} view_t;
 FITS(view_t, NVNtextureView);
 
 // 采样器参数（builder 与对象共用一份）
 // Sampler parameters (one copy shared by builder and object)
-typedef struct { uint8_t minf, magf, ws, wt, wr, cmp_mode, cmp_func; float lod_min, lod_max, lod_bias, aniso, border[4]; } samp_par;   // 枚举值都 < 256 | Enum values are all < 256
+typedef struct {
+    uint32_t minf:3, magf:1, ws:3, wt:3, wr:3, cmp_mode:1, cmp_func:4, reduction:4;
+    float lod_min, lod_max, lod_bias, aniso, border[4], lod_snap;
+} samp_par;
 typedef struct { NVNdevice *dev; samp_par p; } samp_builder_t;                                FITS(samp_builder_t, NVNsamplerBuilder);
-typedef struct { uint32_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
+typedef struct { uint64_t serial; samp_par p; } samp_t;                                     FITS(samp_t, NVNsampler);
 
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial：回放层解析结果的表键 | serial: table key for the replay layer's resolved result
 
-typedef struct { uint32_t magic, fenced; uint64_t fence; } sync_t;                            FITS(sync_t, NVNsync);
+typedef struct { uint32_t magic, fenced; uint64_t fence; NVNdevice *dev; } sync_t;            FITS(sync_t, NVNsync);
 typedef struct { const pool_t *pool; int64_t off; } ev_builder_t;                             FITS(ev_builder_t, NVNeventBuilder);
 typedef struct { uint32_t magic; volatile uint32_t *val; } ev_t;                              FITS(ev_t, NVNevent);
 
@@ -92,7 +122,7 @@ enum {
     OP_BIND_PROGRAM, OP_BIND_STATE, OP_BIND_VATTR, OP_BIND_VSTREAM, OP_BIND_VBUF,
     OP_BIND_UBO, OP_BIND_SSBO, OP_BIND_TEX, OP_BIND_SAMP,
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
-    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_COUNT_
+    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_COPY_IMAGE_STRIDE, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_PRIMITIVE_RESTART, OP_RASTER_DISCARD, OP_DEPTH_BOUNDS, OP_DOWNSAMPLE, OP_COUNT_
 };
 // 载荷（紧跟 op_hdr）
 // Payload (immediately follows op_hdr)
@@ -117,8 +147,12 @@ typedef struct { int32_t x, y, z; uint64_t caller; } p_dispatch;   // caller：�
 typedef struct { const dpool_t *pool; } p_set_pool;
 typedef struct { uint64_t src; const tex_t *tex; view_t view; uint8_t has_view; NVNcopyRegion r; int32_t flags; } p_copy_b2t;
 typedef struct { const tex_t *src, *dst; view_t sv, dv; uint8_t has_sv, has_dv; NVNcopyRegion sr, dr; int32_t flags; } p_copy_t2t;   // T2B 复用：src 存目标缓冲地址 | Reused for T2B: src stores the destination buffer address
-typedef struct { const tex_t *tex; view_t view; uint8_t has_view, is_uint; NVNcopyRegion r; int32_t mask; union { float f[4]; uint32_t u[4]; } c; } p_clear_tex;
+typedef struct { const tex_t *tex; view_t view; uint8_t has_view, value_type; NVNcopyRegion r; int32_t mask; union { float f[4]; uint32_t u[4]; int32_t i[4]; } c; } p_clear_tex;
 typedef struct { int64_t stride; } p_copy_stride;
+typedef struct { uint64_t address, size; uint32_t value; } p_clear_buf;
+typedef struct { uint32_t enabled,index; } p_primitive_restart;
+typedef struct { uint32_t enabled;float minimum,maximum; } p_depth_bounds;
+typedef struct { const tex_t *src,*dst; } p_downsample;
 typedef struct { float rgba[4]; } p_blend_color;
 
 // Metal 回放层入口（nvn_mtl.m）：把一组命令句柄回放进当前提交

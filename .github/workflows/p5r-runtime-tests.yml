@@ -1,0 +1,331 @@
+# 无游戏内容的 macOS 宿主测试；不构建或上传 P5R 安装包。
+# macOS host tests without game content; does not build or upload a P5R install package.
+name: P5R runtime components
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/p5r-runtime-tests.yml'
+      - 'dm/host/**'
+      - 'dm/ios/p5r/**'
+      - 'dm/tools/audit_p5r_api.py'
+      - 'dm/tools/p5r_pack.py'
+      - 'dm/tools/test_p5r_pack.py'
+      - 'dm/gfx/nvn/**'
+      - 'dm/gfx/tests/**'
+      - 'dm/gfx/tex/**'
+      - 'dm/gfx/tools/dmsh_build.py'
+      - 'dm/gfx/tools/dmsh_chain.py'
+      - 'dm/gfx/tools/dmsh_xlate/**'
+      - 'dm/tools/diagnose_p5r_shaders.py'
+      - 'dm/tools/test_diagnose_p5r_shaders.py'
+      - 'dm/tools/test_shader_query_audit.py'
+      - 'dm/tools/maxwell_texture_audit.py'
+      - 'dm/tools/test_maxwell_texture_audit.py'
+      - 'dm/tools/p5r_reflection.py'
+      - 'dm/tools/test_p5r_reflection.py'
+      - 'dm/tools/maxwell_memory_audit.py'
+      - 'dm/tools/test_maxwell_memory_audit.py'
+      - 'dm/tools/nvn_handle_layout.py'
+      - 'dm/tools/test_nvn_handle_layout.py'
+      - 'dm/tools/test_shader_buffer_reflection.py'
+      - 'dm/tools/prepare_p5r_shaders.py'
+      - 'dm/tools/test_prepare_p5r_shaders.py'
+      - 'dm/tools/cpk_reader.py'
+      - 'dm/tools/crilayla.py'
+      - 'dm/tools/test_cpk_reader.py'
+      - 'dm/tools/test_crilayla.py'
+      - 'dm/tools/inspect_exefs.py'
+      - 'dm/tools/prepare_port.py'
+      - 'dm/tools/test_inspect_exefs.py'
+      - 'dm/verify/equiv_compare.py'
+      - 'dm/verify/test_equiv_compare.py'
+      - 'dm/i18n/**'
+permissions:
+  contents: read
+jobs:
+  ios-shell:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate shader cache version from this checkout
+        run: python3 dm/gfx/tools/dmsh_chain.py --header
+      - name: Link and package the complete game-free P5R host
+        run: |
+          set -euo pipefail
+          xcrun clang -DDM_P5R_ONLY=1 dm/host/tests/t_guest_bootstrap.c dm/host/guest_bootstrap.c -o "$RUNNER_TEMP/p5r-profile"
+          "$RUNNER_TEMP/p5r-profile" p5r
+          python3 -m unittest discover -s dm/tools -p test_p5r_pack.py -v
+          python3 dm/ios/p5r/build_shell.py "$RUNNER_TEMP/p5r-shell"
+      - name: Retain unsigned shell and build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p5r-ios-shell
+          path: |
+            ${{ runner.temp }}/p5r-shell/*.ipa
+            ${{ runner.temp }}/p5r-shell/build-report.json
+            ${{ runner.temp }}/p5r-shell/logs
+          retention-days: 7
+  macos-components:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate shader cache version from this checkout
+        run: python3 dm/gfx/tools/dmsh_chain.py --header
+      - name: Audit registered startup API coverage
+        run: python3 dm/tools/audit_p5r_api.py
+      - name: Check changed host sources
+        run: |
+          set -euo pipefail
+          xcrun clang -fsyntax-only -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+            dm/host/guest_bootstrap.c dm/host/main.c dm/host/loader.c dm/host/hle.c \
+            dm/host/hle_hid.c dm/host/hle_fs.c dm/host/hle_oe.c dm/host/hle_svc.c dm/host/hle_cache.c \
+            dm/host/hle_audio.c dm/host/hle_misc.c
+      - name: Run bootstrap and audio tests
+        env:
+          DM_AUDIO: '0'
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_guest_bootstrap build/t_audio build/t_audio_spsc build/t_shader_control build/t_nvn_handles build/t_nvn_buffers build/t_nvn_combined_refl build/t_nvn_compute_gpu build/t_nvn_texture_gpu
+          dm/host/tests/build/t_guest_bootstrap d2r
+          dm/host/tests/build/t_guest_bootstrap p5r
+          dm/host/tests/build/t_audio
+          dm/host/tests/build/t_audio_spsc
+          dm/host/tests/build/t_shader_control
+          dm/host/tests/build/t_nvn_handles
+          dm/host/tests/build/t_nvn_buffers
+          dm/host/tests/build/t_nvn_combined_refl
+      - name: Check NVN bootstrap without GPU work
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_nvn
+          dm/gfx/tests/t_nvn --bootstrap-only
+          make -C dm/gfx/tests t_nvn_gpu_setup
+          dm/gfx/tests/t_nvn_gpu_setup --queue-sync-gpu
+          xcrun clang -Wall -Wextra -Werror dm/gfx/tests/t_copy_layout.c -o "$RUNNER_TEMP/copy-layout"
+          "$RUNNER_TEMP/copy-layout"
+          dm/gfx/tests/t_nvn_gpu_setup --copy-image-stride-gpu
+          dm/gfx/tests/t_nvn_gpu_setup --clear-buffer-gpu
+          dm/gfx/tests/t_nvn_gpu_setup --signed-texture-clear-gpu
+          make -C dm/gfx/tests t_shader_math_gpu
+          dm/gfx/tests/t_shader_math_gpu
+          make -C dm/gfx/tests t_depth_clamp_gpu
+          dm/gfx/tests/t_depth_clamp_gpu
+          make -C dm/gfx/tests t_primitive_restart_gpu
+          dm/gfx/tests/t_primitive_restart_gpu
+          xcrun clang -Wall -Wextra -Werror dm/gfx/tests/t_vertex_bits.c dm/gfx/nvn/nvn_vertex_bits.c -o "$RUNNER_TEMP/vertex-bits"
+          "$RUNNER_TEMP/vertex-bits"
+          make -C dm/gfx/tests t_vertex_fetch_gpu
+          dm/gfx/tests/t_vertex_fetch_gpu
+          xcrun clang -Wall -Wextra -Werror dm/gfx/tests/t_fragment_bits.c dm/gfx/nvn/nvn_fragment_bits.c -o "$RUNNER_TEMP/fragment-bits"
+          "$RUNNER_TEMP/fragment-bits"
+          make -C dm/gfx/tests t_fragment_export_gpu
+          dm/gfx/tests/t_fragment_export_gpu
+          make -C dm/gfx/tests t_raster_discard_gpu
+          dm/gfx/tests/t_raster_discard_gpu
+          make -C dm/gfx/tests t_downsample_gpu
+          dm/gfx/tests/t_downsample_gpu
+          dm/gfx/tests/t_nvn_gpu_setup --gpu-setup-probe "$RUNNER_TEMP/p5r-real-metal-setup"
+          dm/gfx/tests/t_nvn_gpu_setup --pre-submit-probe "$RUNNER_TEMP/p5r-real-pre-submit"
+          dm/gfx/tests/t_nvn_gpu_setup --capture-disabled-check
+          dm/gfx/tests/t_nvn_gpu_setup --capture-command-probe "$RUNNER_TEMP/p5r-command-capture"
+          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-command-capture/boot-report.json")); c=r["diagnostic_only_calls"]; assert len(c)==58 and r["diagnostic_only_call_count"]==58 and r["status"]=="blocked_before_unverified_operation" and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"] and not r["command_stream_gpu_verified"]; assert c["nvnCommandBufferSetSampleMask"]["last_argument_bits"]==["0x0000000000000101"]'
+          python3 dm/gfx/tests/test_gpu_submit_guards.py
+          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-pre-submit/boot-report.json")); assert r["status"]=="blocked_before_unverified_operation" and r["gpu_initialization_completed"] and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"]'
+          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-metal-setup/boot-report.json")); assert r["status"]=="stopped_after_gpu_initialization" and r["gpu_backend"]=="Metal 3" and r["gpu_initialization_completed"] and not r["guest_gpu_work_submitted"] and not r["graphics_verified"] and not r["runtime_ready"]'
+      - name: Check linear texture and render-target storage layouts
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tex/tests t_linear_layout
+          dm/gfx/tex/tests/t_linear_layout
+      - name: Check depth bounds on supported hardware
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_depth_bounds_gpu
+          set +e
+          dm/gfx/tests/t_depth_bounds_gpu
+          result=$?
+          if [ "$result" -eq 77 ] || [ "$result" -eq 78 ]; then
+            echo '::warning::Active depth-bounds GPU comparisons require Apple10; skipped on this runner.'
+            exit 0
+          fi
+          exit "$result"
+      - name: Check production draw paths on Metal 4
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4
+          for test in t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4; do
+            set +e
+            "dm/gfx/tests/$test"
+            result=$?
+            set -e
+            if [ "$result" -eq 77 ] || [ "$result" -eq 78 ]; then
+              echo "::warning::$test requires hardware unavailable on this runner; output comparisons skipped."
+            elif [ "$result" -ne 0 ]; then
+              exit "$result"
+            fi
+          done
+      - name: Check production texture views with synthetic GPU pixels
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_texture_views_gpu
+          set +e
+          dm/gfx/tests/t_texture_views_gpu
+          result=$?
+          if [ "$result" -eq 77 ]; then
+            echo '::warning::Texture view GPU execution unavailable on this runner.'
+            exit 0
+          fi
+          exit "$result"
+      - name: Check sampler descriptor mapping and available GPU reduction
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_nvn_sampler_gpu
+          set +e
+          dm/gfx/tests/t_nvn_sampler_gpu
+          result=$?
+          if [ "$result" -eq 77 ] || [ "$result" -eq 78 ]; then
+            echo '::warning::Sampler reduction GPU execution unavailable on this runner.'
+            exit 0
+          fi
+          exit "$result"
+      - name: Check ELF optional imports through the actual loader
+        run: |
+          set -euo pipefail
+          xcrun clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I dm/host \
+            dm/host/tests/t_elf_imports.c dm/host/hle.c -o "$RUNNER_TEMP/p5r-elf-imports"
+          "$RUNNER_TEMP/p5r-elf-imports"
+      - name: Check symbolic allocator forwarding
+        run: |
+          set -euo pipefail
+          xcrun clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I dm/host \
+            dm/host/tests/t_stdalloc_forward.c -o "$RUNNER_TEMP/p5r-stdalloc-forward"
+          "$RUNNER_TEMP/p5r-stdalloc-forward"
+      - name: Check Darwin data and instruction cache adapters
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_cache
+          dm/host/tests/build/t_cache
+      - name: Check offline service overloads and local context lifetimes
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_offline_services build/t_hid_receipt build/t_vi
+          dm/host/tests/build/t_offline_services
+          dm/host/tests/build/t_hid_receipt
+          dm/host/tests/build/t_vi
+          xcrun clang -Wall -Wextra -Werror dm/host/tests/t_p5r_stick.c -o "$RUNNER_TEMP/p5r-stick"
+          "$RUNNER_TEMP/p5r-stick"
+          make -C dm/host/tests build/t_swkbd build/t_swkbd_p5r
+          dm/host/tests/build/t_swkbd
+          dm/host/tests/build/t_swkbd_p5r
+      - name: Check filesystem transactions and exact path behavior
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_fs build/t_fs_case
+          TMPDIR="$RUNNER_TEMP" dm/host/tests/build/t_fs
+          TMPDIR="$RUNNER_TEMP" dm/host/tests/build/t_fs_case
+      - name: Check application environment and exit-request sections
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_oe
+          dm/host/tests/build/t_oe
+      - name: Run synthetic compute on an available Metal device
+        run: |
+          set +e
+          dm/host/tests/build/t_nvn_compute_gpu
+          result=$?
+          if [ "$result" -eq 77 ]; then
+            echo '::warning::Synthetic compute GPU execution skipped: runner has no Metal device.'
+            exit 0
+          fi
+          exit "$result"
+      - name: Check initialization probe persistence and stop boundaries
+        run: |
+          set -euo pipefail
+          xcrun clang -DDM_P5R_ONLY=1 -fobjc-arc -fblocks -Wall -Wextra -Werror -I dm/host \
+            dm/host/tests/t_boot_probe.m dm/ios/p5r/boot_probe.m -framework Foundation -o "$RUNNER_TEMP/p5r-boot-probe-test"
+          for mode in checkpoint blocked timeout failure modules modules-failure startup-return startup-timeout startup-gpu startup-gpu-entry gpu-setup gpu-setup-failure gpu-setup-timeout gpu-setup-submit gpu-setup-wrong-owner pre-submit pre-submit-timeout pre-submit-failure pre-submit-wrong-owner; do
+            "$RUNNER_TEMP/p5r-boot-probe-test" "$mode" "$RUNNER_TEMP/p5r-probe-$mode"
+          done
+      - name: Run synthetic texture bindings on Metal 3 and 4
+        run: |
+          set +e
+          dm/host/tests/build/t_nvn_texture_gpu
+          result=$?
+          if [ "$result" -eq 77 ]; then
+            echo '::warning::Synthetic texture GPU execution skipped: runner has no Metal device.'
+            exit 0
+          fi
+          if [ "$result" -eq 78 ]; then
+            echo '::warning::Metal 3 texture GPU checks passed; Metal 4 execution skipped because this device does not support it.'
+            exit 0
+          fi
+          exit "$result"
+      - name: Compile changed Metal backend
+        run: |
+          set -euo pipefail
+          xcrun clang -fobjc-arc -mmacosx-version-min=26.0 -Werror=implicit-function-declaration \
+            -I dm/host -I dm/gfx/nvn/include -c dm/gfx/nvn/nvn_mtl.m -o "$RUNNER_TEMP/p5r-nvn-macos.o"
+          xcrun --sdk iphoneos clang -arch arm64 -fobjc-arc -miphoneos-version-min=26.0 \
+            -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+            -c dm/gfx/nvn/nvn_mtl.m -o "$RUNNER_TEMP/p5r-nvn-ios.o"
+          xcrun clang -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+            -c dm/gfx/nvn/hle_nvn.c -o "$RUNNER_TEMP/p5r-hle-nvn-macos.o"
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=26.0 \
+            -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+            -c dm/gfx/nvn/hle_nvn.c -o "$RUNNER_TEMP/p5r-hle-nvn-ios.o"
+      - name: Compile changed host components for iOS
+        run: |
+          set -euo pipefail
+          xcrun --sdk iphoneos --show-sdk-version
+          mkdir -p "$RUNNER_TEMP/p5r-ios-objects"
+          for source in dm/host/guest_bootstrap.c dm/host/main.c dm/host/loader.c dm/host/hle.c \
+            dm/host/hle_hid.c dm/host/hle_fs.c dm/host/hle_oe.c dm/host/hle_svc.c \
+            dm/host/hle_audio.c dm/host/hle_misc.c; do
+            xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=26.0 \
+              -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include \
+              -c "$source" -o "$RUNNER_TEMP/p5r-ios-objects/${source##*/}.o"
+          done
+      - name: Ensure Apple Metal compiler is available
+        run: |
+          set -euo pipefail
+          if ! xcrun -sdk macosx metal --version; then
+            xcodebuild -downloadComponent metalToolchain
+          fi
+          xcrun -sdk macosx metal --version
+          xcrun -sdk iphoneos metal --version
+      - name: Run Python tool tests
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/p5r-tests"
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m pip install lz4==4.4.5
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_inspect_exefs.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_prepare_p5r_shaders.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_cpk_reader.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_crilayla.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_texture_audit.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_shader_buffer_reflection.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/verify -p test_equiv_compare.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/i18n -p test_scan_literals.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" dm/i18n/scan_literals.py
+          "$RUNNER_TEMP/p5r-tests/bin/python" dm/ios/tools/dm_i18n.py --check
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Compile translator and test synthetic Maxwell code
+        run: |
+          set -euo pipefail
+          dotnet publish dm/gfx/tools/dmsh_xlate/dmsh_xlate.csproj -c Release -o "$RUNNER_TEMP/p5r-translator" --nologo
+          P5R_TRANSLATOR="$RUNNER_TEMP/p5r-translator/dmsh_xlate" "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v
+          P5R_TRANSLATOR="$RUNNER_TEMP/p5r-translator/dmsh_xlate" "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_shader_query_audit.py -v
