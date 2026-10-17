@@ -25,12 +25,20 @@ int main(int argc,char **argv) {
       "vertex float v(In i [[stage_in]],In j [[stage_in]]){return i.x;}"};
     for(unsigned i=0;i<sizeof bad/sizeof *bad;i++){assert(nvn_vertex_bits_source(bad[i],kinds,&output,&mask,error,sizeof error));assert(!output);}
     kinds[0]=3;assert(nvn_vertex_bits_source(source,kinds,&output,&mask,error,sizeof error));kinds[0]=2;
+    const char *discard="struct V {float4 p[[position]];}; vertex V v(uint n[[vertex_id]]) { V out={}; side_effect(n); if(n){return out;} /* return ignored; } */ return out; }\nfragment float4 f(){return float4(1);}";
+    assert(!nvn_vertex_discard_source(discard,&output,error,sizeof error));assert(strstr(output,"vertex void v("));
+    assert(strstr(output,"side_effect(n); if(n){return;} /* return ignored; } */ return;"));assert(strstr(output,"fragment float4 f(){return float4(1);}"));free(output);
+    assert(nvn_vertex_discard_source("vertex V v(){return calculate();}",&output,error,sizeof error));assert(!output);
+    assert(nvn_vertex_discard_source("vertex V v(){V o;return o; /*",&output,error,sizeof error));assert(!output);
+    assert(!nvn_vertex_discard_source("vertex void v(){side_effect();}",&output,error,sizeof error));free(output);
     for(int i=1;i<argc;i++) {
         FILE *file=fopen(argv[i],"rb");assert(file);fseek(file,0,SEEK_END);long n=ftell(file);assert(n>=0);rewind(file);
         char *data=malloc((size_t)n+1);assert(data&&fread(data,1,n,file)==(size_t)n);fclose(file);data[n]=0;
         for(unsigned slot=0;slot<16;slot++)kinds[slot]=slot%2+1;
         if(nvn_vertex_bits_source(data,kinds,&output,&mask,error,sizeof error)){fprintf(stderr,"Unsupported input: %s\n",error);return 1;}
+        free(output);
+        if(nvn_vertex_discard_source(data,&output,error,sizeof error)){fprintf(stderr,"Unsupported discard: %s\n",error);return 1;}
         free(output);free(data);
     }
-    printf("VERTEX BITS OK: mixed fetch classes, unchanged body, strict grammar; %d local sources checked\n",argc-1);return 0;
+    printf("VERTEX BITS OK: mixed fetch classes, discard with side effects, strict grammar; %d local sources checked\n",argc-1);return 0;
 }

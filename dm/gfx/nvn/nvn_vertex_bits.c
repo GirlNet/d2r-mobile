@@ -88,3 +88,31 @@ int nvn_vertex_bits_source(const char *source,const uint8_t kinds[16],char **out
     if(!ok){free(b.p);return fail(error,error_size,"Vertex specialization exceeds bounds");}
     *output=b.p;if(applied)*applied=mask;return 0;
 }
+
+int nvn_vertex_discard_source(const char *source,char **output,char *error,size_t error_size) {
+    if(output)*output=NULL;if(!source||!output)return fail(error,error_size,"Invalid discard source arguments");
+    const char *entry=strstr(source,"vertex ");
+    if(!entry||strstr(entry+7,"vertex "))return fail(error,error_size,"Missing or ambiguous discard vertex entry");
+    cursor c={entry+7};spaces(&c);const char *type_start=c.p;char type[64];
+    if(!identifier(&c,type))return fail(error,error_size,"Missing discard vertex return type");
+    if(!strcmp(type,"void"))return copy_source(source,output);
+    const char *type_end=c.p,*body=strchr(c.p,'{');if(!body)return fail(error,error_size,"Missing discard vertex body");
+    size_t length=strlen(source);if(length>SIZE_MAX-16)return fail(error,error_size,"Discard source too large");
+    builder b={malloc(length+16),0,length+16};if(!b.p)return fail(error,error_size,"Discard source allocation failed");
+    int ok=append(&b,source,(size_t)(type_start-source))&&append(&b,"void",4)&&append(&b,type_end,(size_t)(body+1-type_end));
+    const char *p=body+1,*chunk=p;unsigned nesting=1,returns=0;
+    while(ok&&*p&&nesting) {
+        if(p[0]=='/'&&p[1]=='/'){while(*p&&*p!='\n')p++;continue;}
+        if(p[0]=='/'&&p[1]=='*'){p=strstr(p+2,"*/");if(!p){ok=0;break;}p+=2;continue;}
+        if(*p=='"'||*p=='\''){char quote=*p++;while(*p&&*p!=quote){if(*p=='\\'){p++;if(!*p)break;}p++;}if(!*p){ok=0;break;}p++;continue;}
+        if(*p=='{')nesting++;else if(*p=='}')nesting--;
+        if(!strncmp(p,"return",6)&&(p==body+1||(!isalnum((unsigned char)p[-1])&&p[-1]!='_'))&&!isalnum((unsigned char)p[6])&&p[6]!='_') {
+            cursor value={p+6};char name[64];if(!identifier(&value,name)||!literal(&value,";")){ok=0;break;}
+            ok=append(&b,chunk,(size_t)(p-chunk))&&append(&b,"return;",7);p=value.p;chunk=p;returns++;continue;
+        }
+        p++;
+    }
+    ok=ok&&!nesting&&returns&&append(&b,chunk,strlen(chunk));
+    if(!ok){free(b.p);return fail(error,error_size,"Unsupported discard vertex return or body");}
+    *output=b.p;return 0;
+}

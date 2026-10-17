@@ -15,11 +15,12 @@ int main(void){@autoreleasepool{
     CHECK(dm_guest_profile_select("p5r"));mtl_init();NSError *error=nil;
     NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
       "struct V {float4 p[[position]];};\nvertex V v(uint n[[vertex_id]],device atomic_uint *seen[[buffer(16)]]){"
-      "atomic_fetch_or_explicit(seen,1u<<n,memory_order_relaxed);float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return {float4(p[n],.5,1)};}\n"
+      "atomic_fetch_or_explicit(seen,1u<<n,memory_order_relaxed);float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};V out={float4(p[n],.5,1)};return out;}\n"
       "fragment float4 f(){return float4(1,0,0,1);}";
     id<MTLLibrary> library=[g_dev newLibraryWithSource:source options:nil error:&error];
     if(!library)fprintf(stderr,"%s\n",error.localizedDescription.UTF8String);CHECK(library);
     prog_t program={.serial=995000};NvProg *native=[NvProg new];native->sh[0]=[NvShader new];native->sh[0]->fn=[library newFunctionWithName:@"v"];
+    native->sh[0]->vertex_source=source;native->sh[0]->vertex_entry=@"v";
     native->sh[1]=[NvShader new];native->sh[1]->fn=[library newFunctionWithName:@"f"];native->sh[1]->stage=1;serial_put(program.serial,native);
     tex_t colour={.serial=995001},depth={.serial=995002};colour.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=8,.height=4,.depth=1,.levels=1,.samples=1};
     depth.d=colour.d;depth.d.format=NVN_FORMAT_DEPTH32F;

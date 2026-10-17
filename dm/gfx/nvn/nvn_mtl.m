@@ -2648,7 +2648,7 @@ static unsigned vertex_integer_class(MTLVertexFormat format) {
 }
 static id<MTLFunction> vertex_fetch_function(NvShader *shader,const pso_key *key) {
     if(dm_guest_d2r())return shader->fn;
-    uint8_t kinds[16]={0};uint32_t requested=0;
+    uint8_t kinds[16]={0};uint64_t requested=(uint64_t)key->raster_discard<<32;
     for(unsigned i=0;i<shader->rf.nv;i++) {
         unsigned attr=shader->rf.v[i].nvn,location=shader->rf.v[i].loc;
         if(attr>=16||location>=16)MDIE("Vertex input mapping exceeds host limits");
@@ -2657,15 +2657,18 @@ static id<MTLFunction> vertex_fetch_function(NvShader *shader,const pso_key *key
     if(!requested)return shader->fn;
     @synchronized(shader) {
         id<MTLFunction> function=shader->vertex_variants[@(requested)];if(function)return function;
-        if(!shader->vertex_source)MDIE("P5R integer vertex input requires retained MSL source: %s",shader->key);
+        if(!shader->vertex_source)MDIE("P5R vertex specialization requires retained MSL source: %s",shader->key);
         char *converted=NULL,error[160];uint32_t applied;
         if(nvn_vertex_bits_source(shader->vertex_source.UTF8String,kinds,&converted,&applied,error,sizeof error))MDIE("P5R vertex specialization: %s",error);
-        if(!applied){free(converted);return shader->fn;}
+        if(key->raster_discard) {
+            char *discarded=NULL;if(nvn_vertex_discard_source(converted,&discarded,error,sizeof error))MDIE("Vertex rasterizer discard: %s",error);
+            free(converted);converted=discarded;
+        } else if(!applied){free(converted);return shader->fn;}
         NSString *source=[[NSString alloc] initWithUTF8String:converted];free(converted);
         MTLCompileOptions *options=[MTLCompileOptions new];options.fastMathEnabled=NO;NSError *failure=nil;
         id<MTLLibrary> library=[g_dev newLibraryWithSource:source options:options error:&failure];
         function=library?[library newFunctionWithName:shader->vertex_entry?:shader->fn.name]:nil;
-        if(!function)MDIE("P5R integer vertex input compilation failed: %s",failure.localizedDescription.UTF8String);
+        if(!function)MDIE("P5R vertex variant compilation failed: %s",failure.localizedDescription.UTF8String);
         if(!shader->vertex_variants)shader->vertex_variants=[NSMutableDictionary dictionary];shader->vertex_variants[@(requested)]=function;return function;
     }
 }
