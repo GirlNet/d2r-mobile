@@ -37,6 +37,11 @@ typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; } queue_t;   
 
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
 typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; } pool_t;                FITS(pool_t, NVNmemoryPool);
+static inline int nvn_shader_scratch_valid(const pool_t *pool, ptrdiff_t offset, size_t bytes) {
+    if(!pool)return offset==0 && bytes==0;
+    return pool->magic==MAGIC('P','O','O','L') && offset>=0 && (uint64_t)offset<=pool->size &&
+           (uint64_t)bytes<=pool->size-(uint64_t)offset;
+}
 
 // 缓冲是现有池的有界视图，不拥有存储，也不创建或提交额外 GPU 对象。
 // A buffer is a bounded view of an existing pool; it owns no storage and creates or submits no additional GPU objects.

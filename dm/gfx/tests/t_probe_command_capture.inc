@@ -39,7 +39,6 @@ P(nvnCommandBufferDownsampleTextureView)(&command,NULL,NULL,NULL,NULL);
 P(nvnCommandBufferTiledDownsampleTextureView)(&command,NULL,NULL,NULL,NULL);
 P(nvnCommandBufferWaitSync)(&command,NULL);
 P(nvnCommandBufferFenceSync)(&command,NULL,(NVNsyncCondition)257,(int)257);
-P(nvnCommandBufferSetShaderScratchMemory)(&command,NULL,(ptrdiff_t)257,(size_t)257);
 P(nvnCommandBufferSaveZCullData)(&command,(NVNbufferAddress)257,(size_t)257);
 P(nvnCommandBufferRestoreZCullData)(&command,(NVNbufferAddress)257,(size_t)257);
 P(nvnCommandBufferDrawTexture)(&command,(NVNtextureHandle)257,NULL,NULL);
@@ -93,7 +92,6 @@ const char *names[]={
     "nvnCommandBufferTiledDownsampleTextureView",
     "nvnCommandBufferWaitSync",
     "nvnCommandBufferFenceSync",
-    "nvnCommandBufferSetShaderScratchMemory",
     "nvnCommandBufferSaveZCullData",
     "nvnCommandBufferRestoreZCullData",
     "nvnCommandBufferDrawTexture",

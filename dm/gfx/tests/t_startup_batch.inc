@@ -150,6 +150,18 @@ P(nvnSyncSetDebugLabel)(&sync,"synthetic");
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetSampleMask)(&command,-1);EXPECT("sample mask command",1,((op_hdr *)record)->op==OP_SAMPLE_MASK && *(const uint32_t *)(record+8)==UINT32_MAX);}
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetRenderEnable)(&command,0x101);EXPECT("render enable command",1,((op_hdr *)record)->op==OP_RENDER_ENABLE && *(const uint32_t *)(record+8)==1);}
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetConservativeRasterEnable)(&command,0x100);EXPECT("conservative default command",1,((op_hdr *)record)->op==OP_CONSERVATIVE_RASTER && *(const uint32_t *)(record+8)==0);}
+    EXPECT("scratch bounded reservation",1,nvn_shader_scratch_valid((pool_t *)&pool,4096,16384));
+    EXPECT("scratch end zero size",1,nvn_shader_scratch_valid((pool_t *)&pool,sizeof storage,0));
+    EXPECT("scratch reset",1,nvn_shader_scratch_valid(NULL,0,0));
+    EXPECT("scratch missing pool",0,nvn_shader_scratch_valid(NULL,0,1));
+    EXPECT("scratch negative offset",0,nvn_shader_scratch_valid((pool_t *)&pool,-1,0));
+    EXPECT("scratch offset overflow",0,nvn_shader_scratch_valid((pool_t *)&pool,sizeof storage+1,0));
+    EXPECT("scratch size overflow",0,nvn_shader_scratch_valid((pool_t *)&pool,1,SIZE_MAX));
+    pool_t badScratchPool={0};EXPECT("scratch invalid pool",0,nvn_shader_scratch_valid(&badScratchPool,0,0));
+    uint8_t *savedCommandCursor=CB(&command)->cur;
+    P(nvnCommandBufferSetShaderScratchMemory)(&command,&pool,4096,16384);
+    P(nvnCommandBufferSetShaderScratchMemory)(&command,NULL,0,0);
+    EXPECT("Metal owns private scratch; no guest command allocation",1,CB(&command)->cur==savedCommandCursor);
 
     EXPECT("host builder storage class",0x100,P(nvnTextureBuilderGetStorageClass)(&tb));
     EXPECT("host texture storage class",0x100,P(nvnTextureGetStorageClass)(&tex));

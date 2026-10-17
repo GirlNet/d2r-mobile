@@ -871,6 +871,13 @@ NVN(nvnCommandBufferSetRasterizerDiscard, void, NVNcommandBuffer *c, uint32_t en
 NVN(nvnCommandBufferSetSampleMask, void, NVNcommandBuffer *c, int mask) { *(uint32_t *)rec(c, OP_SAMPLE_MASK, sizeof(uint32_t)) = (uint32_t)mask; }
 NVN(nvnCommandBufferSetRenderEnable, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_RENDER_ENABLE, sizeof(uint32_t)) = B(enabled) != 0; }
 NVN(nvnCommandBufferSetConservativeRasterEnable, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_CONSERVATIVE_RASTER, sizeof(uint32_t)) = B(enabled) != 0; }
+NVN(nvnCommandBufferSetShaderScratchMemory, void, NVNcommandBuffer *c, const NVNmemoryPool *pool, ptrdiff_t offset, size_t bytes) {
+    if(!nvn_shader_scratch_valid((const pool_t *)pool,offset,bytes))die("Invalid NVN shader scratch memory range");
+    // Translated shader private/spill storage is allocated by Metal. This NVN
+    // backing reservation is not a shader-visible resource on the host; binding
+    // it must not alias a uniform/storage buffer or transfer guest pool contents.
+    (void)c;
+}
 NVN(nvnCommandBufferSetDepthBounds, void, NVNcommandBuffer *c, uint32_t enabled, float minimum, float maximum) {
     *REC(c,OP_DEPTH_BOUNDS,p_depth_bounds)=(p_depth_bounds){enabled!=0,minimum,maximum};
 }
@@ -1013,7 +1020,6 @@ static const char *const g_nops[] = {
     "nvnCommandBufferDispatchComputeIndirect",
     "nvnCommandBufferDownsampleTextureView",
     "nvnCommandBufferWaitSync",
-    "nvnCommandBufferSetShaderScratchMemory",
     "nvnCommandBufferPushDebugGroupDynamic",
     "nvnCommandBufferPopDebugGroup",
     "nvnCommandBufferInsertDebugMarkerDynamic",
