@@ -54,6 +54,9 @@ def audit_texture_resources(job, resource, code):
         if name in ('Texs', 'TexsF16', 'Tlds', 'TldsF16'):
             target = (word >> 53) & 15
             value = _numeric_type((TEXS if name.startswith('Texs') else TLDS).get(target))
+        elif name in ('Tld4s', 'Tld4sF16'):
+            # Scalar gather has fixed 2D coordinates; Dc selects comparison.
+            value = 3 | (0x400 if word & (1 << 50) else 0)
         elif name in ('Tex', 'Tld', 'Tld4', 'Txd', 'Tmml'):
             value = DIMENSIONS[(word >> 28) & 7]
             if name == 'Tld' and ((word >> 28) & 7) == 0:

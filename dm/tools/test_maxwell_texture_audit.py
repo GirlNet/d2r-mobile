@@ -105,5 +105,16 @@ class TextureResourceShapeTests(unittest.TestCase):
         self.assertTrue(self.audit(word, ty=3 | 0x200)['all_shader_shapes_corroborated'])
         self.assertFalse(self.audit(word, ty=3 | 0x400)['all_shader_shapes_corroborated'])
 
+    def test_scalar_gather_fixed_2d_shadow_and_component_offset_bits(self):
+        for name in ('Tld4s', 'Tld4sF16'):
+            for shadow in (0,1):
+                for component in range(4):
+                    for offset in (0,1):
+                        word=encoding(name)|(8<<36)|(shadow<<50)|(offset<<51)|(component<<52)
+                        result=self.audit(word,ty=3|(shadow<<10))
+                        self.assertTrue(result['all_shader_shapes_corroborated'])
+                        self.assertEqual(result['bindings'][0]['evidence'][0]['handle'],8)
+                        self.assertFalse(result['runtime_ready'])
+
 
 if __name__ == '__main__': unittest.main()
