@@ -6,6 +6,8 @@ Status: **experimental runtime adaptation in progress; P5R does not yet run on i
 
 Preset-cache coverage now includes bounded local CPK/@UTF reading and CRILAYLA decoding. Pass repeated `--cpk` arguments to `prepare_p5r_shaders.py` to include GFDNX `.GSC` caches alongside embedded shaders. Each selected entry records stored/decoded hashes and shader origins; identical controls are deduplicated and conflicting keys fail. A local inventory found 30,646 unique shaders across the executable and nine preset caches. This expands coverage, without establishing translation, resource format or gameplay correctness. Only synthetic archives enter source control and CI.
 
+`SetCopyImageStride` now records an executable command and supplies an independent image pitch to buffer/texture copies, including arrays, 3D textures and the CPU BC fallback. Zero restores tight image packing for the selected row pitch. Invalid/overflowing copy layouts stop before GPU encoding. Synthetic array/3D GPU tests check distinct layer pixels and untouched row/image padding; this interface is no longer a diagnostic capture wrapper (65 remain).
+
 ## What is implemented
 
 - `dm/tools/inspect_exefs.py`: validates NSO segment bounds and enabled SHA-256 hashes, reads ELF64 imports/exports, records build IDs and reports candidate dependency providers. Original `rtld` exports are excluded because the host replaces that loader.
