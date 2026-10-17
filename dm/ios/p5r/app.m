@@ -27,17 +27,29 @@ void front_run(void (*guest)(void)) { guest(); }
 void front_save_failed(int error) { LOG("P5R save transaction failed: %d", error); }
 int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int cap) {
     if (!controller || !out || cap < 1 || NSThread.isMainThread) return -1;
-    (void)guide; (void)max_chars;
     dispatch_semaphore_t done = dispatch_semaphore_create(0); __block int accepted = 0;
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:title ? @(title) : @"" message:sub ? @(sub) : @"" preferredStyle:UIAlertControllerStyleAlert];
-        [alert addTextFieldWithConfigurationHandler:^(UITextField *field) { field.text = initial ? @(initial) : @""; }];
+        NSString *subtitle=sub?@(sub):@"",*hint=guide?@(guide):@"";
+        NSString *message=subtitle.length&&hint.length&&![subtitle isEqual:hint]?[NSString stringWithFormat:@"%@\n%@",subtitle,hint]:subtitle.length?subtitle:hint;
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:title ? @(title) : @"" message:message preferredStyle:UIAlertControllerStyleAlert];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+            field.text = initial ? @(initial) : @"";field.autocorrectionType=UITextAutocorrectionTypeNo;field.spellCheckingType=UITextSpellCheckingTypeNo;
+        }];
+        __weak UITextField *inputField=alert.textFields.firstObject;
         [alert addAction:[UIAlertAction actionWithTitle:text("dmP5RCancel") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) { (void)action; dispatch_semaphore_signal(done); }]];
-        [alert addAction:[UIAlertAction actionWithTitle:text("dmP5RAccept") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            (void)action; const char *value = alert.textFields.firstObject.text.UTF8String ?: "";
+        UIAlertAction *accept=[UIAlertAction actionWithTitle:text("dmP5RAccept") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action; const char *value = inputField.text.UTF8String ?: "";
             if (strlen(value) < (size_t)cap) { memcpy(out, value, strlen(value) + 1); accepted = 1; }
             dispatch_semaphore_signal(done);
-        }]];
+        }];[alert addAction:accept];
+        __weak UIAlertAction *weakAccept=accept;
+        void (^validate)(void)=^{
+            UITextField *field=inputField;NSString *value=field.text?:@"";
+            weakAccept.enabled=field && !field.markedTextRange && (max_chars<=0 || value.length<=(NSUInteger)max_chars)
+                && [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding]<(NSUInteger)cap;
+        };
+        [inputField addAction:[UIAction actionWithHandler:^(UIAction *action){(void)action;validate();}] forControlEvents:UIControlEventEditingChanged];
+        validate();
         [controller presentViewController:alert animated:YES completion:nil];
     });
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER); return accepted;

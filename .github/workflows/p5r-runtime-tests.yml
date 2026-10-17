@@ -180,6 +180,9 @@ jobs:
           dm/host/tests/build/t_hid_receipt
           xcrun clang -Wall -Wextra -Werror dm/host/tests/t_p5r_stick.c -o "$RUNNER_TEMP/p5r-stick"
           "$RUNNER_TEMP/p5r-stick"
+          make -C dm/host/tests build/t_swkbd build/t_swkbd_p5r
+          dm/host/tests/build/t_swkbd
+          dm/host/tests/build/t_swkbd_p5r
       - name: Check filesystem transactions and exact path behavior
         run: |
           set -euo pipefail
