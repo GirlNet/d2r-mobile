@@ -134,7 +134,7 @@ jobs:
           dm/gfx/tests/t_nvn_gpu_setup --pre-submit-probe "$RUNNER_TEMP/p5r-real-pre-submit"
           dm/gfx/tests/t_nvn_gpu_setup --capture-disabled-check
           dm/gfx/tests/t_nvn_gpu_setup --capture-command-probe "$RUNNER_TEMP/p5r-command-capture"
-          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-command-capture/boot-report.json")); c=r["diagnostic_only_calls"]; assert len(c)==60 and r["diagnostic_only_call_count"]==60 and r["status"]=="blocked_before_unverified_operation" and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"] and not r["command_stream_gpu_verified"]; assert c["nvnCommandBufferSetDepthBounds"]["last_argument_bits"]==["0x0000000000000101","0x000000003e800000","0x000000003e800000"]'
+          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-command-capture/boot-report.json")); c=r["diagnostic_only_calls"]; assert len(c)==59 and r["diagnostic_only_call_count"]==59 and r["status"]=="blocked_before_unverified_operation" and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"] and not r["command_stream_gpu_verified"]; assert c["nvnCommandBufferSetSampleMask"]["last_argument_bits"]==["0x0000000000000101"]'
           python3 dm/gfx/tests/test_gpu_submit_guards.py
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-pre-submit/boot-report.json")); assert r["status"]=="blocked_before_unverified_operation" and r["gpu_initialization_completed"] and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"]'
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-metal-setup/boot-report.json")); assert r["status"]=="stopped_after_gpu_initialization" and r["gpu_backend"]=="Metal 3" and r["gpu_initialization_completed"] and not r["guest_gpu_work_submitted"] and not r["graphics_verified"] and not r["runtime_ready"]'
@@ -143,6 +143,18 @@ jobs:
           set -euo pipefail
           make -C dm/gfx/tex/tests t_linear_layout
           dm/gfx/tex/tests/t_linear_layout
+      - name: Check depth bounds on supported hardware
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_depth_bounds_gpu
+          set +e
+          dm/gfx/tests/t_depth_bounds_gpu
+          result=$?
+          if [ "$result" -eq 77 ] || [ "$result" -eq 78 ]; then
+            echo '::warning::Active depth-bounds GPU comparisons require Apple10; skipped on this runner.'
+            exit 0
+          fi
+          exit "$result"
       - name: Check production texture views with synthetic GPU pixels
         run: |
           set -euo pipefail

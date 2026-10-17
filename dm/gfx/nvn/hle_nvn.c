@@ -866,6 +866,9 @@ NVN(nvnCommandBufferSetCopyRowStride, void, NVNcommandBuffer *c, ptrdiff_t st) {
 NVN(nvnCommandBufferSetCopyImageStride, void, NVNcommandBuffer *c, ptrdiff_t st) { REC(c, OP_COPY_IMAGE_STRIDE, p_copy_stride)->stride = st; }
 NVN(nvnCommandBufferSetDepthClamp, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_DEPTH_CLAMP, sizeof(uint32_t)) = enabled != 0; }
 NVN(nvnCommandBufferSetRasterizerDiscard, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_RASTER_DISCARD, sizeof(uint32_t)) = enabled != 0; }
+NVN(nvnCommandBufferSetDepthBounds, void, NVNcommandBuffer *c, uint32_t enabled, float minimum, float maximum) {
+    *REC(c,OP_DEPTH_BOUNDS,p_depth_bounds)=(p_depth_bounds){enabled!=0,minimum,maximum};
+}
 NVN(nvnCommandBufferSetPrimitiveRestart, void, NVNcommandBuffer *c, uint32_t enabled, int index) {
     *REC(c,OP_PRIMITIVE_RESTART,p_primitive_restart)=(p_primitive_restart){enabled!=0,(uint32_t)index};
 }
@@ -998,7 +1001,6 @@ static const char *const g_nops[] = {
     "nvnCommandBufferMultiDrawArraysIndirectCount",
     "nvnCommandBufferMultiDrawElementsIndirectCount",
     "nvnCommandBufferDispatchComputeIndirect",
-    "nvnCommandBufferSetDepthBounds",
     "nvnCommandBufferDownsampleTextureView",
     "nvnCommandBufferWaitSync",
     "nvnCommandBufferSetShaderScratchMemory",

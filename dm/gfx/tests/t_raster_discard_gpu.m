@@ -13,8 +13,8 @@ int main(void){@autoreleasepool{
     if(!MTLCreateSystemDefaultDevice())return 77;
     CHECK(dm_guest_profile_select("p5r"));mtl_init();NSError *error=nil;
     NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
-      "vertex float4 v(uint n[[vertex_id]],device atomic_uint *seen[[buffer(16)]])[[position]]{"
-      "atomic_fetch_or_explicit(seen,1u<<n,memory_order_relaxed);float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return float4(p[n],.5,1);}\n"
+      "struct V {float4 p[[position]];};\nvertex V v(uint n[[vertex_id]],device atomic_uint *seen[[buffer(16)]]){"
+      "atomic_fetch_or_explicit(seen,1u<<n,memory_order_relaxed);float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return {float4(p[n],.5,1)};}\n"
       "fragment float4 f(){return float4(1,0,0,1);}";
     id<MTLLibrary> library=[g_dev newLibraryWithSource:source options:nil error:&error];
     if(!library)fprintf(stderr,"%s\n",error.localizedDescription.UTF8String);CHECK(library);

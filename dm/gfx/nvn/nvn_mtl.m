@@ -2557,7 +2557,19 @@ static struct {
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp;
     float blend_color[4]; int64_t copy_stride, copy_image_stride; uint32_t depth_clamp,raster_discard;
     p_primitive_restart restart;
+    p_depth_bounds depth_bounds;
 } S;
+static int depth_bounds_supported(void) {
+    if(@available(macOS 26.0,iOS 26.0,*))return [g_dev supportsFamily:MTLGPUFamilyApple10];
+    return 0;
+}
+static void apply_depth_bounds(RENC encoder) {
+    float minimum=S.depth_bounds.enabled?S.depth_bounds.minimum:0,maximum=S.depth_bounds.enabled?S.depth_bounds.maximum:1;
+    if(!isfinite(minimum)||!isfinite(maximum)||minimum<0||maximum>1||minimum>maximum)MDIE("Unsupported depth bounds [%g,%g]",minimum,maximum);
+    if(depth_bounds_supported()) {
+        if(@available(macOS 26.0,iOS 26.0,*))[encoder setDepthTestMinBound:minimum maxBound:maximum];
+    } else if(minimum!=0||maximum!=1)MDIE("Depth bounds testing requires Apple10 and OS 26 or newer");
+}
 static void udc_note_draw(NvProg *pr) {
     if (R.has_rt) for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i]) { zskip_del(R.rt.color[i]->serial); g_zskip_cand_ok[i] = 0; }   // 零源集合：真画了就不再是全零 | Zero-source set: once really drawn it is no longer all zeros
     if (pr) for (int st = 0; st < 6; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue; for (int i = 0; i < sh->rf.nb; i++) if (sh->rf.b[i].kind == NVN_RB_IMG) { zskip_clear(); break; } }   // 图像槽可写：保守清空 | Image slots are writable: conservatively clear
@@ -3444,6 +3456,7 @@ static int state_op(uint32_t op, const void *a) {
         case OP_COPY_IMAGE_STRIDE: S.copy_image_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_DEPTH_CLAMP: S.depth_clamp = *(const uint32_t *)a != 0; break;
         case OP_RASTER_DISCARD: {uint32_t value=*(const uint32_t *)a!=0;if(S.raster_discard!=value){S.raster_discard=value;g_pso_dirty=1;}break;}
+        case OP_DEPTH_BOUNDS: S.depth_bounds=*(const p_depth_bounds *)a;break;
         case OP_PRIMITIVE_RESTART: S.restart = *(const p_primitive_restart *)a; break;
         default: return 0;
     }
@@ -4821,6 +4834,7 @@ frz_plain:;
     enc_r_winding(en, S.poly.front == NVN_FRONT_FACE_CCW ? MTLWindingCounterClockwise : MTLWindingClockwise);
     enc_r_fill(en, S.poly.mode == NVN_POLYGON_MODE_LINE ? MTLTriangleFillModeLines : MTLTriangleFillModeFill);
     enc_r_depth_clip(en, !S.depth_clamp);
+    apply_depth_bounds(en);
     if (S.poly.offset_en & 4) enc_r_depth_bias(en, S.po.units, S.po.factor, S.po.clamp); else enc_r_depth_bias(en, 0, 0, 0);
     enc_r_blend_color(en, S.blend_color[0], S.blend_color[1], S.blend_color[2], S.blend_color[3]);
     for (int s_ = 0; s_ < 16; s_++) {
@@ -5562,7 +5576,7 @@ void mtl_exec(const uint8_t *p) {
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
-            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART: case OP_RASTER_DISCARD:
+            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART: case OP_RASTER_DISCARD: case OP_DEPTH_BOUNDS:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
             case OP_COPY_T2B: copy_t2b(a); break;

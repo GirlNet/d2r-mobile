@@ -122,7 +122,7 @@ enum {
     OP_BIND_PROGRAM, OP_BIND_STATE, OP_BIND_VATTR, OP_BIND_VSTREAM, OP_BIND_VBUF,
     OP_BIND_UBO, OP_BIND_SSBO, OP_BIND_TEX, OP_BIND_SAMP,
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
-    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_COPY_IMAGE_STRIDE, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_PRIMITIVE_RESTART, OP_RASTER_DISCARD, OP_COUNT_
+    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_COPY_IMAGE_STRIDE, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_PRIMITIVE_RESTART, OP_RASTER_DISCARD, OP_DEPTH_BOUNDS, OP_COUNT_
 };
 // 载荷（紧跟 op_hdr）
 // Payload (immediately follows op_hdr)
@@ -151,6 +151,7 @@ typedef struct { const tex_t *tex; view_t view; uint8_t has_view, value_type; NV
 typedef struct { int64_t stride; } p_copy_stride;
 typedef struct { uint64_t address, size; uint32_t value; } p_clear_buf;
 typedef struct { uint32_t enabled,index; } p_primitive_restart;
+typedef struct { uint32_t enabled;float minimum,maximum; } p_depth_bounds;
 typedef struct { float rgba[4]; } p_blend_color;
 
 // Metal 回放层入口（nvn_mtl.m）：把一组命令句柄回放进当前提交

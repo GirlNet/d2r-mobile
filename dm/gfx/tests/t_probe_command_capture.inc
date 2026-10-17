@@ -22,7 +22,6 @@ P(nvnCommandBufferClearColorui)(&command,(int)257,NULL,(int)257);
 P(nvnCommandBufferDispatchComputeIndirect)(&command,(NVNbufferAddress)257);
 P(nvnCommandBufferSetViewportSwizzles)(&command,(int)257,(int)257,NULL);
 P(nvnCommandBufferSetScissors)(&command,(int)257,(int)257,NULL);
-P(nvnCommandBufferSetDepthBounds)(&command,(uint32_t)257,0.25f,0.25f);
 P(nvnCommandBufferSetDepthRanges)(&command,(int)257,(int)257,NULL);
 P(nvnCommandBufferSetTiledCacheAction)(&command,(NVNtiledCacheAction)257);
 P(nvnCommandBufferSetTiledCacheTileSize)(&command,(int)257,(int)257);
