@@ -29,6 +29,7 @@ static void *proc(const char *n) { void *p = (void *)gpa(&dev, n); if (!p) { pri
 #include "t_texture_linear.inc"
 #include "t_queue_sync.inc"
 #include "t_copy_image_stride.inc"
+#include "t_clear_buffer.inc"
 
 // 命令内存回调：每次给一段 256 字节的新内存（强制多段 JUMP 链）
 // Command memory callback: hands out a new 256-byte memory segment each time (forces a multi-segment JUMP chain)
@@ -322,6 +323,7 @@ int main(int argc, char **argv) {
     EXPECT("DeviceInitialize 成功", 1, P(nvnDeviceInitialize)(&dev, &db));
     if (argc == 2 && !strcmp(argv[1], "--queue-sync-gpu")) return test_queue_sync_gpu();
     if (argc == 2 && !strcmp(argv[1], "--copy-image-stride-gpu")) return test_copy_image_stride_gpu();
+    if (argc == 2 && !strcmp(argv[1], "--clear-buffer-gpu")) return test_clear_buffer_gpu();
     int v; P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_UNIFORM_BUFFER_ALIGNMENT, &v);
     EXPECT("uniform 缓冲对齐（X1 实测 256）", 256, v);
     P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_TEXTURE_DESCRIPTOR_SIZE, &v); EXPECT("贴图描述符大小（32）", 32, v);
