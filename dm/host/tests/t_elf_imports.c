@@ -24,6 +24,7 @@ static uint64_t relocated(unsigned binding, unsigned section, unsigned type, int
     uint64_t result; memcpy(&result,image+0x100,sizeof result); return result;
 }
 int main(void) {
+    force_init();
     g_nmod=1;
     const unsigned types[]={R_AARCH64_ABS64,R_AARCH64_GLOB_DAT,R_AARCH64_JUMP_SLOT};
     for (int binding=1;binding<=2;binding++) for (unsigned i=0;i<3;i++) {
@@ -51,6 +52,7 @@ int main(void) {
     assert(relocated(2,0,R_AARCH64_GLOB_DAT,0,"guest_provider")== (uint64_t)other+0x200);
     assert(relocated(1,0,R_AARCH64_JUMP_SLOT,0,"guest_provider")== (uint64_t)other+0x200);
     free(g_mod[1].symh);
+    free(g_force); free(g_force_hits);
     puts("ELF IMPORTS OK: optional weak callbacks, guest/host definitions, strong stub reuse and relocation addends");
     return 0;
 }
