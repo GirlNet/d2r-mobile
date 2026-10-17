@@ -504,7 +504,7 @@ typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t ad
 // and a report hands the slot table together with its buffer (retained) to the completion callback to sum and write back; after a report a new slot is used, so later draws are not counted into the reported value.
 // (Previously always wrote 0: occlusion query = 'fully occluded', campfires / light sources got culled - the character select screen calls ResetCounter 21 times per frame)
 typedef struct { void *buf; uint32_t slot; } vis_slot;
-typedef struct { int n; vis_slot s[]; } vis_list;
+typedef struct { uint64_t base; int n; vis_slot s[]; } vis_list;
 #define VIS_SLOTS 8192
 typedef struct { __strong id<MTLBuffer> buf; uint64_t fence; } vis_buf;
 static vis_buf g_vis_ring[4]; static int g_vis_ring_n, g_vis_ring_i = -1;
@@ -512,10 +512,18 @@ static id<MTLBuffer> g_vis; static uint32_t g_vis_n;   // 本次提交的可见�
 static int vis_in_ring(id<MTLBuffer> b) { for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].buf == b) return 1; return 0; }
 static int g_vis_on, g_vis_counting, g_vis_cur = -1; static uint64_t g_vis_cur_pass;
 static vis_slot *g_vs; static int g_nvs, g_vscap;      // 自上次清零以来的槽 | Slots since the last reset
+static uint64_t g_vis_base;
 static uint64_t g_cnt_report[32], g_cnt_reset[32];       // 各计数器类型的报告 / 清零次数（诊断） | Report / reset counts per counter type (diagnostics)
-static void vis_clear(void) { for (int i = 0; i < g_nvs; i++) CFRelease(g_vs[i].buf); g_nvs = 0; g_vis_cur = -1; }
+static void vis_clear(void) { for (int i = 0; i < g_nvs; i++) CFRelease(g_vs[i].buf); g_nvs = 0; g_vis_cur = -1; g_vis_base=0; }
+// Only after waiting for all submitted work and CPU counter callbacks. Preserve
+// accumulated samples before a conditional-render split reuses visibility slots.
+static void vis_fold_completed(void) {
+    uint64_t total=g_vis_base;
+    for(int i=0;i<g_nvs;i++)total+=((const uint64_t *)((__bridge id<MTLBuffer>)g_vs[i].buf).contents)[g_vs[i].slot];
+    vis_clear();g_vis_base=total;
+}
 static vis_list *vis_snapshot(void) {
-    vis_list *l = malloc(sizeof *l + g_nvs * sizeof(vis_slot)); l->n = g_nvs;
+    vis_list *l = malloc(sizeof *l + g_nvs * sizeof(vis_slot)); l->n = g_nvs;l->base=g_vis_base;
     for (int i = 0; i < g_nvs; i++) { l->s[i] = g_vs[i]; CFRetain(g_vs[i].buf); }
     return l;
 }
@@ -880,7 +888,7 @@ uint64_t mtl_sub_commit(void) {
         for (int i = 0; i < n; i++) {
             if (ops[i].kind == 1) { if (ops[i].mode == 1) *ops[i].val += ops[i].v; else *ops[i].val = ops[i].v; }
             else if (ops[i].kind == 3) {   // 通过采样数：自清零以来各槽之和 | Samples passed: the sum of all slots since the reset
-                vis_list *l = ops[i].vis; uint64_t sum = 0;
+                vis_list *l = ops[i].vis; uint64_t sum = l->base;
                 for (int k = 0; k < l->n; k++) { sum += ((const uint64_t *)((__bridge id<MTLBuffer>)l->s[k].buf).contents)[l->s[k].slot]; CFRelease(l->s[k].buf); }
                 free(l); uint64_t rec[2] = {sum, gpu_ticks()}; memcpy((void *)ops[i].addr, rec, sizeof rec);
             }
@@ -2557,9 +2565,27 @@ static struct {
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp;
     float blend_color[4]; int64_t copy_stride, copy_image_stride; uint32_t depth_clamp,raster_discard;
     uint32_t sample_mask,render_enable,conservative_raster;
+    uint32_t conditional_active;p_conditional_render conditional;
     p_primitive_restart restart;
     p_depth_bounds depth_bounds;
 } S;
+static int render_allowed(void) {
+    if(dm_guest_d2r())return 1;
+    if(!S.render_enable)return 0;
+    if(!S.conditional_active)return 1;
+    void *native=NULL;uint64_t offset=0;
+    if(!mtl_addr(S.conditional.address,24,&native,&offset))MDIE("Conditional render input is outside a registered buffer");
+    id<MTLBuffer> buffer=(__bridge id<MTLBuffer>)native;
+    if(!buffer.contents)MDIE("Conditional render input is not CPU-readable");
+    // A conservative synchronous path. Waiting on g_done includes CPU query
+    // callbacks, so ReportCounter data and preceding GPU writes are both ready.
+    uint64_t fence=mtl_sub_commit();
+    if(!mtl_wait(fence,5000000000ull) || mtl_last_commit_error())MDIE("Conditional render input synchronization failed");
+    int allowed=0;
+    if(!nvn_conditional_render_decode((int)S.conditional.mode,(const uint8_t *)buffer.contents+offset,24,&allowed))
+        MDIE("Invalid conditional render comparison");
+    vis_fold_completed();mtl_sub_begin();return allowed;
+}
 static int depth_bounds_supported(void) {
     if(@available(macOS 26.0,iOS 26.0,*))return [g_dev supportsFamily:MTLGPUFamilyApple10];
     return 0;
@@ -2768,7 +2794,6 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
 // Pipeline key: current state S + pass formats (normal pass; a merged pass additionally carries lmap / specialized function, filled in by pso_get)
 static void pso_key_fill(pso_key *k, NvShader *vs, NvShader *fs, const uint32_t cfmt[8], uint32_t dfmt, uint32_t sfmt, uint32_t samples, int lmap) {
     if(!dm_guest_d2r()) {
-        if(!S.render_enable)MDIE("P5R disabled rendering is not implemented");
         unsigned count=samples?samples:1;uint32_t active=count>=32?UINT32_MAX:(UINT32_C(1)<<count)-1;
         if(!S.raster_discard && ((S.sample_mask&active)!=active || S.conservative_raster))
             MDIE("Unsupported P5R raster state: sample-mask=%#x active=%#x conservative=%u",S.sample_mask,active,S.conservative_raster);
@@ -3471,8 +3496,9 @@ static int state_op(uint32_t op, const void *a) {
         case OP_DEPTH_CLAMP: S.depth_clamp = *(const uint32_t *)a != 0; break;
         case OP_RASTER_DISCARD: {uint32_t value=*(const uint32_t *)a!=0;if(S.raster_discard!=value){S.raster_discard=value;g_pso_dirty=1;}break;}
         case OP_SAMPLE_MASK: if(S.sample_mask!=*(const uint32_t *)a){S.sample_mask=*(const uint32_t *)a;g_pso_dirty=1;}break;
-        case OP_RENDER_ENABLE: if(S.render_enable!=*(const uint32_t *)a){S.render_enable=*(const uint32_t *)a;g_pso_dirty=1;}break;
+        case OP_RENDER_ENABLE: if(S.render_enable!=*(const uint32_t *)a || S.conditional_active){S.render_enable=*(const uint32_t *)a;S.conditional_active=0;g_pso_dirty=1;}break;
         case OP_CONSERVATIVE_RASTER: if(S.conservative_raster!=*(const uint32_t *)a){S.conservative_raster=*(const uint32_t *)a;g_pso_dirty=1;}break;
+        case OP_CONDITIONAL_RENDER: S.conditional=*(const p_conditional_render *)a;S.conditional_active=1;S.render_enable=1;g_pso_dirty=1;break;
         case OP_DEPTH_BOUNDS: S.depth_bounds=*(const p_depth_bounds *)a;break;
         case OP_PRIMITIVE_RESTART: S.restart = *(const p_primitive_restart *)a; break;
         default: return 0;
@@ -3507,6 +3533,7 @@ static void pso_predict_rest(void) {
             df = dfull; sf = sfull; continue;
         }
         if (hq.op == OP_DRAW || hq.op == OP_DRAW_IDX) {
+            if(!dm_guest_d2r() && (!S.render_enable || S.conditional_active))continue;
             draws++;
             __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil; if (!pr || !pr->sh[0]) continue;
             __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
@@ -4690,6 +4717,7 @@ static prepared_indices prepare_indices(const p_draw_idx *draw) {
     defer_obj_release(destination);return result;
 }
 static void draw(const p_draw *dw, const p_draw_idx *di) {
+    if(!render_allowed())return;
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); return; }
     prepared_indices indices=di?prepare_indices(di):(prepared_indices){0};
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
@@ -5556,9 +5584,9 @@ void mtl_exec(const uint8_t *p) {
         if (trace) PD("o cmd=%p pass=%llu op=%u size=%u", p, g_stat_pass, (unsigned)h.op, (unsigned)h.size);
         if (g_hoist_n && hoist_take(p)) { if (g_fz.active && p == g_fz.rt2_op) { g_fz.phase = 2; g_rt_merged = 0; PD("F %llu 合并通道进入后一个通道的绘制", g_stat_pass); } p += h.size; continue; }   // 已提前执行的纯清除通道 / 已并入的后一个通道开头   // 进入后一个通道：前一个通道的同目标续用到此为止，后一个通道读前一个通道附件由 fz_p2_draw 证本像素，不再按续用规则切开 | A pure-clear render pass already executed early / the start of a later pass already merged in   // Entering the later pass: the same-target continuation of the earlier pass ends here; the later pass reading the earlier pass's attachment is proven to be same-pixel by fz_p2_draw, and is no longer split by the continuation rule
         const void *a = p + 8;
-        if(!dm_guest_d2r() && !S.render_enable &&
-           (h.op==OP_CLEAR_COLOR || h.op==OP_CLEAR_DS || h.op==OP_CLEAR_TEX || h.op==OP_DOWNSAMPLE))
-            MDIE("P5R rendering operation under disabled render state is not implemented");
+        if((h.op==OP_CLEAR_COLOR || h.op==OP_CLEAR_DS) && !render_allowed()){p+=h.size;continue;}
+        if(!dm_guest_d2r() && (!S.render_enable || S.conditional_active) && (h.op==OP_CLEAR_TEX || h.op==OP_DOWNSAMPLE))
+            MDIE("P5R conditional texture clear/resolve is not implemented");
         switch (h.op) {
             case OP_END: g_exec_cur = NULL;
                 if (g_hoist_n && !g_ret_n && !g_nrest) {
@@ -5625,7 +5653,7 @@ void mtl_exec(const uint8_t *p) {
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
-            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART: case OP_RASTER_DISCARD: case OP_DEPTH_BOUNDS: case OP_SAMPLE_MASK: case OP_RENDER_ENABLE: case OP_CONSERVATIVE_RASTER:
+            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART: case OP_RASTER_DISCARD: case OP_DEPTH_BOUNDS: case OP_SAMPLE_MASK: case OP_RENDER_ENABLE: case OP_CONSERVATIVE_RASTER: case OP_CONDITIONAL_RENDER:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
             case OP_COPY_T2B: copy_t2b(a); break;

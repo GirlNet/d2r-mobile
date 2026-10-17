@@ -870,6 +870,11 @@ NVN(nvnCommandBufferSetRasterizerDiscard, void, NVNcommandBuffer *c, uint32_t en
 // states fail at the affected rendering operation, after later overrides apply.
 NVN(nvnCommandBufferSetSampleMask, void, NVNcommandBuffer *c, int mask) { *(uint32_t *)rec(c, OP_SAMPLE_MASK, sizeof(uint32_t)) = (uint32_t)mask; }
 NVN(nvnCommandBufferSetRenderEnable, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_RENDER_ENABLE, sizeof(uint32_t)) = B(enabled) != 0; }
+NVN(nvnCommandBufferSetRenderEnableConditional, void, NVNcommandBuffer *c, NVNconditionalRenderMode mode, NVNbufferAddress address) {
+    if((mode!=NVN_CONDITIONAL_RENDER_MODE_RENDER_IF_EQUAL && mode!=NVN_CONDITIONAL_RENDER_MODE_RENDER_IF_NOT_EQUAL) ||
+       !address || address>UINT64_MAX-24)die("Invalid NVN conditional render mode or address");
+    *REC(c,OP_CONDITIONAL_RENDER,p_conditional_render)=(p_conditional_render){.address=address,.mode=(uint32_t)mode};
+}
 NVN(nvnCommandBufferSetConservativeRasterEnable, void, NVNcommandBuffer *c, uint32_t enabled) { *(uint32_t *)rec(c, OP_CONSERVATIVE_RASTER, sizeof(uint32_t)) = B(enabled) != 0; }
 NVN(nvnCommandBufferSetShaderScratchMemory, void, NVNcommandBuffer *c, const NVNmemoryPool *pool, ptrdiff_t offset, size_t bytes) {
     if(!nvn_shader_scratch_valid((const pool_t *)pool,offset,bytes))die("Invalid NVN shader scratch memory range");

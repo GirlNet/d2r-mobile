@@ -149,6 +149,14 @@ P(nvnSyncSetDebugLabel)(&sync,"synthetic");
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetViewport)(&command,2,3,640,480);const p_viewports *vp=(const p_viewports *)(record+8);EXPECT("single viewport",1,((op_hdr *)record)->op==OP_VIEWPORTS && vp->n==1 && vp->v[0][0]==2 && vp->v[0][2]==640);}
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetSampleMask)(&command,-1);EXPECT("sample mask command",1,((op_hdr *)record)->op==OP_SAMPLE_MASK && *(const uint32_t *)(record+8)==UINT32_MAX);}
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetRenderEnable)(&command,0x101);EXPECT("render enable command",1,((op_hdr *)record)->op==OP_RENDER_ENABLE && *(const uint32_t *)(record+8)==1);}
+{CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetRenderEnableConditional)(&command,NVN_CONDITIONAL_RENDER_MODE_RENDER_IF_NOT_EQUAL,UINT64_C(0x123456789000));const p_conditional_render *conditional=(const p_conditional_render *)(record+8);EXPECT("conditional command ABI",1,((op_hdr *)record)->op==OP_CONDITIONAL_RENDER && conditional->address==UINT64_C(0x123456789000) && conditional->mode==1 && conditional->reserved==0);}
+{uint64_t pair[]={UINT64_C(0x100000005),11,UINT64_C(0x100000005),22};int result=-1;
+ EXPECT("conditional equal ignores timestamps",1,nvn_conditional_render_decode(0,pair,sizeof pair,&result) && result==1);
+ pair[2]=UINT64_C(0x200000005);EXPECT("conditional full 64-bit comparison",1,nvn_conditional_render_decode(0,pair,sizeof pair,&result) && result==0);
+ EXPECT("conditional not equal",1,nvn_conditional_render_decode(1,pair,sizeof pair,&result) && result==1);
+ pair[2]=pair[0];EXPECT("conditional not equal false",1,nvn_conditional_render_decode(1,pair,24,&result) && result==0);
+ result=17;EXPECT("conditional short input",0,nvn_conditional_render_decode(0,pair,23,&result));EXPECT("conditional invalid mode",0,nvn_conditional_render_decode(2,pair,sizeof pair,&result));
+ EXPECT("conditional null input",0,nvn_conditional_render_decode(0,NULL,24,&result));EXPECT("conditional null output",0,nvn_conditional_render_decode(0,pair,24,NULL));EXPECT("conditional failure preserves output",17,result);}
 {CB(&command)->cur=record;CB(&command)->end=record+sizeof record;P(nvnCommandBufferSetConservativeRasterEnable)(&command,0x100);EXPECT("conservative default command",1,((op_hdr *)record)->op==OP_CONSERVATIVE_RASTER && *(const uint32_t *)(record+8)==0);}
     EXPECT("scratch bounded reservation",1,nvn_shader_scratch_valid((pool_t *)&pool,4096,16384));
     EXPECT("scratch end zero size",1,nvn_shader_scratch_valid((pool_t *)&pool,sizeof storage,0));

@@ -136,11 +136,15 @@ jobs:
           dm/gfx/tests/t_copy_draw_gpu
           make -C dm/gfx/tests t_shader_scratch_gpu
           dm/gfx/tests/t_shader_scratch_gpu
+      - name: Verify conditional draws, clears and query ordering on Metal 3
+        run: |
+          make -C dm/gfx/tests t_conditional_render_gpu
+          dm/gfx/tests/t_conditional_render_gpu
           dm/gfx/tests/t_nvn_gpu_setup --gpu-setup-probe "$RUNNER_TEMP/p5r-real-metal-setup"
           dm/gfx/tests/t_nvn_gpu_setup --pre-submit-probe "$RUNNER_TEMP/p5r-real-pre-submit"
           dm/gfx/tests/t_nvn_gpu_setup --capture-disabled-check
           dm/gfx/tests/t_nvn_gpu_setup --capture-command-probe "$RUNNER_TEMP/p5r-command-capture"
-          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-command-capture/boot-report.json")); c=r["diagnostic_only_calls"]; assert len(c)==52 and r["diagnostic_only_call_count"]==52 and r["status"]=="blocked_before_unverified_operation" and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"] and not r["command_stream_gpu_verified"]; assert c["nvnCommandBufferSetLineWidth"]["last_argument_bits"]==["0x000000003e800000"]'
+          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-command-capture/boot-report.json")); c=r["diagnostic_only_calls"]; assert len(c)==51 and r["diagnostic_only_call_count"]==51 and r["status"]=="blocked_before_unverified_operation" and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"] and not r["command_stream_gpu_verified"]; assert c["nvnCommandBufferSetLineWidth"]["last_argument_bits"]==["0x000000003e800000"]'
           python3 dm/gfx/tests/test_gpu_submit_guards.py
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-pre-submit/boot-report.json")); assert r["status"]=="blocked_before_unverified_operation" and r["gpu_initialization_completed"] and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"]'
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-metal-setup/boot-report.json")); assert r["status"]=="stopped_after_gpu_initialization" and r["gpu_backend"]=="Metal 3" and r["gpu_initialization_completed"] and not r["guest_gpu_work_submitted"] and not r["graphics_verified"] and not r["runtime_ready"]'
@@ -164,8 +168,8 @@ jobs:
       - name: Check production draw paths on Metal 4
         run: |
           set -euo pipefail
-          make -C dm/gfx/tests t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4 t_shader_scratch_gpu_m4
-          for test in t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4 t_shader_scratch_gpu_m4; do
+          make -C dm/gfx/tests t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4 t_shader_scratch_gpu_m4 t_conditional_render_gpu_m4
+          for test in t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4 t_shader_scratch_gpu_m4 t_conditional_render_gpu_m4; do
             set +e
             "dm/gfx/tests/$test"
             result=$?

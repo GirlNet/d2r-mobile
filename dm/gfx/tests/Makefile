@@ -51,6 +51,9 @@ t_copy_draw_gpu: t_copy_draw_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GF
 t_shader_scratch_gpu: t_shader_scratch_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_shader_scratch_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 
+t_conditional_render_gpu: t_conditional_render_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_conditional_render_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
 %_m4: %.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=0 -mmacosx-version-min=26.0 -fobjc-arc -o $@ $< ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 
