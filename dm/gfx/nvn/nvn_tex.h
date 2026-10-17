@@ -9,6 +9,9 @@ typedef struct {
     int pkg_block_h;                      // 预排布贴图布局参数第 0 字节（块高 log2）+ 1；0 = 按自动算法 | Byte 0 of the packaged texture layout parameters (log2 of block height) + 1; 0 = use the automatic algorithm
 } nvn_texdesc;
 
+// LINEAR_RENDER_TARGET (0x40) is independently sufficient; it does not require LINEAR (0x10).
+static inline int nvn_tex_is_linear(const nvn_texdesc *d) { return (d->flags & 0x50) != 0; }
+
 typedef struct {
     uint64_t size, layer_size;            // 总存储字节、每层字节 | Total storage bytes, bytes per layer
     uint32_t align, layers, bpb;          // 对齐、层数、每块字节 | Alignment, layer count, bytes per block

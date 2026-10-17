@@ -10,6 +10,10 @@ t_fmt_mtl: t_fmt_mtl.m ../nvn_fmt_mtl.c ../nvn_fmt_mtl.h
 	clang $(CFLAGS) -fobjc-arc -o $@ t_fmt_mtl.m ../nvn_fmt_mtl.c -framework Metal -framework Foundation
 samples:
 	$(PY) fetch_samples.py $(SAMPLES)
-run: t_tex t_fmt_mtl
+t_linear_layout: t_linear_layout.c ../nvn_deswizzle.c ../nvn_deswizzle.h ../../nvn/nvn_tex.c ../../nvn/nvn_tex.h
+	clang $(CFLAGS) -o $@ t_linear_layout.c ../nvn_deswizzle.c ../../nvn/nvn_tex.c
+
+run: t_tex t_fmt_mtl t_linear_layout
+	./t_linear_layout
 	./t_fmt_mtl && ./t_tex $(SAMPLES)
 .PHONY: samples run

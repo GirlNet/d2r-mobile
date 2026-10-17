@@ -13,6 +13,7 @@ on:
       - 'dm/tools/test_p5r_pack.py'
       - 'dm/gfx/nvn/**'
       - 'dm/gfx/tests/**'
+      - 'dm/gfx/tex/**'
       - 'dm/gfx/tools/dmsh_build.py'
       - 'dm/gfx/tools/dmsh_chain.py'
       - 'dm/gfx/tools/dmsh_xlate/**'
@@ -111,6 +112,11 @@ jobs:
           python3 dm/gfx/tests/test_gpu_submit_guards.py
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-pre-submit/boot-report.json")); assert r["status"]=="blocked_before_unverified_operation" and r["gpu_initialization_completed"] and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"]'
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-metal-setup/boot-report.json")); assert r["status"]=="stopped_after_gpu_initialization" and r["gpu_backend"]=="Metal 3" and r["gpu_initialization_completed"] and not r["guest_gpu_work_submitted"] and not r["graphics_verified"] and not r["runtime_ready"]'
+      - name: Check linear texture and render-target storage layouts
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tex/tests t_linear_layout
+          dm/gfx/tex/tests/t_linear_layout
       - name: Check production texture views with synthetic GPU pixels
         run: |
           set -euo pipefail

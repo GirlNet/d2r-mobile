@@ -390,6 +390,12 @@ NVN(nvnTextureBuilderGetStorageSize, size_t, const NVNtextureBuilder *b) {
     nvn_texlayout L; nvn_tex_layout(&((const tex_builder_t *)b)->d, &L);
     if (!L.bpb) LOG("【红】TextureBuilderGetStorageSize 未知格式 %#x", ((const tex_builder_t *)b)->d.format);
     log_layout((const tex_builder_t *)b, &L);
+    if (dm_boot_probe_active()) {
+        const nvn_texdesc *d=&((const tex_builder_t *)b)->d;char detail[256];
+        snprintf(detail,sizeof detail,"target=%d format=%#x flags=%#x size=%ux%ux%u levels=%u stride=%u bytes=%llu alignment=%u",
+                 d->target,d->format,d->flags,d->width,d->height,d->depth,d->levels,d->stride,(unsigned long long)L.size,L.align);
+        dm_boot_probe_note("nvn_texture_storage_size",detail);
+    }
     return L.size;
 }
 NVN(nvnTextureBuilderGetStorageAlignment, size_t, const NVNtextureBuilder *b) {
