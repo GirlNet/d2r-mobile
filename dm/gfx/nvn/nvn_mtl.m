@@ -49,6 +49,7 @@
 #include "nvn_obj.h"
 #include "nvn_copy_layout.h"
 #include "nvn_vertex_bits.h"
+#include "nvn_fragment_bits.h"
 #include "../tex/nvn_fmt_mtl.h"
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/nvn_deswizzle_gpu.h"
@@ -2126,6 +2127,7 @@ static void shmap_load(void) {
 
 @interface NvShader : NSObject { @public id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     NSString *vertex_source,*vertex_entry; NSMutableDictionary<NSNumber *,id<MTLFunction>> *vertex_variants;
+    NSString *fragment_source,*fragment_entry; NSMutableDictionary<NSNumber *,id<MTLFunction>> *fragment_variants;
     // 上次编好的参数缓冲
     // The argument buffer encoded last time
     id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass;   // ab_pass：编这块参数的渲染通道序号——只在同一通道内复用（跨通道 / 跨提交的块所在 arena 可能已回收重写） | ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
@@ -2281,10 +2283,12 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
-    if(stage==0&&!dm_guest_d2r()) {
+    if((stage==0||stage==1)&&!dm_guest_d2r()) {
         NSData *source=[NSData dataWithContentsOfFile:lp];
         if(source.length>=4&&!memcmp(source.bytes,"MTLB",4))source=[NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.metal",g_msl_dir,pc]];
-        o->vertex_source=source?[[NSString alloc] initWithData:source encoding:NSUTF8StringEncoding]:nil;o->vertex_entry=j[@"entry"];
+        NSString *text=source?[[NSString alloc] initWithData:source encoding:NSUTF8StringEncoding]:nil;
+        if(stage==0){o->vertex_source=text;o->vertex_entry=j[@"entry"];}
+        else {o->fragment_source=text;o->fragment_entry=j[@"entry"];}
     }
     if (o->rf.nb) {
         o->ae = [o->fn newArgumentEncoderWithBufferIndex:o->rf.abi];
@@ -2653,9 +2657,40 @@ static id<MTLFunction> vertex_fetch_function(NvShader *shader,const pso_key *key
         if(!shader->vertex_variants)shader->vertex_variants=[NSMutableDictionary dictionary];shader->vertex_variants[@(requested)]=function;return function;
     }
 }
+static unsigned fragment_integer_class(MTLPixelFormat format) {
+    switch(format) {
+        case MTLPixelFormatR8Uint:case MTLPixelFormatRG8Uint:case MTLPixelFormatRGBA8Uint:
+        case MTLPixelFormatR16Uint:case MTLPixelFormatRG16Uint:case MTLPixelFormatRGBA16Uint:
+        case MTLPixelFormatR32Uint:case MTLPixelFormatRG32Uint:case MTLPixelFormatRGBA32Uint:case MTLPixelFormatRGB10A2Uint:return 1;
+        case MTLPixelFormatR8Sint:case MTLPixelFormatRG8Sint:case MTLPixelFormatRGBA8Sint:
+        case MTLPixelFormatR16Sint:case MTLPixelFormatRG16Sint:case MTLPixelFormatRGBA16Sint:
+        case MTLPixelFormatR32Sint:case MTLPixelFormatRG32Sint:case MTLPixelFormatRGBA32Sint:return 2;
+        default:return 0;
+    }
+}
+static id<MTLFunction> fragment_export_function(NvShader *shader,const pso_key *key) {
+    if(!shader)return nil;if(dm_guest_d2r())return shader->fn;
+    uint8_t kinds[8]={0};uint16_t requested=0;
+    for(unsigned i=0;i<8;i++){kinds[i]=(uint8_t)fragment_integer_class((MTLPixelFormat)key->cfmt[i]);requested|=(uint16_t)kinds[i]<<(2*i);}
+    if(!requested)return shader->fn;
+    @synchronized(shader) {
+        id<MTLFunction> function=shader->fragment_variants[@(requested)];if(function)return function;
+        if(!shader->fragment_source)MDIE("P5R integer color output requires retained MSL source: %s",shader->key);
+        char *converted=NULL,error[160];uint16_t applied;
+        if(nvn_fragment_bits_source(shader->fragment_source.UTF8String,kinds,&converted,&applied,error,sizeof error))MDIE("P5R fragment specialization: %s",error);
+        if(applied) {
+            NSString *source=[[NSString alloc] initWithUTF8String:converted];free(converted);
+            MTLCompileOptions *options=[MTLCompileOptions new];options.fastMathEnabled=NO;NSError *failure=nil;
+            id<MTLLibrary> library=[g_dev newLibraryWithSource:source options:options error:&failure];
+            function=library?[library newFunctionWithName:shader->fragment_entry?:shader->fn.name]:nil;
+            if(!function)MDIE("P5R integer fragment output compilation failed: %s",failure.localizedDescription.UTF8String);
+        } else {free(converted);function=shader->fn;}
+        if(!shader->fragment_variants)shader->fragment_variants=[NSMutableDictionary dictionary];shader->fragment_variants[@(requested)]=function;return function;
+    }
+}
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
-    d.vertexFunction = vertex_fetch_function(vs,k); d.fragmentFunction = fsfn ? fsfn : fs ? fs->fn : nil;
+    d.vertexFunction = vertex_fetch_function(vs,k); d.fragmentFunction = fsfn ? fsfn : fragment_export_function(fs,k);
     // 诊断 DM_NVN_HILITE=片元着色器键,…：这些绘制改用纯色片元（第 1–6 个键依次 品红 / 绿 / 青 / 黄 / 蓝 / 白），看几何落在哪里
     // Diagnostic DM_NVN_HILITE=fragment shader key,...: these draws use a solid-color fragment instead (keys 1–6 in order magenta / green / cyan / yellow / blue / white), to see where the geometry lands
     if (fs) { static char keys[6][24]; static int nk = -1; static id<MTLLibrary> hl;
