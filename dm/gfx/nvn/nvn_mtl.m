@@ -5100,7 +5100,11 @@ static void clear_tex(const p_clear_tex *c) {
     if (c->tex) zskip_del(c->tex->serial);
     id<MTLTexture> t = tex_mtl(c->tex);
     PD("X ser=%llu 视图格式 %#x 区域 %d,%d,%d %dx%dx%d 掩码 %#x %s %g,%g,%g,%g", c->tex->serial, c->has_view && c->view.set_format ? c->view.format : -1, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth, c->mask,
-       c->is_uint ? "ui" : "f", c->is_uint ? (double)c->c.u[0] : c->c.f[0], c->is_uint ? (double)c->c.u[1] : c->c.f[1], c->is_uint ? (double)c->c.u[2] : c->c.f[2], c->is_uint ? (double)c->c.u[3] : c->c.f[3]);
+       c->value_type==2 ? "i" : c->value_type==1 ? "ui" : "f",
+       c->value_type==2 ? (double)c->c.i[0] : c->value_type==1 ? (double)c->c.u[0] : c->c.f[0],
+       c->value_type==2 ? (double)c->c.i[1] : c->value_type==1 ? (double)c->c.u[1] : c->c.f[1],
+       c->value_type==2 ? (double)c->c.i[2] : c->value_type==1 ? (double)c->c.u[2] : c->c.f[2],
+       c->value_type==2 ? (double)c->c.i[3] : c->value_type==1 ? (double)c->c.u[3] : c->c.f[3]);
     if (!t) return;
     unsigned lv = c->has_view && c->view.set_levels ? c->view.base_level : 0, l0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     NSUInteger w = MAX(t.width >> lv, 1u), h = MAX(t.height >> lv, 1u);
@@ -5133,7 +5137,9 @@ static void clear_tex(const p_clear_tex *c) {
             if (stencil) { rp.stencilAttachment.texture = t; rp.stencilAttachment.level = lv; rp.stencilAttachment.slice = a.slice; rp.stencilAttachment.loadAction = MTLLoadActionClear;
                            rp.stencilAttachment.storeAction = MTLStoreActionStore; rp.stencilAttachment.clearStencil = c->c.u[1]; } }
         else if (stencil) rp.stencilAttachment.clearStencil = c->c.u[0];
-        else rp.colorAttachments[0].clearColor = c->is_uint ? MTLClearColorMake(c->c.u[0], c->c.u[1], c->c.u[2], c->c.u[3]) : MTLClearColorMake(c->c.f[0], c->c.f[1], c->c.f[2], c->c.f[3]);
+        else rp.colorAttachments[0].clearColor = c->value_type==2 ? MTLClearColorMake(c->c.i[0], c->c.i[1], c->c.i[2], c->c.i[3])
+            : c->value_type==1 ? MTLClearColorMake(c->c.u[0], c->c.u[1], c->c.u[2], c->c.u[3])
+            : MTLClearColorMake(c->c.f[0], c->c.f[1], c->c.f[2], c->c.f[3]);
         ser_gate(); enc_r_end(enc_r_begin(rp));
     }
 }

@@ -147,7 +147,7 @@ typedef struct { int32_t x, y, z; uint64_t caller; } p_dispatch;   // caller：�
 typedef struct { const dpool_t *pool; } p_set_pool;
 typedef struct { uint64_t src; const tex_t *tex; view_t view; uint8_t has_view; NVNcopyRegion r; int32_t flags; } p_copy_b2t;
 typedef struct { const tex_t *src, *dst; view_t sv, dv; uint8_t has_sv, has_dv; NVNcopyRegion sr, dr; int32_t flags; } p_copy_t2t;   // T2B 复用：src 存目标缓冲地址 | Reused for T2B: src stores the destination buffer address
-typedef struct { const tex_t *tex; view_t view; uint8_t has_view, is_uint; NVNcopyRegion r; int32_t mask; union { float f[4]; uint32_t u[4]; } c; } p_clear_tex;
+typedef struct { const tex_t *tex; view_t view; uint8_t has_view, value_type; NVNcopyRegion r; int32_t mask; union { float f[4]; uint32_t u[4]; int32_t i[4]; } c; } p_clear_tex;
 typedef struct { int64_t stride; } p_copy_stride;
 typedef struct { uint64_t address, size; uint32_t value; } p_clear_buf;
 typedef struct { float rgba[4]; } p_blend_color;
