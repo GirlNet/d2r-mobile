@@ -18,6 +18,8 @@ English: [P5R_PORT.md](P5R_PORT.md)
 
 Windows 苹果编译器可通过 `diagnose_p5r_shaders.py --metal-tools "<已安装的 bin 目录>" --metal-sdk iphoneos` 接入。目录必须包含 `metal.exe` 和 `metallib.exe`；工具明确选择 iOS AIR 目标并关闭快速浮点。报告保留编译器、源码和库文件的散列，仍标记为诊断结果。缺少 AIR、无效 MTLB 或已有旧产物均失败。该入口已有合成命令和来源测试；本地游戏源码的实际编译仍需已安装的苹果工具链。
 
+游戏导入的七个 VI 显示/图层接口现使用有界宿主句柄表，避免进入原始 Switch 显示服务。原生窗口身份交给现有宿主 NVN 窗口，呈现仍由 UIKit/CAMetalLayer 管理。CPU 测试覆盖输出边界、双显示、嵌套初始化、容量限制、释放及 4,000 次并发图层/窗口生命周期。这补齐源码服务缺口，但不据此确定旧设备停止时的具体服务，也不代表游戏呈现已验证。
+
 ## 已实现
 
 - `dm/tools/inspect_exefs.py`：校验 NSO 段边界及启用的 SHA-256 散列，读取 ELF64 导入与导出，记录构建号，报告依赖提供者候选。宿主替代了原版装载器，因此不使用 `rtld` 的导出来满足依赖。

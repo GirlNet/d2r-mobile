@@ -109,6 +109,8 @@ $(B)/t_cache: t_cache.c ../hle_cache.c ../dm.h ../hle.h ../boot_probe.h | $(B)
 	clang -DDM_P5R_ONLY=1 -Wall -Wextra -Werror -I .. -o $@ t_cache.c
 $(B)/t_offline_services: t_offline_services.c ../hle_net.c ../hle_account.c ../hle_misc.c ../dm.h ../hle.h | $(B)
 	clang -DDM_P5R_ONLY=1 -Wall -Wextra -Werror -I .. -o $@ t_offline_services.c
+$(B)/t_vi: t_vi.c ../hle_vi.c ../dm.h ../hle.h | $(B)
+	clang -DDM_P5R_ONLY=1 -Wall -Wextra -Werror -I .. -o $@ t_vi.c
 $(B)/t_shader_control: t_shader_control.c ../../gfx/nvn/nvn_shader_control.h | $(B)
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_shader_control.c
 $(B)/t_nvn_handles: t_nvn_handles.c ../../gfx/nvn/nvn_handle_bindings.h ../../gfx/nvn/nvn_refl.h ../../gfx/nvn/nvn_buffer_bindings.h | $(B)

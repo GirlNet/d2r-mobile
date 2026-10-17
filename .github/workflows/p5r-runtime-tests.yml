@@ -216,9 +216,10 @@ jobs:
       - name: Check offline service overloads and local context lifetimes
         run: |
           set -euo pipefail
-          make -C dm/host/tests build/t_offline_services build/t_hid_receipt
+          make -C dm/host/tests build/t_offline_services build/t_hid_receipt build/t_vi
           dm/host/tests/build/t_offline_services
           dm/host/tests/build/t_hid_receipt
+          dm/host/tests/build/t_vi
           xcrun clang -Wall -Wextra -Werror dm/host/tests/t_p5r_stick.c -o "$RUNNER_TEMP/p5r-stick"
           "$RUNNER_TEMP/p5r-stick"
           make -C dm/host/tests build/t_swkbd build/t_swkbd_p5r

@@ -18,6 +18,8 @@ Primitive restart passes seven GPU cases across 8/16/32-bit indices, custom/fixe
 
 Windows Apple compiler support is available through `diagnose_p5r_shaders.py --metal-tools "<installed bin directory>" --metal-sdk iphoneos`. The directory must contain `metal.exe` and `metallib.exe`; the tool selects an explicit iOS AIR target and disables fast math. Reports retain compiler hashes, source/library hashes and diagnostic-only markers. Missing AIR, invalid MTLB libraries and stale output files fail. This path has synthetic command/provenance tests; actual local game compilation still requires the installed Apple toolchain.
 
+The seven imported VI display/layer interfaces now use a bounded host handle registry instead of entering the original Switch display service. Native-window identity feeds the existing host NVN window; UIKit/CAMetalLayer still owns presentation. CPU tests cover guarded outputs, two displays, nested initialization, capacity limits, cleanup and 4,000 concurrent layer/window lifecycles. This closes a source-level service gap; it does not identify the exact service behind the earlier device stop or verify game presentation.
+
 ## What is implemented
 
 - `dm/tools/inspect_exefs.py`: validates NSO segment bounds and enabled SHA-256 hashes, reads ELF64 imports/exports, records build IDs and reports candidate dependency providers. Original `rtld` exports are excluded because the host replaces that loader.
