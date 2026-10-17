@@ -17,6 +17,11 @@ _Atomic int g_dm_l_presses;
 enum { NPAD_HANDHELD = 0x20 };
 enum { STYLE_FULLKEY = 1u << 0, STYLE_HANDHELD = 1u << 1 };
 enum { ATTR_CONNECTED = 1u << 0 };
+HLE_FORCE_OPTIONAL("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",
+    "Host controller has no motion sensors; report an empty handle list without HID IPC", int, h_hid_GetSixAxisHandles,
+    void *handles, int capacity, const uint32_t *id, uint32_t styles) {
+    (void)handles;(void)capacity;(void)id;(void)styles;return 0;
+}
 
 // nn::hid::NpadFullKeyState / NpadHandheldState 布局相同
 // nn::hid::NpadFullKeyState / NpadHandheldState have the same layout

@@ -107,7 +107,7 @@ $(B)/t_stdalloc_forward: t_stdalloc_forward.c ../hle_svc.c ../dm.h ../hle.h ../b
 	clang -DDM_P5R_ONLY=1 -Werror=implicit-function-declaration -Wl,-dead_strip -I .. -o $@ t_stdalloc_forward.c
 $(B)/t_cache: t_cache.c ../hle_cache.c ../dm.h ../hle.h ../boot_probe.h | $(B)
 	clang -DDM_P5R_ONLY=1 -Wall -Wextra -Werror -I .. -o $@ t_cache.c
-$(B)/t_offline_services: t_offline_services.c ../hle_net.c ../hle_account.c ../dm.h ../hle.h | $(B)
+$(B)/t_offline_services: t_offline_services.c ../hle_net.c ../hle_account.c ../hle_misc.c ../dm.h ../hle.h | $(B)
 	clang -DDM_P5R_ONLY=1 -Wall -Wextra -Werror -I .. -o $@ t_offline_services.c
 $(B)/t_shader_control: t_shader_control.c ../../gfx/nvn/nvn_shader_control.h | $(B)
 	clang -std=c11 -Wall -Wextra -Werror -o $@ t_shader_control.c

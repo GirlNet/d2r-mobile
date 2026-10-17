@@ -34,6 +34,10 @@ static int load(const char *path,Row *rows,int *limit) {
 static void exercise(int which) {
  if(which==5) {
   CK(dm_guest_profile_select("p5r"));NpadState state;uint32_t id=0;
+  uint32_t motion[4]={0x12345678,0xabcdef01,0xa5a5a5a5,0x5a5a5a5a};
+  CK(h_hid_GetSixAxisHandles(motion,4,&id,STYLE_FULLKEY)==0);
+  CK(motion[0]==0x12345678&&motion[1]==0xabcdef01&&motion[2]==0xa5a5a5a5&&motion[3]==0x5a5a5a5a);
+  CK(h_hid_GetSixAxisHandles((void *)1,0,(void *)1,UINT32_MAX)==0);
   dm_input_set(DM_BTN_A|DM_BTN_ZL,1200,-900,0,0);dm_pad_set(DM_BTN_B,0,0,-2300,700);
   h_hid_GetFullKey(&state,&id);CK(state.attributes==1);
   CK(state.buttons==(DM_BTN_A|DM_BTN_B|DM_BTN_ZL));CK(state.lx==1200&&state.ly==-900&&state.rx==-2300&&state.ry==700);

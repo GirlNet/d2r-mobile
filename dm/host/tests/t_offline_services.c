@@ -2,11 +2,13 @@
 // outputs, isolate errno between threads and never dereference SDK IPC objects.
 #include "../hle_net.c"
 #include "../hle_account.c"
+#include "../hle_misc.c"
 #include <assert.h>
 #include <stdatomic.h>
 
 static unsigned signals;
 void hle_signal_system_event(void *event) { assert(event == (void *)0x1234); signals++; }
+void hle_bind_system_event(void *event,int autoclear) { (void)event;(void)autoclear;assert(!"unexpected system-event binding"); }
 static void *errno_worker(void *unused) {
     (void)unused;
     h_nsk_SetErrno(71);
@@ -16,6 +18,13 @@ static void *errno_worker(void *unused) {
     return NULL;
 }
 int main(void) {
+    struct { uint32_t before;int count;uint32_t after; } masked={0x12345678,-1,0x87654321};
+    uint16_t text[]={0x50,0x35,0x52,0x4e2d,0x6587,0xd83d,0xde00,0},original[8];memcpy(original,text,sizeof text);
+    h_ngc_Ctor((void *)1);assert(h_ngc_Init((void *)1,(void *)1,0)==0);
+    assert(h_ngc_Mask((void *)1,&masked.count,text,UINT32_MAX)==0);
+    assert(masked.count==0&&masked.before==0x12345678&&masked.after==0x87654321);
+    assert(!memcmp(text,original,sizeof text));h_ngc_Finalize((void *)1);h_ngc_Finalize((void *)1);h_ngc_Dtor((void *)1);
+    assert(h_ngc_Mask((void *)1,NULL,(void *)1,0)==0);
     assert(h_sk_InitLegacy(NULL, 0, 0, 0) == 0);
     uint8_t output[128]; memset(output, 0xa5, sizeof output);
     unsigned length = sizeof output;

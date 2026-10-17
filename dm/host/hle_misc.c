@@ -48,6 +48,10 @@ HLE_FORCE("_ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKcm", "敏感�
     for (uint64_t i = 0; i < n; i++) masks[i] = 0;
     return RES_OK;
 }
+HLE_FORCE_OPTIONAL("_ZN2nn3ngc15ProfanityFilter24MaskProfanityWordsInTextEPiPDsj", "Offline UTF-16 text policy; preserve text and report zero replacements", Result, h_ngc_Mask, void *self, int *count, uint16_t *text, uint32_t patterns) {
+    (void)self;(void)text;(void)patterns;if(count)*count=0;return RES_OK;
+}
+HLE_FORCE_OPTIONAL("_ZN2nn3ngc15ProfanityFilter8FinalizeEv", "Pair the host-only filter initialization without SDK service destruction", void, h_ngc_Finalize, void *self) { (void)self; }
 
 // ---------- nsd 服务器名解析 / pctl 自由通信：联网，排除范围 ----------
 // ---------- nsd server name resolution / pctl free communication: networking, out of scope ----------
