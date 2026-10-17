@@ -1765,7 +1765,12 @@ static int udc_on(void) {
 // 只用于等价对照（同一回放局开 / 关逐字节比画面），不是产品配置
 // Diagnostic DM_NVN_TBDR=0: turns off all TBDR optimizations (store lookahead, load elision, same-target continuation, clear-only pass hoist, on-demand depth-stencil attach); replay takes the plainest 'attach all, load all, store all' path.
 // Only for equivalence comparison (the same replay run on / off, comparing the picture byte by byte), not a product configuration
-static int tbdr_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TBDR"), *r = getenv("DM_NVN_RULER"); v = !(e && !strcmp(e, "0")); g_ruler_truth = r && !strcmp(r, "1"); if (!v) MLOG("DM_NVN_TBDR=0：TBDR 优化全关（等价对照用）"); } return v && !g_ruler_truth; }
+static int tbdr_on(void) {
+    // The pass-merging/hoisting contracts were established for D2R. P5R uses
+    // complete attachment loads/stores until its own command streams qualify.
+    if(!dm_guest_d2r())return 0;
+    static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TBDR"), *r = getenv("DM_NVN_RULER"); v = !(e && !strcmp(e, "0")); g_ruler_truth = r && !strcmp(r, "1"); if (!v) MLOG("DM_NVN_TBDR=0：TBDR 优化全关（等价对照用）"); } return v && !g_ruler_truth;
+}
 int dm_nvn_ruler_truth(void) { tbdr_on(); return g_ruler_truth; }   // 视觉尺子真值阶段（宿主侧的被测设置据此让开，如 3D 渲染比例） | Visual ruler ground-truth phase (host-side settings under test yield accordingly, e.g. the 3D render scale)
 static int rt_range_on(void) { static int v = -1; if (v < 0) { const char *e=getenv("DM_NVN_RT_RANGE"); v=e && !strcmp(e,"1"); } return v; }   // 窄候选，缺省关 | Narrow candidate, off by default
 static uint64_t g_sd_dead_bytes, g_sd_n_dead, g_sd_n_all;

@@ -12,7 +12,7 @@ uint64_t now_ns(void){return bp_now();}
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"primitive restart check failed at %d\n",__LINE__);return 1;}}while(0)
 int main(void){@autoreleasepool{
     if(!MTLCreateSystemDefaultDevice())return 77;
-    CHECK(dm_guest_profile_select("p5r"));setenv("DM_NVN_TBDR","0",1);mtl_init();NSError *error=nil;
+    CHECK(dm_guest_profile_select("p5r"));setenv("DM_NVN_TBDR","1",1);mtl_init();NSError *error=nil;
     id<MTLLibrary> library=[g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
       "vertex float4 v(uint i[[vertex_id]]){uint n=i==65535?7:i;float2 p[8]={float2(-1,-1),float2(-1,1),float2(-.25,-1),float2(-.25,1),float2(.25,-1),float2(.25,1),float2(1,-1),float2(1,1)};return float4(p[n],.5,1);}\n"
       "fragment float4 f(){return float4(1,0,0,1);}" options:nil error:&error];
