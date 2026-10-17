@@ -44,7 +44,8 @@ def run(command, log):
     return result.returncode
 
 
-def build(output):
+def build(output,metal_backend=3):
+    if metal_backend not in (3,4):raise ValueError('Metal backend must be 3 or 4')
     output = output.resolve()
     if output.is_relative_to(REPO): raise ValueError('Build output must be outside the repository')
     output.mkdir(parents=True, exist_ok=False)
@@ -53,6 +54,7 @@ def build(output):
     app = output / 'Payload/P5RMobile.app'; (app / 'dm').mkdir(parents=True)
     flags = ['xcrun', '--sdk', 'iphoneos', 'clang', '-arch', 'arm64', '-miphoneos-version-min=26.0', '-O1',
              '-fobjc-arc', '-fblocks', '-Werror=implicit-function-declaration', '-DDM_P5R_ONLY=1', '-DDM_SHELL=1',
+             '-DDM_NVN_M3='+str(int(metal_backend==3)),
              '-I' + str(REPO / 'dm/host'), '-I' + str(REPO / 'dm/gfx/nvn/include')]
     plan = []
     for index, source in enumerate(sources()):
@@ -63,9 +65,11 @@ def build(output):
         results = list(pool.map(lambda p: run(p[2], p[3]), plan))
     failed = [str(p[0].relative_to(REPO)) for p, code in zip(plan, results) if code]
     fingerprint_files = fingerprint_sources(plan)
+    configuration=dict(metal_backend='Metal '+str(metal_backend),architecture='arm64',minimum_ios='26.0',optimization='O1')
     report = dict(profile='p5r', game_content_included=False, signed=False, runtime_ready=False,
                   sources=[str(p[0].relative_to(REPO)) for p in plan], failed_sources=failed,
                   fingerprint_sources=[str(p.relative_to(REPO)) for p in fingerprint_files],
+                  build_configuration=configuration,
                   linked=False, packaged=False)
     report_path = output / 'build-report.json'
     def save(): report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
@@ -105,7 +109,8 @@ def build(output):
                 UISupportedInterfaceOrientations=['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'])
     (app / 'Info.plist').write_bytes(plistlib.dumps(info))
     (app / 'dm/p5r-shell.json').write_text(json.dumps(dict(schema_version=1, profile='p5r', game_content_included=False,
-        source_fingerprint=hashlib.sha256(b''.join(p.read_bytes() for p in fingerprint_files)).hexdigest(),
+        source_fingerprint_schema=2,build_configuration=configuration,
+        source_fingerprint=hashlib.sha256(json.dumps(configuration,sort_keys=True).encode()+b'\0'+b''.join(p.read_bytes() for p in fingerprint_files)).hexdigest(),
         shader_chain=(REPO / 'dm/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]), indent=2) + '\n')
     archive = output / 'P5RMobile-shell-unsigned.ipa'
     with zipfile.ZipFile(archive, 'x', compression=zipfile.ZIP_DEFLATED) as zipped:
@@ -118,6 +123,7 @@ def build(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Link and package the game-free P5R iOS host on macOS.')
     parser.add_argument('output', type=Path)
+    parser.add_argument('--metal-backend',type=int,choices=(3,4),default=3,help='Default Metal 3 matches cloud GPU execution; Metal 4 remains opt-in')
     args = parser.parse_args()
-    try: build(args.output)
+    try: build(args.output,args.metal_backend)
     except (ValueError, OSError, RuntimeError) as error: parser.exit(1, str(error) + '\n')

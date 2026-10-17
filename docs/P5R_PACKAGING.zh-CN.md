@@ -44,3 +44,5 @@ python3 dm/tools/p5r_pack.py /path/P5RMobile-shell-unsigned.ipa /path/port-prepa
 导入本地 RomFS 后，当前启动器使用“图形初始化诊断”。新模式允许后端对象设置，随后在返回客体或提交游戏 GPU 工作前停止。`stopped_after_gpu_initialization` 只能证明后端初始化，不能证明游戏着色器、CPK 完整性、画面或可玩性。真机运行后提供新生成的本地启动报告和运行日志。App 与 Guest 框架仍需一起签名；更新时保留现有 RomFS。
 
 最新启动器使用“提交前诊断”，在后端初始化后继续 CPU 资源处理和命令录制。到达提交边界、未支持操作或超时后，提供新的启动报告与运行日志。仅有初始化完成标志不代表已提交一帧或游戏画面已验证；更新一起签名的 App/框架时可保留现有本地 RomFS。
+
+专用壳缺省使用 Metal 3，使生产绘制路径与云端 GPU 核对一致。向 `dm/ios/p5r/build_shell.py` 传入 `--metal-backend 4` 可选择 Metal 4 构建。所选后端写入壳/构建元数据并参与源码指纹；跳过的 Metal 4 比较不代表运行时验证。
