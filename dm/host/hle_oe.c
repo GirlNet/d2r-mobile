@@ -6,6 +6,7 @@
 // Environment switches: DM_OPMODE=0 handheld / 1 console (default 1, corresponding to the console-mode render profile); DM_LANG=language code (default zh-Hans).
 #include "hle.h"
 #include "dm_uiscreen.h"
+HLE_FORCE_OPTIONAL("_ZN2nn2oe17FinishStartupLogoEv", "Host UIKit owns startup presentation; no Horizon applet/display service", void, h_oe_FinishStartupLogo, void) {}
 
 // 运行模式是运行时状态（前端可改：iOS 过热降级切掌机）：唯一来源在此，启动时从 DM_OPMODE 取一次，之后不再读环境变量
 // The operation mode is runtime state (the front end can change it: iOS overheat downgrade switches to handheld): the single source is here, taken once from DM_OPMODE at startup, the environment variable is not read again afterwards
