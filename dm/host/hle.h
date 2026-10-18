@@ -40,8 +40,11 @@ typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
 // Both forced tables share one symbol namespace: reject duplicates at compile/link
 // time, including entries in different source files, before shipping a host.
 #define HLE_FORCE_UNIQUE(mangled, cname)                                                          \
-    __attribute__((used, visibility("hidden"))) const unsigned char hle_force_unique_##cname      \
-        __asm__("dm_force_unique_" mangled) = 0;
+    __asm__(".section __TEXT,__const\n"                                                         \
+            ".globl dm_force_unique_" mangled "\n"                                            \
+            ".private_extern dm_force_unique_" mangled "\n"                                   \
+            ".no_dead_strip dm_force_unique_" mangled "\n"                                    \
+            "dm_force_unique_" mangled ":\n.byte 0\n.text\n");
 #define HLE_FORCE(mangled, why, ret, cname, ...)                                                   \
     HLE_FORCE_UNIQUE(mangled, cname)                                                              \
     static ret cname(__VA_ARGS__);                                                                \
