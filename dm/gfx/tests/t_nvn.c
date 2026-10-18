@@ -15,6 +15,7 @@ void nvn_present_config(int hz, int display_mode);
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/mman.h>
 uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
 
 static int g_fail, g_n;
@@ -259,7 +260,7 @@ static void test_pool_accessors(void) {
 #include <signal.h>
 static int captureDisabledCheck(void) {
     pid_t child=fork();if(child<0)return 1;
-    if (!child) { struct rlimit limit={0,0};setrlimit(RLIMIT_CORE,&limit);h_nvnCommandBufferSetLineWidth(NULL,.25f);_exit(1); }
+    if (!child) { struct rlimit limit={0,0};setrlimit(RLIMIT_CORE,&limit);h_nvnCommandBufferSetPatchSize(NULL,257);_exit(1); }
     int status=0;if(waitpid(child,&status,0)!=child || !WIFSIGNALED(status) || WTERMSIG(status)!=SIGABRT)return 1;
     puts("NVN PROBE CAPTURE GATE OK: inactive capture rejected");return 0;
 }
@@ -490,9 +491,15 @@ int main(int argc, char **argv) {
     P(nvnTextureBuilderSetWidth)(&tb, 1280); P(nvnTextureBuilderSetHeight)(&tb, 720); P(nvnTextureBuilderSetFormat)(&tb, NVN_FORMAT_RGBA8);
     P(nvnTextureBuilderSetStorage)(&tb, &pool, 0); P(nvnTextureInitialize)(&sc[0], &tb); P(nvnTextureInitialize)(&sc[1], &tb);
     EXPECT("贴图宽", 1280, P(nvnTextureGetWidth)(&sc[0]));
-    NVNtexture *scp[2] = {&sc[0], &sc[1]};
+    size_t page=(size_t)sysconf(_SC_PAGESIZE);
+    uint8_t *texture_pages=mmap(NULL,page*2,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+    if(texture_pages==MAP_FAILED || mprotect(texture_pages+page,page,PROT_NONE))abort();
+    NVNtexture **scp=(NVNtexture **)(texture_pages+page-2*sizeof *scp);scp[0]=&sc[0];scp[1]=&sc[1];
     NVNwindowBuilder wb; NVNwindow win; P(nvnWindowBuilderSetDevice)(&wb, &dev); P(nvnWindowBuilderSetDefaults)(&wb);
     P(nvnWindowBuilderSetTextures)(&wb, 2, scp); EXPECT("WindowInitialize 成功", 1, P(nvnWindowInitialize)(&win, &wb));
+    EXPECT("window copies exactly the provided texture count",1,((win_t *)&win)->tex[0]==&sc[0] && ((win_t *)&win)->tex[1]==&sc[1] && !((win_t *)&win)->tex[2] && !((win_t *)&win)->tex[3]);
+    scp[0]=&sc[1];EXPECT("initialized window owns a texture snapshot",(uintptr_t)&sc[0],(uintptr_t)((win_t *)&win)->tex[0]);
+    P(nvnWindowBuilderSetTextures)(&wb,0,NULL);munmap(texture_pages,page*2);
     int idx[4];
     for (int f = 0; f < 4; f++) {
         P(nvnWindowAcquireTexture)(&win, &s2, &idx[f]);

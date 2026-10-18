@@ -31,6 +31,18 @@ static void test_texture_state(void) {
     NVNtextureView *v=&gv.v;NVNtextureBuilder *b=&gb.b;NVNtexture *t=&gt.t;
     NVNtextureSwizzle c[4]={9,9,9,9};NVNtextureDepthStencilMode mode=(NVNtextureDepthStencilMode)9;
     P(nvnTextureViewSetDefaults)(v);
+    struct { uint32_t before;int base,count;uint32_t after; } levels={17,99,99,23};
+    EXPECT("unset levels validity",0,P(nvnTextureViewGetLevels)(v,&levels.base,&levels.count));
+    EXPECT("unset levels write exact default words",1,levels.base==0 && levels.count==0 && levels.before==17 && levels.after==23);
+    levels.base=levels.count=99;
+    EXPECT("unset layers validity",0,P(nvnTextureViewGetLayers)(v,&levels.base,&levels.count));
+    EXPECT("unset layers write exact default words",1,levels.base==0 && levels.count==0 && levels.before==17 && levels.after==23);
+    struct { uint32_t before;NVNformat value;uint32_t after; } fmt={29,(NVNformat)99,31};
+    struct { uint32_t before;NVNtextureTarget value;uint32_t after; } target={37,(NVNtextureTarget)99,41};
+    EXPECT("unset format validity",0,P(nvnTextureViewGetFormat)(v,&fmt.value));
+    EXPECT("unset format writes exact default word",1,fmt.value==0 && fmt.before==29 && fmt.after==31);
+    EXPECT("unset target validity",0,P(nvnTextureViewGetTarget)(v,&target.value));
+    EXPECT("unset target writes exact default word",1,target.value==0 && target.before==37 && target.after==41);
     EXPECT("unset swizzle validity",0,P(nvnTextureViewGetSwizzle)(v,c,c+1,c+2,c+3));
     EXPECT("unset swizzle writes SDK default words",0,c[0]|c[1]|c[2]|c[3]);
     EXPECT("unset aspect validity",0,P(nvnTextureViewGetDepthStencilMode)(v,&mode));

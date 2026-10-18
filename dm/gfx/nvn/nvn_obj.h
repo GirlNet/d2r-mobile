@@ -32,8 +32,9 @@ typedef struct {
 } dev_t_;
 FITS(dev_t_, NVNdevice);
 
-typedef struct { NVNdevice *dev; uint32_t flags; uint64_t cmd_sz, comp_sz, ctl_sz, flush; void *mem; uint64_t mem_sz; } queue_builder_t;
+typedef struct { NVNdevice *dev; uint32_t flags, has_sizes, cmd_sz, comp_sz, ctl_sz, flush; void *mem; uint32_t mem_sz; } queue_builder_t;
 FITS(queue_builder_t, NVNqueueBuilder);
+_Static_assert(sizeof(queue_builder_t)<=60,"queue builder must fit original SDK default-write span");
 typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; } queue_t;                 FITS(queue_t, NVNqueue);
 
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
@@ -91,8 +92,9 @@ typedef struct { uint32_t magic, fenced; uint64_t fence; NVNdevice *dev; } sync_
 typedef struct { const pool_t *pool; int64_t off; } ev_builder_t;                             FITS(ev_builder_t, NVNeventBuilder);
 typedef struct { uint32_t magic; volatile uint32_t *val; } ev_t;                              FITS(ev_t, NVNevent);
 
-typedef struct { NVNdevice *dev; void *native; int32_t ntex, interval; NVNtexture *tex[4]; } win_builder_t;
+typedef struct { NVNdevice *dev; void *native; int32_t ntex, interval; NVNtexture *const *tex; } win_builder_t;
 FITS(win_builder_t, NVNwindowBuilder);
+_Static_assert(sizeof(win_builder_t)<=48,"window builder must fit original SDK default-write span");
 // avail[i]：交换链第 i 张可再次获取的时刻（ns，单调时钟）= 它的显示时刻 + 一个出图周期；pace：本窗口的出图节拍器目标时刻
 // avail[i]: time at which swapchain image i can be acquired again (ns, monotonic clock) = its display time + one present period; pace: target time of this window's present pacer
 typedef struct { uint32_t magic; void *native; int32_t ntex, interval, next, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4]; } win_t;   // ticket[i]：第 i 张最近一次出图的票号 | ticket[i]: ticket of the most recent present of image i

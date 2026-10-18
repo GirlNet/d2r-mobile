@@ -49,10 +49,10 @@ typedef void (*NVNT_nvnQueueBuilderSetQueueMemory)(NVNqueueBuilder*, void*, size
 typedef void (*NVNT_nvnQueueBuilderSetCommandFlushThreshold)(NVNqueueBuilder*, size_t);
 typedef NVNdevice * (*NVNT_nvnQueueBuilderGetDevice)(const NVNqueueBuilder*);
 typedef int (*NVNT_nvnQueueBuilderGetFlags)(const NVNqueueBuilder*);
-typedef size_t (*NVNT_nvnQueueBuilderGetCommandMemorySize)(const NVNqueueBuilder*);
-typedef size_t (*NVNT_nvnQueueBuilderGetComputeMemorySize)(const NVNqueueBuilder*);
-typedef size_t (*NVNT_nvnQueueBuilderGetControlMemorySize)(const NVNqueueBuilder*);
-typedef size_t (*NVNT_nvnQueueBuilderGetCommandFlushThreshold)(const NVNqueueBuilder*);
+typedef NVNboolean (*NVNT_nvnQueueBuilderGetCommandMemorySize)(const NVNqueueBuilder*, int*);
+typedef NVNboolean (*NVNT_nvnQueueBuilderGetComputeMemorySize)(const NVNqueueBuilder*, int*);
+typedef NVNboolean (*NVNT_nvnQueueBuilderGetControlMemorySize)(const NVNqueueBuilder*, int*);
+typedef NVNboolean (*NVNT_nvnQueueBuilderGetCommandFlushThreshold)(const NVNqueueBuilder*, int*);
 typedef size_t (*NVNT_nvnQueueBuilderGetMemorySize)(const NVNqueueBuilder*);
 typedef void * (*NVNT_nvnQueueBuilderGetMemory)(const NVNqueueBuilder*);
 typedef NVNboolean (*NVNT_nvnQueueInitialize)(NVNqueue*, const NVNqueueBuilder*);

@@ -12,10 +12,10 @@ NVN(nvnDeviceGetWindowOriginMode, NVNwindowOriginMode, const NVNdevice *p) { ret
 NVN(nvnDeviceGetDepthMode, NVNdepthMode, const NVNdevice *p) { return (NVNdepthMode)(((const dev_t_ *)p)->depth_mode); }
 NVN(nvnQueueBuilderGetDevice, NVNdevice *, const NVNqueueBuilder *p) { return (NVNdevice *)(((const queue_builder_t *)p)->dev); }
 NVN(nvnQueueBuilderGetFlags, int, const NVNqueueBuilder *p) { return (int)(((const queue_builder_t *)p)->flags); }
-NVN(nvnQueueBuilderGetCommandMemorySize, size_t, const NVNqueueBuilder *p) { return (size_t)(((const queue_builder_t *)p)->cmd_sz); }
-NVN(nvnQueueBuilderGetComputeMemorySize, size_t, const NVNqueueBuilder *p) { return (size_t)(((const queue_builder_t *)p)->comp_sz); }
-NVN(nvnQueueBuilderGetControlMemorySize, size_t, const NVNqueueBuilder *p) { return (size_t)(((const queue_builder_t *)p)->ctl_sz); }
-NVN(nvnQueueBuilderGetCommandFlushThreshold, size_t, const NVNqueueBuilder *p) { return (size_t)(((const queue_builder_t *)p)->flush); }
+NVN(nvnQueueBuilderGetCommandMemorySize, NVNboolean, const NVNqueueBuilder *p, int *out) { const queue_builder_t *q=(const queue_builder_t *)p; if(!out)die("Queue builder output is null"); *out=(int32_t)q->cmd_sz; return !!(q->has_sizes&1); }
+NVN(nvnQueueBuilderGetComputeMemorySize, NVNboolean, const NVNqueueBuilder *p, int *out) { const queue_builder_t *q=(const queue_builder_t *)p; if(!out)die("Queue builder output is null"); *out=(int32_t)q->comp_sz; return !!(q->has_sizes&2); }
+NVN(nvnQueueBuilderGetControlMemorySize, NVNboolean, const NVNqueueBuilder *p, int *out) { const queue_builder_t *q=(const queue_builder_t *)p; if(!out)die("Queue builder output is null"); *out=(int32_t)q->ctl_sz; return !!(q->has_sizes&4); }
+NVN(nvnQueueBuilderGetCommandFlushThreshold, NVNboolean, const NVNqueueBuilder *p, int *out) { const queue_builder_t *q=(const queue_builder_t *)p; if(!out)die("Queue builder output is null"); *out=(int32_t)q->flush; return !!(q->has_sizes&8); }
 NVN(nvnQueueBuilderGetMemorySize, size_t, const NVNqueueBuilder *p) { return (size_t)(((const queue_builder_t *)p)->mem_sz); }
 NVN(nvnQueueBuilderGetMemory, void *, const NVNqueueBuilder *p) { return (void *)(((const queue_builder_t *)p)->mem); }
 NVN(nvnWindowBuilderGetDevice, NVNdevice *, const NVNwindowBuilder *p) { return (NVNdevice *)(((const win_builder_t *)p)->dev); }
@@ -54,9 +54,9 @@ NVN(nvnTextureGetMemoryOffset, ptrdiff_t, const NVNtexture *p) { return (ptrdiff
 NVN(nvnTextureBuilderGetDevice, NVNdevice *, const NVNtextureBuilder *p) { return (NVNdevice *)(((const tex_builder_t *)p)->dev); }
 NVN(nvnTextureGetTextureAddress, NVNtextureAddress, const NVNtexture *p) { return (NVNtextureAddress)((uintptr_t)((const tex_t *)p)->mem); }
 NVN(nvnTextureGetDebugID, uint64_t, const NVNtexture *p) { return (uint64_t)(((const tex_t *)p)->serial); }
-NVN(nvnTextureViewGetLevels, NVNboolean, const NVNtextureView *v, int *base, int *n) { const view_t *o=(const view_t *)v; if (!o->set_levels) return 0; if(base)*base=o->base_level; if(n)*n=o->nlevels; return 1; }
-NVN(nvnTextureViewGetFormat, NVNboolean, const NVNtextureView *v, NVNformat *out) { const view_t *o=(const view_t *)v; if (!o->set_format) return 0; if(out)*out=(NVNformat)o->format; return 1; }
-NVN(nvnTextureViewGetTarget, NVNboolean, const NVNtextureView *v, NVNtextureTarget *out) { const view_t *o=(const view_t *)v; if (!o->set_target) return 0; if(out)*out=(NVNtextureTarget)o->target; return 1; }
+NVN(nvnTextureViewGetLevels, NVNboolean, const NVNtextureView *v, int *base, int *n) { const view_t *o=(const view_t *)v; *base=o->base_level; *n=o->nlevels; return o->set_levels; }
+NVN(nvnTextureViewGetFormat, NVNboolean, const NVNtextureView *v, NVNformat *out) { const view_t *o=(const view_t *)v; *out=(NVNformat)o->format; return o->set_format; }
+NVN(nvnTextureViewGetTarget, NVNboolean, const NVNtextureView *v, NVNtextureTarget *out) { const view_t *o=(const view_t *)v; *out=(NVNtextureTarget)o->target; return o->set_target; }
 NVN(nvnTextureViewCompare, NVNboolean, const NVNtextureView *a, const NVNtextureView *b) { return !memcmp(a,b,sizeof(view_t)); }
 NVN(nvnSamplerBuilderGetDevice, NVNdevice *, const NVNsamplerBuilder *p) { return (NVNdevice *)(((const samp_builder_t *)p)->dev); }
 NVN(nvnSamplerBuilderGetLodBias, float, const NVNsamplerBuilder *p) { return (&((const samp_builder_t *)p)->p)->lod_bias; }

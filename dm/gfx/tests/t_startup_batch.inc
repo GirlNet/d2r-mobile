@@ -1,7 +1,44 @@
 // 成组接口原生回归：真实跳板、对象往返、窄布尔输出与命令载荷；不创建 GPU。
 // Batch native regressions: real thunks, object round trips, narrow boolean outputs and command payloads, without creating a GPU.
 
+static void test_builder_abi(void) {
+    // Slots use spans independently observed in the original SDK, not our oversized opaque declarations.
+    struct { uint8_t slot[60], guard[16]; } qbytes __attribute__((aligned(8)));
+    struct { uint8_t slot[48], guard[16]; } wbytes __attribute__((aligned(8)));
+    memset(&qbytes,0xa7,sizeof qbytes);memset(&wbytes,0xa7,sizeof wbytes);
+    NVNqueueBuilder *q=(NVNqueueBuilder *)qbytes.slot;
+    NVNwindowBuilder *w=(NVNwindowBuilder *)wbytes.slot;
+    NVNT_nvnQueueBuilderSetCommandMemorySize setters[]={P(nvnQueueBuilderSetCommandMemorySize),P(nvnQueueBuilderSetComputeMemorySize),P(nvnQueueBuilderSetControlMemorySize),P(nvnQueueBuilderSetCommandFlushThreshold)};
+    NVNT_nvnQueueBuilderGetCommandMemorySize getters[]={P(nvnQueueBuilderGetCommandMemorySize),P(nvnQueueBuilderGetComputeMemorySize),P(nvnQueueBuilderGetControlMemorySize),P(nvnQueueBuilderGetCommandFlushThreshold)};
+    P(nvnQueueBuilderSetDevice)(q,&dev);P(nvnQueueBuilderSetDefaults)(q);
+    for(unsigned i=0;i<4;i++) {
+        struct { uint32_t before;int value;uint32_t after; } out={0x12345678,-1,0x87654321};
+        EXPECT("queue unset size validity",0,getters[i](q,&out.value));EXPECT("queue unset size writes zero",0,out.value);
+        setters[i](q,0);out.value=-1;
+        EXPECT("queue explicit zero validity",1,getters[i](q,&out.value));EXPECT("queue explicit zero value",0,out.value);
+        setters[i](q,(size_t)UINT64_C(0x100000009));
+        EXPECT("queue set size validity",1,getters[i](q,&out.value));EXPECT("queue size low 32 bits",9,out.value);
+        EXPECT("queue output exact four bytes",1,out.before==0x12345678 && out.after==0x87654321);
+    }
+    P(nvnQueueBuilderSetQueueMemory)(q,qbytes.slot,(size_t)UINT64_C(0x100000009));
+    EXPECT("queue external memory size low 32 bits",9,P(nvnQueueBuilderGetMemorySize)(q));
+    P(nvnQueueBuilderSetDefaults)(q);
+    EXPECT("queue defaults preserve device",(uintptr_t)&dev,(uintptr_t)P(nvnQueueBuilderGetDevice)(q));
+    for(unsigned i=0;i<4;i++){int out=-1;EXPECT("queue defaults clear validity",0,getters[i](q,&out));EXPECT("queue defaults clear value",0,out);}
+    EXPECT("queue compact builder preserves adjacent data",0,memcmp(qbytes.guard,(uint8_t[16]){[0 ... 15]=0xa7},16));
+    NVNtexture a={0},b={0};NVNtexture *textures[2]={&a,&a};
+    P(nvnWindowBuilderSetDevice)(w,&dev);P(nvnWindowBuilderSetDefaults)(w);P(nvnWindowBuilderSetTextures)(w,2,textures);
+    EXPECT("window initial borrowed array",(uintptr_t)&a,(uintptr_t)P(nvnWindowBuilderGetTexture)(w,0));
+    textures[0]=&b;
+    EXPECT("window observes borrowed array mutation",(uintptr_t)&b,(uintptr_t)P(nvnWindowBuilderGetTexture)(w,0));
+    P(nvnWindowBuilderSetDefaults)(w);
+    EXPECT("window defaults preserve device",(uintptr_t)&dev,(uintptr_t)P(nvnWindowBuilderGetDevice)(w));
+    EXPECT("window defaults clear textures",0,P(nvnWindowBuilderGetNumTextures)(w));
+    EXPECT("window compact builder preserves adjacent data",0,memcmp(wbytes.guard,(uint8_t[16]){[0 ... 15]=0xa7},16));
+}
+
 static void test_startup_batch(void) {
+    test_builder_abi();
     uint32_t saved_origin=((dev_t_ *)&dev)->origin,saved_depth=((dev_t_ *)&dev)->depth_mode;
     uint8_t storage[131072]={0};uint8_t record[1024] __attribute__((aligned(8)));
     NVNdeviceBuilder db={0};P(nvnDeviceBuilderSetFlags)(&db,0x35);
@@ -44,10 +81,10 @@ EXPECT("nvnDeviceGetWindowOriginMode",(long long)(1),(long long)(uintptr_t)P(nvn
 EXPECT("nvnDeviceGetDepthMode",(long long)(1),(long long)(uintptr_t)P(nvnDeviceGetDepthMode)(&dev));
 EXPECT("nvnQueueBuilderGetDevice",(long long)((uintptr_t)&dev),(long long)(uintptr_t)P(nvnQueueBuilderGetDevice)(&qb));
 EXPECT("nvnQueueBuilderGetFlags",(long long)(21),(long long)(uintptr_t)P(nvnQueueBuilderGetFlags)(&qb));
-EXPECT("nvnQueueBuilderGetCommandMemorySize",(long long)(8192),(long long)(uintptr_t)P(nvnQueueBuilderGetCommandMemorySize)(&qb));
-EXPECT("nvnQueueBuilderGetComputeMemorySize",(long long)(16384),(long long)(uintptr_t)P(nvnQueueBuilderGetComputeMemorySize)(&qb));
-EXPECT("nvnQueueBuilderGetControlMemorySize",(long long)(32768),(long long)(uintptr_t)P(nvnQueueBuilderGetControlMemorySize)(&qb));
-EXPECT("nvnQueueBuilderGetCommandFlushThreshold",(long long)(1024),(long long)(uintptr_t)P(nvnQueueBuilderGetCommandFlushThreshold)(&qb));
+{ int out=-1;EXPECT("nvnQueueBuilderGetCommandMemorySize validity",1,P(nvnQueueBuilderGetCommandMemorySize)(&qb,&out));EXPECT("nvnQueueBuilderGetCommandMemorySize output",8192,out); }
+{ int out=-1;EXPECT("nvnQueueBuilderGetComputeMemorySize validity",1,P(nvnQueueBuilderGetComputeMemorySize)(&qb,&out));EXPECT("nvnQueueBuilderGetComputeMemorySize output",16384,out); }
+{ int out=-1;EXPECT("nvnQueueBuilderGetControlMemorySize validity",1,P(nvnQueueBuilderGetControlMemorySize)(&qb,&out));EXPECT("nvnQueueBuilderGetControlMemorySize output",32768,out); }
+{ int out=-1;EXPECT("nvnQueueBuilderGetCommandFlushThreshold validity",1,P(nvnQueueBuilderGetCommandFlushThreshold)(&qb,&out));EXPECT("nvnQueueBuilderGetCommandFlushThreshold output",1024,out); }
 EXPECT("nvnQueueBuilderGetMemorySize",(long long)(512),(long long)(uintptr_t)P(nvnQueueBuilderGetMemorySize)(&qb));
 EXPECT("nvnQueueBuilderGetMemory",(long long)((uintptr_t)storage),(long long)(uintptr_t)P(nvnQueueBuilderGetMemory)(&qb));
 EXPECT("nvnWindowBuilderGetDevice",(long long)((uintptr_t)&dev),(long long)(uintptr_t)P(nvnWindowBuilderGetDevice)(&wb));
@@ -86,7 +123,7 @@ EXPECT("nvnTextureGetMemoryOffset",(long long)(128),(long long)(uintptr_t)P(nvnT
 EXPECT("nvnTextureBuilderGetDevice",(long long)((uintptr_t)&dev),(long long)(uintptr_t)P(nvnTextureBuilderGetDevice)(&tb));
 EXPECT("nvnTextureGetTextureAddress",(long long)((uintptr_t)(storage+128)),(long long)(uintptr_t)P(nvnTextureGetTextureAddress)(&tex));
 EXPECT("texture debug lifetime ID",1,P(nvnTextureGetDebugID)(&tex)>0);
-int base=99,nlevels=99;EXPECT("unset view leaves output",0,P(nvnTextureViewGetLevels)(&view,&base,&nlevels));EXPECT("unset output preserved",99,base);P(nvnTextureViewSetLevels)(&view,1,2);EXPECT("view levels present",1,P(nvnTextureViewGetLevels)(&view,&base,&nlevels));EXPECT("view levels",1,base==1 && nlevels==2);
+int base=99,nlevels=99;EXPECT("unset view validity",0,P(nvnTextureViewGetLevels)(&view,&base,&nlevels));EXPECT("unset view writes default outputs",1,base==0 && nlevels==0);P(nvnTextureViewSetLevels)(&view,1,2);EXPECT("view levels present",1,P(nvnTextureViewGetLevels)(&view,&base,&nlevels));EXPECT("view levels",1,base==1 && nlevels==2);
 NVNformat viewFormat;P(nvnTextureViewSetFormat)(&view,NVN_FORMAT_RGBA8);EXPECT("view Format presence",1,P(nvnTextureViewGetFormat)(&view,&viewFormat));EXPECT("view Format",NVN_FORMAT_RGBA8,viewFormat);
 NVNtextureTarget viewTarget;P(nvnTextureViewSetTarget)(&view,NVN_TEXTURE_TARGET_3D);EXPECT("view Target presence",1,P(nvnTextureViewGetTarget)(&view,&viewTarget));EXPECT("view Target",NVN_TEXTURE_TARGET_3D,viewTarget);
 NVNtextureView viewCopy=view;EXPECT("view value comparison",1,P(nvnTextureViewCompare)(&view,&viewCopy));P(nvnTextureViewSetLevels)(&viewCopy,2,1);EXPECT("different view comparison",0,P(nvnTextureViewCompare)(&view,&viewCopy));

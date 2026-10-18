@@ -1,5 +1,16 @@
 # P5R port preparation
 
+The builder/query ABI audit corrects four queue-size getters to return a
+one-byte validity flag and write a four-byte output. Defaults clear both the
+value and validity; explicitly setting zero remains distinguishable. Queue and
+window host builders now fit within independently observed original default
+write spans (60 and 48 bytes). Window builders borrow their texture array;
+initialization snapshots exactly the supplied count. Regressions guard adjacent
+objects and outputs, mutate the borrowed array, and place the array against an
+unreadable page to catch overreads. Three unset texture-view getters now write
+default words before returning false. These CPU ABI checks do not establish
+game rendering or playability.
+
 Startup batch: 20 diagnostic-only APIs now record/replay instanced array draws,
 command fences/waits, 16-byte value/timestamp reports, domain debug breadcrumbs
 and common dynamic state. Nondefault point/line rasterization, viewport swizzles
