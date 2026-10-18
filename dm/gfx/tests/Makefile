@@ -4,7 +4,7 @@
 # Source files are included by wildcard, same convention as GFX in the host Makefile (hle_nvn.c is #included directly by t_nvn.c, so it is excluded); adding new source files needs no change here
 CFLAGS=-O1 -g -Wall -Wno-unused-function -I../nvn/include
 GFX=$(filter-out ../nvn/hle_nvn.c,$(sort $(wildcard ../nvn/*.c ../nvn/*.m ../nvn/*.S ../tex/*.c ../tex/*.m))) ../../host/guest_bootstrap.c
-GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/include/*.h ../tex/*.h) ../../host/guest_bootstrap.h t_queue_sync.inc t_copy_image_stride.inc t_clear_buffer.inc t_clear_texture_int.inc
+GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/include/*.h ../tex/*.h) ../../host/guest_bootstrap.h t_queue_sync.inc t_copy_image_stride.inc t_clear_buffer.inc t_clear_texture_int.inc t_viewport_batch.inc
 FW=-framework Metal -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
 # 宿主 crash.c 一并链入：写保护单测走生产同一套缺页钩子
 # Host crash.c is linked in as well: the write-protect unit tests go through the same page-fault hook as production
@@ -59,6 +59,9 @@ t_shader_scratch_gpu: t_shader_scratch_gpu.m nvn_gpu_test_device.h ../../host/cr
 
 t_conditional_render_gpu: t_conditional_render_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_conditional_render_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
+t_viewport_batch_gpu: t_viewport_batch_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_viewport_batch_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 
 %_m4: %.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=0 -mmacosx-version-min=26.0 -fobjc-arc -o $@ $< ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)

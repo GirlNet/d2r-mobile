@@ -1,5 +1,14 @@
 # P5R port preparation
 
+2026-10-19: the new device log passes the oversized-view failure and then stops
+at unimplemented `SetScissors`. Batch scissors and `SetDepthRanges` now use the
+existing scalar command replay for a single item or uniform batches starting at
+viewport zero. Empty updates leave state unchanged without reading input. Other
+starting viewports, independently varying entries and invalid inputs remain
+explicit errors. Regressions check recorded snapshots and independent GPU colour
+and depth pixels. These two APIs leave 49 diagnostic-only capture APIs. Normal
+game execution after this change still requires device confirmation.
+
 2026-10-18 device investigation: normal launch passes SDK/module initialization,
 language queries and swapchain creation and reaches graphics submission. The new
 diagnostic traces a `0x0x1` copy extent to an oversized texture view: the guest's

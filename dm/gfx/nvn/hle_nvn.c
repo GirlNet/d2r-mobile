@@ -753,6 +753,25 @@ NVN(nvnCommandBufferSetViewports, void, NVNcommandBuffer *c, int first, int n, c
 }
 NVN(nvnCommandBufferSetScissor, void, NVNcommandBuffer *c, int x, int y, int w, int h) { *REC(c, OP_SCISSOR, p_scissor) = (p_scissor){x, y, w, h}; }
 NVN(nvnCommandBufferSetDepthRange, void, NVNcommandBuffer *c, float n, float f) { *REC(c, OP_DEPTH_RANGE, p_depth_range) = (p_depth_range){n, f}; }
+// The renderer uses viewport zero. Uniform batches starting at zero have the
+// same effect as its scalar state; reject independently varying viewport state.
+static int uniform_viewport_batch(const char *name, int first, int n, const void *values, size_t stride) {
+    if (first < 0 || first > 16 || n < 0 || n > 16-first || (n && !values))
+        die("%s invalid arguments: first=%d count=%d values=%p",name,first,n,values);
+    if (!n) return 0;
+    if (first) die("%s nonzero viewport unsupported: first=%d count=%d",name,first,n);
+    for (int i=1;i<n;i++) if (memcmp(values,(const uint8_t *)values+i*stride,stride))
+        die("%s nonuniform viewport batch unsupported: first=%d count=%d different=%d",name,first,n,i);
+    return 1;
+}
+NVN(nvnCommandBufferSetScissors, void, NVNcommandBuffer *c, int first, int n, const int *rectangles) {
+    if (!uniform_viewport_batch("SetScissors",first,n,rectangles,4*sizeof(int))) return;
+    h_nvnCommandBufferSetScissor(c,rectangles[0],rectangles[1],rectangles[2],rectangles[3]);
+}
+NVN(nvnCommandBufferSetDepthRanges, void, NVNcommandBuffer *c, int first, int n, const float *ranges) {
+    if (!uniform_viewport_batch("SetDepthRanges",first,n,ranges,2*sizeof(float))) return;
+    h_nvnCommandBufferSetDepthRange(c,ranges[0],ranges[1]);
+}
 NVN(nvnCommandBufferBindProgram, void, NVNcommandBuffer *c, const NVNprogram *p, int stages) {
     *REC(c, OP_BIND_PROGRAM, p_bind_program) = (p_bind_program){(const prog_t *)p, stages};
 }

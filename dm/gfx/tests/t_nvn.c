@@ -26,6 +26,7 @@ static PFNNVNDEVICEGETPROCADDRESSPROC gpa; static NVNdevice dev;
 static void *proc(const char *n) { void *p = (void *)gpa(&dev, n); if (!p) { printf("取址失败 %s\n", n); exit(1); } return p; }
 #include "t_sampler_state.inc"
 #include "t_texture_state.inc"
+#include "t_viewport_batch.inc"
 #include "t_texture_linear.inc"
 #include "t_queue_sync.inc"
 #include "t_copy_image_stride.inc"
@@ -358,6 +359,7 @@ int main(int argc, char **argv) {
     test_startup_batch();
     test_sampler_state();
     test_texture_state();
+    test_viewport_batch_recording();
     test_texture_linear();
     test_queue_sync_objects();
     int named = 0;
