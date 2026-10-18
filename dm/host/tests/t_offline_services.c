@@ -35,7 +35,7 @@ int main(void) {
     assert(h_sk_GetSockNameLegacy(1, output, &length) == -1);
     assert(h_sk_GetSockOptLegacy(1, 2, 3, output, &length) == -1);
     assert(h_sk_SetSockOptLegacy(1, 2, 3, output, length) == -1);
-    assert(h_sk_SetSockOptIntLegacy(1, 2, 3, output, length) == -1);
+    assert(h_sk_SetSockOpt(1, 2, 3, output, length) == -1);
     assert(h_sk_PollLegacy(output, 4, 0) == -1);
     assert(h_sk_FcntlLegacy(1, 0) == -1);
     assert(h_sk_ShutdownLegacy(1, 2) == -1);

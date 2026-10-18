@@ -37,7 +37,13 @@ void guest_clock_freeze_for(int reason, int on);   // 按原因冻结（1 后台
 // Used only for the service-layer nn:: (service clients of fs/oe/aoc/pctl...); the SDK's libc++ and nn::os internals do not go into this table.
 // Every entry must state the reason; unreferenced required entries abort in the D2R profile, while optional overloads and other game profiles may have no references.
 typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
+// Both forced tables share one symbol namespace: reject duplicates at compile/link
+// time, including entries in different source files, before shipping a host.
+#define HLE_FORCE_UNIQUE(mangled, cname)                                                          \
+    __attribute__((used, visibility("hidden"))) const unsigned char hle_force_unique_##cname      \
+        __asm__("dm_force_unique_" mangled) = 0;
 #define HLE_FORCE(mangled, why, ret, cname, ...)                                                   \
+    HLE_FORCE_UNIQUE(mangled, cname)                                                              \
     static ret cname(__VA_ARGS__);                                                                \
     __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
     static ret cname(__VA_ARGS__)
@@ -45,6 +51,7 @@ typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
 // 新 SDK 的可选重载仍强制接管，旧游戏没有引用时不视为清单错误；保持原 swforce 记录布局。
 // Optional overloads in other SDK versions are still forcibly taken over, but absence in older games is not an error; preserves swforce record layout.
 #define HLE_FORCE_OPTIONAL(mangled, why, ret, cname, ...)                                         \
+    HLE_FORCE_UNIQUE(mangled, cname)                                                              \
     static ret cname(__VA_ARGS__);                                                               \
     __attribute__((used, section("__DATA,swforceopt"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
     static ret cname(__VA_ARGS__)

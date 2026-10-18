@@ -2,6 +2,7 @@
 // presentation; the host NVN window retains only the native-window identity.
 // Keep this entire lifecycle on the host instead of entering Horizon VI IPC.
 #include "hle.h"
+#ifdef DM_P5R_ONLY
 #include <pthread.h>
 #define VI_HANDLES 64
 typedef struct { unsigned layers; } vi_display;
@@ -50,3 +51,4 @@ HLE_FORCE_OPTIONAL("_ZN2nn2vi8FinalizeEv", "Finalize host-only VI state after al
     if(vi_refs==1)for(int i=0;i<VI_HANDLES;i++)if(vi_displays[i]||vi_layers[i])die("VI finalization with live host handles");
     if(vi_refs)vi_refs--;pthread_mutex_unlock(&vi_lock);
 }
+#endif

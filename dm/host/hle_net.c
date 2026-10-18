@@ -38,7 +38,6 @@ SKO("_ZN2nn6socket6AcceptEiP8sockaddrPj", h_sk_AcceptLegacy, int s, void *a, uns
 SKO("_ZN2nn6socket11GetSockNameEiP8sockaddrPj", h_sk_GetSockNameLegacy, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
 SKO("_ZN2nn6socket10GetSockOptEiiiPvPj", h_sk_GetSockOptLegacy, int s, int l, int o, void *v, unsigned *n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
 SKO("_ZN2nn6socket10SetSockOptEiiiPKvj", h_sk_SetSockOptLegacy, int s, int l, int o, const void *v, unsigned n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
-SKO("_ZN2nn6socket10SetSockOptEiNS0_5LevelENS0_6OptionEPKvj", h_sk_SetSockOptIntLegacy, int s, int l, int o, const void *v, unsigned n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
 SKO("_ZN2nn6socket4PollEP6pollfdmi", h_sk_PollLegacy, void *p, size_t n, int timeout) { (void)p; (void)n; (void)timeout; return sk_fail(); }
 SKO("_ZN2nn6socket5FcntlEiiz", h_sk_FcntlLegacy, int s, int c) { (void)s; (void)c; return sk_fail(); }
 SKO("_ZN2nn6socket8ShutdownEii", h_sk_ShutdownLegacy, int s, int how) { (void)s; (void)how; return sk_fail(); }

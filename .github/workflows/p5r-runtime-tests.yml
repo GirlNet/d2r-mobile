@@ -11,6 +11,7 @@ on:
       - 'dm/tools/audit_p5r_api.py'
       - 'dm/tools/p5r_pack.py'
       - 'dm/tools/test_p5r_pack.py'
+      - 'dm/tools/test_hle_registration.py'
       - 'dm/gfx/nvn/**'
       - 'dm/gfx/tests/**'
       - 'dm/gfx/tex/**'
@@ -63,6 +64,7 @@ jobs:
           xcrun clang -DDM_P5R_ONLY=1 dm/host/tests/t_guest_bootstrap.c dm/host/guest_bootstrap.c -o "$RUNNER_TEMP/p5r-profile"
           "$RUNNER_TEMP/p5r-profile" p5r
           python3 -m unittest discover -s dm/tools -p test_p5r_pack.py -v
+          python3 -m unittest discover -s dm/tools -p test_hle_registration.py -v
           python3 dm/ios/p5r/build_shell.py "$RUNNER_TEMP/p5r-shell"
       - name: Retain unsigned shell and build diagnostics
         if: always()
