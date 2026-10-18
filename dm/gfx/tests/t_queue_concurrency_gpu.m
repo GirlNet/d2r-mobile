@@ -30,14 +30,26 @@ static int concurrent_submit(void) {
     pool_t pool={.magic=MAGIC('P','O','O','L'),.flags=0x22,.mem=memory,.size=size};mtl_pool_add(memory,size);
     NVNqueueBuilder qb={0};NVNqueue queues[2];P(nvnQueueBuilderSetDefaults)(&qb);
     for(int i=0;i<2;i++)CHECK(P(nvnQueueInitialize)(&queues[i],&qb));
+    NSError *error=nil;
+    id<MTLLibrary> lib=[g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nvertex float4 v(uint n[[vertex_id]]){float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return float4(p[n],.5,1);}\nfragment float4 f(){return float4(1,0,0,1);}" options:nil error:&error];CHECK(lib);
+    prog_t program={.serial=1900030};NvProg *native=[NvProg new];native->sh[0]=[NvShader new];native->sh[0]->fn=[lib newFunctionWithName:@"v"];
+    native->sh[1]=[NvShader new];native->sh[1]->fn=[lib newFunctionWithName:@"f"];native->sh[1]->stage=1;serial_put(program.serial,native);
+    tex_t textures[WORKERS]={0};
     NVNcommandBuffer commands[WORKERS];NVNsync internal[WORKERS];worker workers[WORKERS]={0};pthread_t threads[WORKERS];
     for(int i=0;i<WORKERS;i++) {
         uint8_t *src=memory+i*4096,*dst=src+1024,*report=src+2048;
         for(int j=0;j<256;j++)src[j]=(uint8_t)(i*31+j*17+9);
+        memcpy(src+512,(uint16_t[]){0,1,2},6);
+        textures[i].serial=1900040+i;textures[i].d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=8,.height=4,.depth=1,.levels=1,.samples=1};
         CHECK(P(nvnCommandBufferInitialize)(&commands[i],NULL));P(nvnCommandBufferAddCommandMemory)(&commands[i],(const NVNmemoryPool *)&pool,65536+i*65536,65536);
         CHECK(P(nvnSyncInitialize)(&internal[i],NULL));CHECK(P(nvnSyncInitialize)(&workers[i].done,NULL));
         workers[i].queue=&queues[i%2];workers[i].other=&queues[(i+1)%2];
         P(nvnCommandBufferBeginRecording)(&commands[i]);
+        const NVNtexture *targets[]={(const NVNtexture *)&textures[i]};P(nvnCommandBufferSetRenderTargets)(&commands[i],1,targets,NULL,NULL,NULL);
+        P(nvnCommandBufferSetScissor)(&commands[i],0,0,8,4);P(nvnCommandBufferSetViewport)(&commands[i],0,0,8,4);
+        P(nvnCommandBufferClearColor)(&commands[i],0,(float[]){0,0,0,1},15);P(nvnCommandBufferBindProgram)(&commands[i],(const NVNprogram *)&program,3);
+        P(nvnCommandBufferDrawArraysInstanced)(&commands[i],NVN_DRAW_PRIMITIVE_TRIANGLES,0,3,0,2);
+        P(nvnCommandBufferDrawElementsInstanced)(&commands[i],NVN_DRAW_PRIMITIVE_TRIANGLES,NVN_INDEX_TYPE_UNSIGNED_SHORT,3,(uintptr_t)(src+512),0,0,2);
         P(nvnCommandBufferCopyBufferToBuffer)(&commands[i],(uintptr_t)src,(uintptr_t)dst,256,0);
         P(nvnCommandBufferReportValue)(&commands[i],0xcafe0000u+i,(uintptr_t)report);
         P(nvnCommandBufferFenceSync)(&commands[i],&internal[i],NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE,0);
@@ -60,9 +72,15 @@ static int concurrent_submit(void) {
         for(int j=-16;j<272;j++)if(j<0 || j>=256)CHECK(dst[j]==0xa7);
         for(int j=-16;j<32;j++)if(j<0 || j>=16)CHECK(report[j]==0xa7);
         CHECK(((sync_t *)&workers[i].done)->fenced && atomic_load(&workers[i].returned));
+        id<MTLBuffer> output=[g_dev newBufferWithLength:1024 options:MTLResourceStorageModeShared];memset(output.contents,0xa7,1024);
+        id<MTLCommandBuffer> command=[g_q commandBuffer];id<MTLBlitCommandEncoder> b=[command blitCommandEncoder];
+        [b copyFromTexture:tex_mtl(&textures[i]) sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(8,4,1) toBuffer:output destinationOffset:0 destinationBytesPerRow:256 destinationBytesPerImage:1024];
+        [b endEncoding];[command commit];[command waitUntilCompleted];CHECK(command.status==MTLCommandBufferStatusCompleted);
+        for(int y=0;y<4;y++)for(int x=0;x<256;x++)CHECK(((uint8_t *)output.contents)[y*256+x]==(x>=32?0xa7:x%4==0 || x%4==3?255:0));
         P(nvnCommandBufferFinalize)(&commands[i]);P(nvnSyncFinalize)(&internal[i]);P(nvnSyncFinalize)(&workers[i].done);
     }
     for(int i=0;i<2;i++){CHECK(((queue_t *)&queues[i])->submits==2*ROUNDS);P(nvnQueueFinalize)(&queues[i]);CHECK(!((queue_t *)&queues[i])->replay_state);}
+    for(int i=0;i<WORKERS;i++)mtl_tex_release(&textures[i]);mtl_prog_release(&program);
     mtl_pool_del(memory);free(memory);return 0;
 }
 static int queue_state_pixels(void) {

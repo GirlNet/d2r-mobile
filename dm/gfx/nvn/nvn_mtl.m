@@ -4754,7 +4754,7 @@ static prepared_indices prepare_indices(const p_draw_idx *draw) {
     if(!draw->count)return result;
     unsigned width=1u<<draw->itype;void *source;uint64_t offset,gpu;
     uint64_t bytes=(uint64_t)draw->count*width;
-    if(!mtl_gpu_addr(draw->ibuf,bytes,&source,&offset,&gpu))MDIE("Index range outside a memory pool");
+    if(!mtl_gpu_addr(draw->ibuf,bytes,&source,&offset,&gpu))MDIE("Index range outside a memory pool: address=%#llx bytes=%llu count=%d type=%d base_vertex=%d base_instance=%d instances=%d command=%p",(unsigned long long)draw->ibuf,(unsigned long long)bytes,draw->count,draw->itype,draw->base_vertex,draw->base_instance,draw->instances,g_exec_cur);
     uint32_t native_restart=width==2?UINT16_MAX:UINT32_MAX;
     if(width>1 && (dm_guest_d2r() || (S.restart.enabled && S.restart.index==native_restart)))
         return (prepared_indices){gpu,bytes,width==2?MTLIndexTypeUInt16:MTLIndexTypeUInt32};
