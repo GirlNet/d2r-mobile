@@ -161,7 +161,7 @@ def staged_shader_inputs(directory, chain, diagnostic_assets, diagnostic_report,
     return files, additions, len(seen)
 
 
-def package(shell, preparation, diagnostics, output, shader_bundle=None, guarded_runtime=False):
+def package(shell, preparation, diagnostics, output, shader_bundle=None, guarded_runtime=False, omit_diagnostics=False):
     shell, preparation, diagnostics, output = [p.resolve() for p in (shell, preparation, diagnostics, output)]
     if output.is_relative_to(REPO) or output.is_relative_to(preparation) or output.is_relative_to(diagnostics):
         raise ValueError('Package output must stay outside source and preparation trees')
@@ -176,11 +176,14 @@ def package(shell, preparation, diagnostics, output, shader_bundle=None, guarded
         runtime_ready=False, graphics_verified=False, device_verified=False, signed=False,
         modules={name:report['outputs'][name] for name in MODULES}, diagnostic_shaders=shaders,
         shell_sha256=digest(shell.read_bytes()), guest_sha256=digest(guest), shader_chain=shell_info['shader_chain'],
+        diagnostic_payload_included=not omit_diagnostics,
         blockers=['Diagnostic shader resource types and render state remain unverified',
                   'Complete game startup and platform compatibility have not been validated',
                   'The application and Guest framework must be signed together before installation'])
     additions = {'dm/' + name:data for name, data in modules.items()}
-    additions.update({'p5r-diagnostics/' + name:data for name, data in assets.items()})
+    # Always validate diagnostics above; offline evidence need not be installed on the device.
+    if not omit_diagnostics:
+        additions.update({'p5r-diagnostics/' + name:data for name, data in assets.items()})
     staged_files = []
     if guarded_runtime and shader_bundle is None:raise ValueError('Guarded runtime requires a checked shader bundle')
     if guarded_runtime and shell_info.get('guarded_runtime_contract_version')!=1:raise ValueError('Shell does not support the guarded runtime contract')
@@ -234,6 +237,7 @@ if __name__ == '__main__':
     parser.add_argument('diagnostics', type=Path); parser.add_argument('output', type=Path)
     parser.add_argument('--shader-bundle',type=Path,help='Optional locally staged native shader bundle; normal game launch stays disabled')
     parser.add_argument('--guarded-runtime',action='store_true',help='Allow a checked guarded candidate bundle to expose experimental game launch')
+    parser.add_argument('--omit-diagnostics',action='store_true',help='Validate offline diagnostics without copying them into the IPA; keep all runtime shaders and sources')
     args = parser.parse_args()
-    try: print(json.dumps(package(args.shell, args.preparation, args.diagnostics, args.output,args.shader_bundle,args.guarded_runtime), indent=2))
+    try: print(json.dumps(package(args.shell, args.preparation, args.diagnostics, args.output,args.shader_bundle,args.guarded_runtime,args.omit_diagnostics), indent=2))
     except (ValueError, OSError, KeyError, zipfile.BadZipFile) as error: parser.exit(1, str(error) + '\n')

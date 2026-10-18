@@ -152,6 +152,23 @@ class P5RPackTests(unittest.TestCase):
             package(self.shell,self.prep,self.diag,self.out,shader_bundle=directory)
         self.assertFalse(self.out.exists());self.assertFalse(self.out.with_suffix('.ipa.tmp').exists())
 
+    def test_omit_diagnostics_keeps_runtime_sources_and_provenance_checks(self):
+        directory,cache,_=self.make_shader_bundle()
+        path=self.diag/'msl'/(self.key+'.metal')
+        original=path.read_bytes();path.write_bytes(b'tampered')
+        with self.assertRaisesRegex(ValueError,'artifact digest'):
+            package(self.shell,self.prep,self.diag,self.out,shader_bundle=directory,omit_diagnostics=True)
+        self.assertFalse(self.out.exists());path.write_bytes(original)
+        result=package(self.shell,self.prep,self.diag,self.out,shader_bundle=directory,omit_diagnostics=True)
+        self.assertFalse(result['diagnostic_payload_included']);self.assertFalse(result['runtime_ready'])
+        with zipfile.ZipFile(self.out) as archive:
+            base='Payload/P5RMobile.app/'
+            self.assertFalse(any(n.startswith(base+'p5r-diagnostics/') for n in archive.namelist()))
+            for suffix in ('.metal','.metallib','.json'):
+                name=self.key+'_b'+suffix
+                self.assertEqual(archive.read(base+'msl/b-0123456789ab/'+name),(cache/name).read_bytes())
+            self.assertEqual(archive.read(base+'dm/shader_map.tsv').decode().splitlines()[1].split('\t')[-1],self.key)
+
     def test_staged_bundle_cannot_change_chain_source_or_ready_markers(self):
         directory,_,report=self.make_shader_bundle()
         for field,value in (('shader_chain','000000000000'),('source_sha256','different'),('runtime_ready',True)):

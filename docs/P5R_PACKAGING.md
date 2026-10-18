@@ -87,3 +87,9 @@ RomFS, main/SDK/subsdk0 modules and new native cache all stay local. Existing
 movie implementations are still excluded from the P5R shell, and remaining
 platform calls may stop startup. Do not infer gameplay success from synthetic
 GPU tests or from an enabled launch button.
+
+Install-focused packages may add `--omit-diagnostics` to validate all offline
+diagnostic inputs without copying `p5r-diagnostics/` into the IPA. Runtime native
+libraries, reflections and `.metal` specialization sources remain included.
+This reduces transferred file counts without changing candidate execution checks;
+the full diagnostic evidence remains in the local input directory.

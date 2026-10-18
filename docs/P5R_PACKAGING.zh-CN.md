@@ -79,3 +79,8 @@ python dm/tools/stage_p5r_shaders.py /path/shader-preparation /path/native-diagn
 尚未验证为可玩版本。RomFS、三个程序模块及新缓存始终保留在本地。
 现有视频实现仍未加入 P5R 壳，剩余平台接口也可能阻止启动；合成 GPU
 测试通过或启动按钮启用，都不能当作实际游戏运行成功。
+
+安装包可增加 `--omit-diagnostics`，在完整核对来源后省去设备运行不读取的
+`p5r-diagnostics/` 离线诊断资料，减少安装和传输的文件数。这不会省去原生库、
+反射或运行时需要的 `.metal` 源码，也不会改变候选运行限制。完整诊断依据
+仍保留在本机输入目录。
