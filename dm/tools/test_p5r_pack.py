@@ -113,5 +113,50 @@ class P5RPackTests(unittest.TestCase):
         self.assertEqual(self.out.read_bytes(),b'keep')
         with self.assertRaises(ValueError): package(self.shell,self.prep,self.diag,self.prep/'bad.ipa')
 
+    def make_shader_bundle(self):
+        chain='0123456789ab';directory=self.root/'staged';cache=directory/'msl'/('b-'+chain);cache.mkdir(parents=True)
+        self.shell_files['dm/p5r-shell.json']=json.dumps(dict(profile='p5r',game_content_included=False,shader_chain=chain)).encode();self.write_shell()
+        plan=json.loads(self.plan_path.read_text());plan.update(bindings=[],source=dict(c1_sha256=digest(b'')),msl_sha256=digest(b'synthetic'))
+        self.plan_path.write_text(json.dumps(plan));self.diag_report['shaders'][0]['reflection_plan']['sha256']=digest(self.plan_path.read_bytes())
+        self.diag_report['shaders'][0]['metal']=[dict(sdk='iphoneos',target='air64-apple-ios18.0',strict_float=True,
+            sha256=digest(b'MTLB native synthetic'),source_sha256=digest(b'synthetic'))];self.write_diagnostic_report()
+        reflection=dict(key=self.key+'_b',dm_ctl=self.key,chain=chain,profile='p5r',route='B',stage='cs',
+            bindings=[],c1='',diagnostic_only=True,runtime_ready=False,resource_facts_verified=False)
+        hashes={}
+        for suffix,data in (('.metallib',b'MTLB native synthetic'),('.metal',b'synthetic'),('.json',json.dumps(reflection).encode())):
+            name=self.key+'_b'+suffix;(cache/name).write_bytes(data);hashes[name]=digest(data)
+        report=dict(schema_version=1,profile='p5r',status='staged_unverified',shader_chain=chain,source_sha256='synthetic-source',
+            diagnostic_only=True,runtime_ready=False,graphics_verified=False,game_launch_enabled=False,shaders=1,
+            shader_records=[dict(key=self.key,stage='cs',artifacts=hashes)])
+        (directory/'bundle-report.json').write_text(json.dumps(report))
+        return directory,cache,report
+
+    def test_staged_native_libraries_mapping_and_c1_are_packaged_without_enabling_launch(self):
+        directory,cache,_=self.make_shader_bundle()
+        result=package(self.shell,self.prep,self.diag,self.out,shader_bundle=directory)
+        self.assertEqual(result['staged_native_shaders'],1);self.assertFalse(result['staged_shader_bundle_ready'])
+        self.assertFalse(result['runtime_ready'])
+        with zipfile.ZipFile(self.out) as archive:
+            base='Payload/P5RMobile.app/'
+            self.assertEqual(archive.read(base+'msl/b-0123456789ab/'+self.key+'_b.metallib'),b'MTLB native synthetic')
+            self.assertIn(self.key,archive.read(base+'dm/shader_map.tsv').decode())
+            self.assertEqual(archive.read(base+'dm/c1_full.tsv').decode(),'# chain b-0123456789ab\n'+self.key+'\n')
+            reflection=json.loads(archive.read(base+'msl/b-0123456789ab/'+self.key+'_b.json'))
+            self.assertTrue(reflection['diagnostic_only']);self.assertFalse(reflection['runtime_ready'])
+
+    def test_corrupt_native_bundle_cannot_leave_a_complete_package(self):
+        directory,cache,_=self.make_shader_bundle();(cache/(self.key+'_b.metallib')).write_bytes(b'tamper')
+        with self.assertRaisesRegex(ValueError,'Staged shader artifact digest'):
+            package(self.shell,self.prep,self.diag,self.out,shader_bundle=directory)
+        self.assertFalse(self.out.exists());self.assertFalse(self.out.with_suffix('.ipa.tmp').exists())
+
+    def test_staged_bundle_cannot_change_chain_source_or_ready_markers(self):
+        directory,_,report=self.make_shader_bundle()
+        for field,value in (('shader_chain','000000000000'),('source_sha256','different'),('runtime_ready',True)):
+            changed=dict(report);changed[field]=value;(directory/'bundle-report.json').write_text(json.dumps(changed))
+            with self.assertRaisesRegex(ValueError,'source-matched unverified'):
+                package(self.shell,self.prep,self.diag,self.out,shader_bundle=directory)
+            self.assertFalse(self.out.exists())
+
 
 if __name__=='__main__': unittest.main()

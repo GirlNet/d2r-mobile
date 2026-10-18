@@ -98,17 +98,69 @@ def diagnostics_inputs(directory):
             if digest(data) != plan['artifacts'][name]: raise ValueError('Diagnostic artifact digest mismatch')
             assets[folder + '/' + name] = data
     if not keys: raise ValueError('Empty shader diagnostic')
-    return assets, len(keys), report['source_sha256']
+    return assets, len(keys), report['source_sha256'], report
 
 
-def package(shell, preparation, diagnostics, output):
+def staged_shader_inputs(directory, chain, diagnostic_assets, diagnostic_report):
+    if not isinstance(chain, str) or not re.fullmatch(r'[0-9a-f]{12}', chain):
+        raise ValueError('Invalid staged shader chain')
+    report_blob = (directory / 'bundle-report.json').read_bytes()
+    report = json.loads(report_blob)
+    if (report.get('schema_version') != 1 or report.get('profile') != 'p5r'
+            or report.get('status') != 'staged_unverified' or report.get('shader_chain') != chain
+            or report.get('source_sha256') != diagnostic_report['source_sha256']
+            or report.get('diagnostic_only') is not True or report.get('runtime_ready') is not False
+            or report.get('graphics_verified') is not False or report.get('game_launch_enabled') is not False):
+        raise ValueError('Expected a source-matched unverified P5R shader bundle with matching chain')
+    native_rows = {row['key']:row for row in diagnostic_report['shaders']}
+    records = report['shader_records']
+    if len(records) != len(native_rows) or report.get('shaders') != len(records):
+        raise ValueError('Staged shader count mismatch')
+    files, seen = [], set()
+    for row in records:
+        key = row['key']
+        if not isinstance(key, str) or not KEY.fullmatch(key) or key in seen or key not in native_rows:
+            raise ValueError('Invalid, duplicate or unexpected staged shader key')
+        seen.add(key)
+        native = [item for item in native_rows[key].get('metal', []) if item.get('sdk') == 'iphoneos']
+        if len(native) != 1 or native[0].get('target') != 'air64-apple-ios18.0' or native[0].get('strict_float') is not True:
+            raise ValueError('Missing strict iOS native shader provenance')
+        names = {key + '_b' + suffix for suffix in ('.metallib', '.metal', '.json')}
+        hashes = row['artifacts']
+        if set(hashes) != names or hashes[key + '_b.metallib'] != native[0]['sha256'] or hashes[key + '_b.metal'] != native[0]['source_sha256']:
+            raise ValueError('Staged native shader provenance mismatch')
+        relative = 'msl/b-' + chain + '/'
+        reflection_blob = (directory / relative / (key + '_b.json')).read_bytes()
+        reflection = json.loads(reflection_blob)
+        plan = json.loads(diagnostic_assets['reflection-plans/' + key + '.plan.json'])
+        if (digest(reflection_blob) != hashes[key + '_b.json'] or reflection.get('key') != key + '_b'
+                or reflection.get('dm_ctl') != key or reflection.get('chain') != chain
+                or reflection.get('profile') != 'p5r' or reflection.get('route') != 'B'
+                or reflection.get('stage') != native_rows[key]['stage'] or row.get('stage') != reflection.get('stage')
+                or reflection.get('diagnostic_only') is not True or reflection.get('runtime_ready') is not False
+                or reflection.get('resource_facts_verified') is not False or reflection.get('bindings') != plan['bindings']
+                or digest(bytes.fromhex(reflection['c1'])) != plan['source']['c1_sha256']
+                or hashes[key + '_b.metal'] != plan['msl_sha256']):
+            raise ValueError('Staged reflection provenance or unverified marker mismatch')
+        for name in sorted(names):
+            files.append((relative + name, directory / relative / name, hashes[name]))
+    # Regenerate shared lookup files from checked identities rather than trusting paths from a report.
+    stages = {'vs':'顶点', 'ps':'像素', 'cs':'计算'}
+    mapping = 'package\tindex\tstage\tcontrol_key\n' + ''.join('p5r\t0\t' + stages[native_rows[key]['stage']] + '\t' + key + '\n' for key in sorted(seen))
+    additions = {'dm/shader_map.tsv':mapping.encode(),
+        'dm/c1_full.tsv':('# chain b-' + chain + '\n' + ''.join(key + '\n' for key in sorted(seen))).encode(),
+        'dm/p5r-shader-bundle.json':report_blob}
+    return files, additions, len(seen)
+
+
+def package(shell, preparation, diagnostics, output, shader_bundle=None):
     shell, preparation, diagnostics, output = [p.resolve() for p in (shell, preparation, diagnostics, output)]
     if output.is_relative_to(REPO) or output.is_relative_to(preparation) or output.is_relative_to(diagnostics):
         raise ValueError('Package output must stay outside source and preparation trees')
     if output.exists() or output.with_suffix('.report.json').exists(): raise FileExistsError(output)
     items, base, shell_info, plist = shell_contents(shell)
     report, rewritten, modules = module_inputs(preparation)
-    assets, shaders, shader_source = diagnostics_inputs(diagnostics)
+    assets, shaders, shader_source, diagnostic_report = diagnostics_inputs(diagnostics)
     if shader_source != report['inputs']['main']: raise ValueError('Shader/module source mismatch')
     guest = guest_dylib.build(str(rewritten), MODULES)
     manifest = dict(schema_version=1, profile='p5r', package_kind='experimental_unsigned',
@@ -121,10 +173,18 @@ def package(shell, preparation, diagnostics, output):
                   'The application and Guest framework must be signed together before installation'])
     additions = {'dm/' + name:data for name, data in modules.items()}
     additions.update({'p5r-diagnostics/' + name:data for name, data in assets.items()})
+    staged_files = []
+    if shader_bundle is not None:
+        shader_bundle = shader_bundle.resolve()
+        if output.is_relative_to(shader_bundle): raise ValueError('Package output must stay outside the shader bundle')
+        staged_files, shared, count = staged_shader_inputs(shader_bundle, shell_info['shader_chain'], assets, diagnostic_report)
+        additions.update(shared)
+        manifest.update(staged_native_shaders=count, staged_shader_bundle_ready=False)
     additions['dm/p5r-package.json'] = (json.dumps(manifest, indent=2) + '\n').encode()
     additions['Frameworks/Guest.framework/Guest'] = guest
     additions['Frameworks/Guest.framework/Info.plist'] = (guest_dylib.INFO_PLIST % (plist['CFBundleIdentifier'] + '.guest')).encode()
-    if any(base + name == item.filename for name in additions for item, _ in items): raise ValueError('Package entry collision')
+    added_names = list(additions) + [name for name, _, _ in staged_files]
+    if len(added_names) != len(set(added_names)) or any(base + name == item.filename for name in added_names for item, _ in items): raise ValueError('Package entry collision')
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + '.tmp')
     if temporary.exists(): raise FileExistsError(temporary)
@@ -135,6 +195,13 @@ def package(shell, preparation, diagnostics, output):
                 info = zipfile.ZipInfo(base + name); info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = (0o100755 if name.endswith('/Guest') else 0o100644) << 16
                 archive.writestr(info, data)
+            # Keep full native bundles out of the in-memory diagnostic asset dictionary.
+            for name, path, expected in staged_files:
+                data = path.read_bytes()
+                if digest(data) != expected: raise ValueError('Staged shader artifact digest mismatch')
+                if name.endswith('.metallib') and (len(data) <= 4 or data[:4] != b'MTLB'): raise ValueError('Invalid staged native Metal library')
+                info = zipfile.ZipInfo(base + name); info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o100644 << 16; archive.writestr(info, data)
         with zipfile.ZipFile(temporary) as archive:
             if archive.testzip() is not None: raise ValueError('Package CRC verification failed')
         temporary.replace(output)
@@ -149,6 +216,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Create a local experimental P5R IPA; game launch remains disabled until graphics are verified.')
     parser.add_argument('shell', type=Path); parser.add_argument('preparation', type=Path)
     parser.add_argument('diagnostics', type=Path); parser.add_argument('output', type=Path)
+    parser.add_argument('--shader-bundle',type=Path,help='Optional locally staged native shader bundle; normal game launch stays disabled')
     args = parser.parse_args()
-    try: print(json.dumps(package(args.shell, args.preparation, args.diagnostics, args.output), indent=2))
+    try: print(json.dumps(package(args.shell, args.preparation, args.diagnostics, args.output,args.shader_bundle), indent=2))
     except (ValueError, OSError, KeyError, zipfile.BadZipFile) as error: parser.exit(1, str(error) + '\n')

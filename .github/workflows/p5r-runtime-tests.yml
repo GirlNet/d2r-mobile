@@ -24,6 +24,8 @@ on:
       - 'dm/tools/test_maxwell_texture_audit.py'
       - 'dm/tools/p5r_reflection.py'
       - 'dm/tools/test_p5r_reflection.py'
+      - 'dm/tools/stage_p5r_shaders.py'
+      - 'dm/tools/test_stage_p5r_shaders.py'
       - 'dm/tools/maxwell_memory_audit.py'
       - 'dm/tools/test_maxwell_memory_audit.py'
       - 'dm/tools/nvn_handle_layout.py'
@@ -349,6 +351,7 @@ jobs:
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_crilayla.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_stage_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_texture_audit.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v

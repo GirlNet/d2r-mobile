@@ -46,3 +46,21 @@ python3 dm/tools/p5r_pack.py /path/P5RMobile-shell-unsigned.ipa /path/port-prepa
 最新启动器使用“提交前诊断”，在后端初始化后继续 CPU 资源处理和命令录制。到达提交边界、未支持操作或超时后，提供新的启动报告与运行日志。仅有初始化完成标志不代表已提交一帧或游戏画面已验证；更新一起签名的 App/框架时可保留现有本地 RomFS。
 
 专用壳缺省使用 Metal 3，使生产绘制路径与云端 GPU 核对一致。向 `dm/ios/p5r/build_shell.py` 传入 `--metal-backend 4` 可选择 Metal 4 构建。所选后端写入壳/构建元数据并参与源码指纹；跳过的 Metal 4 比较不代表运行时验证。
+
+本地编译完成的 iOS 诊断库现可整理为宿主缓存布局。输入是着色器提取目录
+（不是程序改写目录）和已完成原生编译的诊断目录；链版本取
+`python dm/gfx/tools/dmsh_chain.py` 的输出：
+
+```sh
+python dm/tools/stage_p5r_shaders.py /path/shader-preparation /path/native-diagnostic /path/staged-shaders --chain <12位十六进制链版本>
+```
+
+流程写入 `dm/shader_map.tsv`、保守的 `dm/c1_full.tsv`，以及
+`msl/b-<chain>/<control-key>_b.{metallib,metal,json}`，核对控制块、代码和
+常数段来源、原生库/MSL 散列、入口阶段、槽位覆盖及计算内存依据。
+全部反射仍保留诊断/未验证标记，装载器继续拒绝加载。失败运行保留明确
+失败的报告，不覆盖已有目录。向 `p5r_pack.py` 增加
+`--shader-bundle /path/staged-shaders` 可把这些文件放入实验性 IPA；装包时
+再次核对壳链版本、诊断来源与复制内容散列，并保持 `runtime_ready=false`、
+普通启动禁用。本轮完成缓存布局与装包传递，尚未验证翻译缺省值、游戏
+画面或可玩流程。所有生成文件保留在本机。

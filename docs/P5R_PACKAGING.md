@@ -46,3 +46,24 @@ Use **Probe Graphics Initialization** in the current launcher after importing lo
 The latest launcher uses **Probe Before Submission** to continue CPU resources and command recording after backend setup. Send the new boot report and runtime log after it reaches a submission boundary, unsupported operation or timeout. A setup-completed flag alone does not mean a frame was submitted or game graphics were verified. Existing local RomFS can be retained when updating the signed app/framework.
 
 The dedicated shell defaults to Metal 3 so its production draw path matches cloud GPU comparisons. Pass `--metal-backend 4` to `dm/ios/p5r/build_shell.py` for the optional Metal 4 build. The selected backend is recorded in shell/build metadata and included in the source fingerprint; skipped Metal 4 comparisons are not runtime validation.
+
+Locally compiled iOS diagnostic libraries can now be staged in the host's cache
+layout. Use the shader extraction directory (not the module rewrite directory),
+the completed native diagnostic directory and the chain printed by
+`python dm/gfx/tools/dmsh_chain.py`:
+
+```sh
+python dm/tools/stage_p5r_shaders.py /path/shader-preparation /path/native-diagnostic /path/staged-shaders --chain <12-hex-chain>
+```
+
+This writes `dm/shader_map.tsv`, a conservative `dm/c1_full.tsv` and
+`msl/b-<chain>/<control-key>_b.{metallib,metal,json}`. It verifies control/code/c1
+provenance, native-library and MSL hashes, entry stages, slot coverage and compute
+memory evidence. Every reflection retains diagnostic/unverified markers and the
+loader continues to reject it. A failed run preserves an explicitly failed report;
+it never overwrites a prior output. To include these files in an experimental IPA,
+add `--shader-bundle /path/staged-shaders` to `p5r_pack.py`. The packager checks
+the shell chain and diagnostic provenance, hashes copied assets, and keeps
+`runtime_ready=false` and normal launch disabled. This completes cache layout and
+transport only; translation defaults, actual game graphics and playability remain
+unverified. All generated files stay local.
