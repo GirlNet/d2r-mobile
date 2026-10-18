@@ -296,7 +296,9 @@ NVN(nvnBufferBuilderGetMemoryPool, NVNmemoryPool *, const NVNbufferBuilder *b) {
 NVN(nvnBufferBuilderGetMemoryOffset, ptrdiff_t, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->off : 0; }
 NVN(nvnBufferBuilderGetSize, size_t, const NVNbufferBuilder *b) { return b ? ((const buffer_builder_t *)b)->size : 0; }
 static int buffer_storage_valid(const NVNmemoryPool *p, ptrdiff_t off, size_t n) {
-    if (!p || off<0 || !n) return 0;
+    // Zero-size views are valid address handles (used by P5R's streaming
+    // allocators). Actual GPU accesses are bounded by the memory pool.
+    if (!p || off<0) return 0;
     const pool_t *o=(const pool_t *)p;
     return o->magic==MAGIC('P','O','O','L') && o->mem &&
         !(o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) &&
@@ -333,7 +335,10 @@ NVN(nvnBufferSetDebugLabel, void, NVNbuffer *b, const char *label) { (void)b; (v
 // Metal shared pools are CPU/GPU coherent; flush and invalidate neither copy data, release pools nor submit commands.
 static void buffer_mapped_range(const NVNbuffer *b, ptrdiff_t off, size_t n) {
     const buffer_t *o=buffer_valid(b);
-    if (!o || off<0 || (size_t)off>o->size || n>o->size-(size_t)off) {
+    // An empty address view can flush allocations made from the backing pool;
+    // GetSize still reports the original zero rather than an invented size.
+    uint64_t limit=o ? (o->size ? o->size : ((const pool_t *)o->pool)->size-(uint64_t)o->off) : 0;
+    if (!o || off<0 || (uint64_t)off>limit || n>limit-(uint64_t)off) {
         dm_boot_probe_block("invalid_buffer_range","buffer flush/invalidate outside storage");
         return;
     }

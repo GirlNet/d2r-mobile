@@ -175,7 +175,7 @@ static void test_buffers(void) {
     P(nvnBufferBuilderSetStorage)(b,&pool,255,2);EXPECT("池尾越界拒绝 / reject range past end",0,P(nvnBufferInitialize)(v,b));
     P(nvnBufferBuilderSetStorage)(b,&pool,1,SIZE_MAX);EXPECT("长度溢出拒绝 / reject length overflow",0,P(nvnBufferInitialize)(v,b));
     P(nvnBufferBuilderSetStorage)(b,&pool,PTRDIFF_MAX,1);EXPECT("大偏移拒绝 / reject huge offset",0,P(nvnBufferInitialize)(v,b));
-    P(nvnBufferBuilderSetStorage)(b,&pool,256,0);EXPECT("零长度拒绝 / reject empty view",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,257,0);EXPECT("空视图池外偏移拒绝 / reject empty view past pool",0,P(nvnBufferInitialize)(v,b));
     P(nvnBufferBuilderSetStorage)(b,NULL,0,1);EXPECT("空池拒绝 / reject null pool",0,P(nvnBufferInitialize)(v,b));
     P(nvnBufferBuilderSetStorage)(b,&pool,0,1);P(nvnBufferBuilderSetDevice)(b,NULL);EXPECT("空设备拒绝 / reject null device",0,P(nvnBufferInitialize)(v,b));
     NVNdevice invalid={0};P(nvnBufferBuilderSetDevice)(b,&invalid);EXPECT("无效设备拒绝 / reject invalid device",0,P(nvnBufferInitialize)(v,b));P(nvnBufferBuilderSetDevice)(b,&dev);
@@ -199,6 +199,17 @@ static void test_buffers(void) {
     P(nvnBufferBuilderSetStorage)(b,&pool,255,1);EXPECT("池尾合法视图 / valid view at pool end",1,P(nvnBufferInitialize)(v,b));
     EXPECT("重建生成新号 / reinitialize gets new ID",1,P(nvnBufferGetDebugID)(v)!=id && P(nvnBufferGetDebugID)(v)!=0);
     EXPECT("池尾地址 / pool end address",(uintptr_t)(storage+255),P(nvnBufferGetAddress)(v));
+    for (size_t off=0;off<=sizeof storage;off+=32) {
+        P(nvnBufferBuilderSetStorage)(b,&pool,(ptrdiff_t)off,0);
+        EXPECT("空视图初始化 / initialize empty address view",1,P(nvnBufferInitialize)(v,b));
+        EXPECT("空视图保留地址 / empty view retains address",(uintptr_t)(storage+off),P(nvnBufferGetAddress)(v));
+        EXPECT("空视图保留大小 / empty view retains zero size",0,P(nvnBufferGetSize)(v));
+        EXPECT("空视图保留偏移 / empty view retains offset",off,P(nvnBufferGetMemoryOffset)(v));
+        EXPECT("空视图可映射 / map empty address view",(uintptr_t)(storage+off),(uintptr_t)P(nvnBufferMap)(v));
+        P(nvnBufferFlushMappedRange)(v,0,0);P(nvnBufferInvalidateMappedRange)(v,0,0);
+        P(nvnBufferFlushMappedRange)(v,0,sizeof storage-off);
+        P(nvnBufferInvalidateMappedRange)(v,(ptrdiff_t)(sizeof storage-off),0);
+    }
     p->magic=0;EXPECT("池销毁后不可映射 / finalized pool cannot map",0,(uintptr_t)P(nvnBufferMap)(v));
     EXPECT("池销毁后无地址 / finalized pool has no address",0,P(nvnBufferGetAddress)(v));*p=*(pool_t *)&pool_before;
     EXPECT("空对象查询 / null object queries",0,P(nvnBufferGetAddress)(NULL)+(uintptr_t)P(nvnBufferMap)(NULL));

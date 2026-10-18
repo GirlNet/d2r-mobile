@@ -28,6 +28,8 @@ static void *submit_worker(void *arg){@autoreleasepool{
 static int concurrent_submit(void) {
     size_t size=1024*1024;uint8_t *memory=NULL;CHECK(!posix_memalign((void **)&memory,getpagesize(),size));memset(memory,0xa7,size);
     pool_t pool={.magic=MAGIC('P','O','O','L'),.flags=0x22,.mem=memory,.size=size};mtl_pool_add(memory,size);
+    _Alignas(8) NVNdevice device={0};((dev_t_ *)&device)->magic=MAGIC('D','E','V',0);
+    _Alignas(8) NVNbuffer address_views[WORKERS];
     NVNqueueBuilder qb={0};NVNqueue queues[2];P(nvnQueueBuilderSetDefaults)(&qb);
     for(int i=0;i<2;i++)CHECK(P(nvnQueueInitialize)(&queues[i],&qb));
     NSError *error=nil;
@@ -40,6 +42,12 @@ static int concurrent_submit(void) {
         uint8_t *src=memory+i*4096,*dst=src+1024,*report=src+2048;
         for(int j=0;j<256;j++)src[j]=(uint8_t)(i*31+j*17+9);
         memcpy(src+512,(uint16_t[]){0,1,2},6);
+        _Alignas(8) NVNbufferBuilder builder={0};P(nvnBufferBuilderSetDefaults)(&builder);P(nvnBufferBuilderSetDevice)(&builder,&device);
+        P(nvnBufferBuilderSetStorage)(&builder,(NVNmemoryPool *)&pool,i*4096+512,0);
+        CHECK(P(nvnBufferInitialize)(&address_views[i],&builder));
+        NVNbufferAddress index_address=P(nvnBufferGetAddress)(&address_views[i]);
+        CHECK(index_address==(uintptr_t)(src+512) && P(nvnBufferGetSize)(&address_views[i])==0);
+        P(nvnBufferFlushMappedRange)(&address_views[i],0,6);
         textures[i].serial=1900040+i;textures[i].d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=8,.height=4,.depth=1,.levels=1,.samples=1};
         CHECK(P(nvnCommandBufferInitialize)(&commands[i],NULL));P(nvnCommandBufferAddCommandMemory)(&commands[i],(const NVNmemoryPool *)&pool,65536+i*65536,65536);
         CHECK(P(nvnSyncInitialize)(&internal[i],NULL));CHECK(P(nvnSyncInitialize)(&workers[i].done,NULL));
@@ -49,7 +57,7 @@ static int concurrent_submit(void) {
         P(nvnCommandBufferSetScissor)(&commands[i],0,0,8,4);P(nvnCommandBufferSetViewport)(&commands[i],0,0,8,4);
         P(nvnCommandBufferClearColor)(&commands[i],0,(float[]){0,0,0,1},15);P(nvnCommandBufferBindProgram)(&commands[i],(const NVNprogram *)&program,3);
         P(nvnCommandBufferDrawArraysInstanced)(&commands[i],NVN_DRAW_PRIMITIVE_TRIANGLES,0,3,0,2);
-        P(nvnCommandBufferDrawElementsInstanced)(&commands[i],NVN_DRAW_PRIMITIVE_TRIANGLES,NVN_INDEX_TYPE_UNSIGNED_SHORT,3,(uintptr_t)(src+512),0,0,2);
+        P(nvnCommandBufferDrawElementsInstanced)(&commands[i],NVN_DRAW_PRIMITIVE_TRIANGLES,NVN_INDEX_TYPE_UNSIGNED_SHORT,3,index_address,0,0,2);
         P(nvnCommandBufferCopyBufferToBuffer)(&commands[i],(uintptr_t)src,(uintptr_t)dst,256,0);
         P(nvnCommandBufferReportValue)(&commands[i],0xcafe0000u+i,(uintptr_t)report);
         P(nvnCommandBufferFenceSync)(&commands[i],&internal[i],NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE,0);
@@ -78,6 +86,7 @@ static int concurrent_submit(void) {
         [b endEncoding];[command commit];[command waitUntilCompleted];CHECK(command.status==MTLCommandBufferStatusCompleted);
         for(int y=0;y<4;y++)for(int x=0;x<256;x++)CHECK(((uint8_t *)output.contents)[y*256+x]==(x>=32?0xa7:x%4==0 || x%4==3?255:0));
         P(nvnCommandBufferFinalize)(&commands[i]);P(nvnSyncFinalize)(&internal[i]);P(nvnSyncFinalize)(&workers[i].done);
+        P(nvnBufferFinalize)(&address_views[i]);
     }
     for(int i=0;i<2;i++){CHECK(((queue_t *)&queues[i])->submits==2*ROUNDS);P(nvnQueueFinalize)(&queues[i]);CHECK(!((queue_t *)&queues[i])->replay_state);}
     for(int i=0;i<WORKERS;i++)mtl_tex_release(&textures[i]);mtl_prog_release(&program);

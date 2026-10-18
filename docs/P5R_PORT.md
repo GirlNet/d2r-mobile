@@ -1,5 +1,17 @@
 # P5R port preparation
 
+The next source-matched phone session passed the previous submission stop and
+aborted on a null index address. Live entry/return breakpoints identified the
+cause: P5R creates zero-size NVN buffers as address views into streaming pools;
+the host rejected initialization and returned zero from `BufferGetAddress`.
+Local execution of the original SDK accepts these zero-size views. The host now
+preserves their address, offset and zero size, bounds initialization against the
+pool, and validates their flush/invalidate ranges against remaining pool storage.
+Nonempty views keep their existing bounds. CPU regressions cover empty views at
+the start, middle and end of a pool; the concurrent GPU regression obtains index
+addresses through public zero-size buffer initialization before checking pixels.
+This fixes an observed compatibility defect; gameplay still needs device validation.
+
 The source-matched startup-batch phone now reaches submission and aborts with
 `submit reentry`. Both native crash reports show two guest threads concurrently
 inside `QueueSubmitCommands`, one encoding while another begins a submission.
