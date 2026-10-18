@@ -349,7 +349,11 @@ void mtl_init(void) {
     MTLResidencySetDescriptor *rd = [MTLResidencySetDescriptor new];
     rd.initialCapacity = 4096;
     NSError *re = nil;
-    g_res = [g_dev newResidencySetWithDescriptor:rd error:&re];
+    // Residency sets require Apple6; Mac2 alone is insufficient (notably for
+    // virtual GPUs). Avoid invoking an unsupported API under Metal validation.
+    // https://developer.apple.com/metal/capabilities/
+    if ([g_dev supportsFamily:MTLGPUFamilyApple6])
+        g_res = [g_dev newResidencySetWithDescriptor:rd error:&re];
 #if DM_NVN_M3
     // Metal 3 已按编码器声明间接资源；虚拟设备没有驻留集时沿用该路径，不影响 Metal 4 的必需条件。
     // Metal 3 already declares indirect resources per encoder; retain that path when a virtual device lacks residency sets, without relaxing Metal 4 requirements.
