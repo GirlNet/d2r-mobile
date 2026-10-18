@@ -1728,7 +1728,7 @@ typedef void (*PFNNVNCOMMANDBUFFERPUSHDEBUGGROUPSTATICPROC)(NVNcommandBuffer*, u
                                                             const char*);
 typedef void (*PFNNVNCOMMANDBUFFERPUSHDEBUGGROUPDYNAMICPROC)(NVNcommandBuffer*, uint32_t,
                                                              const char*);
-typedef void (*PFNNVNCOMMANDBUFFERPUSHDEBUGGROUPPROC)(NVNcommandBuffer*, uint32_t, const char*);
+typedef void (*PFNNVNCOMMANDBUFFERPUSHDEBUGGROUPPROC)(NVNcommandBuffer*, const char*);
 typedef void (*PFNNVNCOMMANDBUFFERPOPDEBUGGROUPPROC)(NVNcommandBuffer*);
 typedef void (*PFNNVNCOMMANDBUFFERPOPDEBUGGROUPIDPROC)(NVNcommandBuffer*, uint32_t);
 typedef void (*PFNNVNCOMMANDBUFFERINSERTDEBUGMARKERSTATICPROC)(NVNcommandBuffer*, uint32_t,

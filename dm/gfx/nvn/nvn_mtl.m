@@ -477,7 +477,7 @@ int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     int ok = 0;
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < g_npool; i++)
-        if (addr >= g_pools[i].lo && addr + len <= g_pools[i].hi) {
+        if (addr >= g_pools[i].lo && addr <= g_pools[i].hi && len <= g_pools[i].hi-addr) {
             *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; ok = 1; break;
         }
     pthread_mutex_unlock(&g_mu);
@@ -487,7 +487,7 @@ int mtl_gpu_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_
     int ok = 0;
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < g_npool; i++)
-        if (addr >= g_pools[i].lo && addr + len <= g_pools[i].hi) {
+        if (addr >= g_pools[i].lo && addr <= g_pools[i].hi && len <= g_pools[i].hi-addr) {
             *buf = (__bridge void *)g_pools[i].buf; *off = addr - g_pools[i].base; *gpu = g_pools[i].gpu + *off; ok = 1; break;
         }
     pthread_mutex_unlock(&g_mu);
@@ -897,6 +897,7 @@ uint64_t mtl_sub_commit(void) {
                 for (int k = 0; k < l->n; k++) { sum += ((const uint64_t *)((__bridge id<MTLBuffer>)l->s[k].buf).contents)[l->s[k].slot]; CFRelease(l->s[k].buf); }
                 free(l); uint64_t rec[2] = {sum, gpu_ticks()}; memcpy((void *)ops[i].addr, rec, sizeof rec);
             }
+            else if(ops[i].kind==4) { uint64_t rec[2]={ops[i].v,gpu_ticks()};memcpy((void *)ops[i].addr,rec,sizeof rec); }
             else { uint64_t t = gpu_ticks(), rec[2] = {ops[i].type == 0 || ops[i].type == 0x10 ? t : 0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec); }
         }
         free(ops);
@@ -2579,6 +2580,7 @@ static struct {
     uint32_t conditional_active;p_conditional_render conditional;
     p_primitive_restart restart;
     p_depth_bounds depth_bounds;
+    dynamic_state dynamic;
 } S;
 static unsigned g_guest_origin,g_guest_depth;
 void mtl_guest_coordinates(unsigned origin,unsigned depth) { g_guest_origin=origin;g_guest_depth=depth; }
@@ -2650,6 +2652,8 @@ static void udc_note_draw(NvProg *pr) {
 static void state_reset(void) {
     memset(&S, 0, sizeof S);
     S.sample_mask=UINT32_MAX;S.render_enable=1;
+    S.dynamic.point_size=S.dynamic.line_width=1;
+    for(int i=0;i<4;i++)S.dynamic.swizzle[i]=i*2;
     g_pso_dirty = g_dss_dirty = 1;
     for (int i = 0; i < 8; i++) S.blend[i] = (blend_st){i, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_EQUATION_ADD, NVN_BLEND_EQUATION_ADD};
     S.color = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; S.chmask.mask = 0xffffffffu;
@@ -3546,6 +3550,20 @@ static int state_op(uint32_t op, const void *a) {
         case OP_CONDITIONAL_RENDER: S.conditional=*(const p_conditional_render *)a;S.conditional_active=1;S.render_enable=1;g_pso_dirty=1;break;
         case OP_DEPTH_BOUNDS: S.depth_bounds=*(const p_depth_bounds *)a;break;
         case OP_PRIMITIVE_RESTART: S.restart = *(const p_primitive_restart *)a; break;
+        case OP_DYNAMIC_STATE: {
+            const p_dynamic_state *d=a;
+            switch(d->kind) {
+                case 0:S.dynamic.point_size=d->f[0];break;
+                case 1:S.dynamic.line_width=d->f[0];break;
+                case 2:S.dynamic.alpha_ref=d->f[0];break;
+                case 3:S.dynamic.conservative_dilate=d->f[0];break;
+                case 4:memcpy(S.dynamic.subpixel,d->i,8);break;
+                case 5:memcpy(S.dynamic.swizzle,d->i,16);break;
+                case 7:memcpy(S.dynamic.tile_size,d->i,8);break;
+                default:MDIE("Invalid dynamic raster command");
+            }
+            break;
+        }
         default: return 0;
     }
     return 1;
@@ -4772,7 +4790,15 @@ static prepared_indices prepare_indices(const p_draw_idx *draw) {
     defer_obj_release(destination);return result;
 }
 static void draw(const p_draw *dw, const p_draw_idx *di) {
+    int instances=dw?dw->instance_count_minus_one+1:(di->instances?di->instances:1);
+    if((dw?dw->count:di->count)==0 || !instances)return;
+    if(instances<0)MDIE("Invalid draw instance count");
     if(!render_allowed())return;
+    int primitive=dw?dw->prim:di->prim;
+    if(primitive==NVN_DRAW_PRIMITIVE_POINTS && S.dynamic.point_size!=1)MDIE("Nondefault point size unsupported");
+    if((primitive==NVN_DRAW_PRIMITIVE_LINES || primitive==NVN_DRAW_PRIMITIVE_LINE_STRIP) && S.dynamic.line_width!=1)MDIE("Wide lines unsupported");
+    if(S.dynamic.subpixel[0] || S.dynamic.subpixel[1])MDIE("Nondefault subpixel precision unsupported");
+    for(int i=0;i<4;i++)if(S.dynamic.swizzle[i]!=i*2)MDIE("Nonidentity viewport swizzle unsupported");
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); return; }
     prepared_indices indices=di?prepare_indices(di):(prepared_indices){0};
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
@@ -5022,9 +5048,10 @@ frz_plain:;
             for (uint32_t q = 0; q < n; q++) { uint32_t b = q * 4; uint32_t v[6] = {b, b + 1, b + 2, b, b + 2, b + 3}; memcpy(ix + q * 6, v, 24); }
             g_quad_ib = [g_dev newBufferWithBytes:ix length:n * 24 options:MTLResourceStorageModeShared]; g_quad_gpu = g_quad_ib.gpuAddress; res_add(g_quad_ib); free(ix);
         }
-        if (dw->count >= 4) enc_r_draw_indexed(en, mp, (dw->count / 4) * 6, MTLIndexTypeUInt32, g_quad_gpu, g_quad_ib.length, 1, dw->first, 0);
+        if (dw->count > 65536*4)MDIE("Quad index range exceeds shared buffer");
+        if (dw->count >= 4) enc_r_draw_indexed(en, mp, (dw->count / 4) * 6, MTLIndexTypeUInt32, g_quad_gpu, g_quad_ib.length, instances, dw->first, dw->base_instance);
     } else if (dw) {
-        if (dw->count) enc_r_draw(en, mp, dw->first, dw->count);
+        if (dw->count) enc_r_draw_instanced(en, mp, dw->first, dw->count, instances, dw->base_instance);
     } else {
         if (prim == 7) { RED_ONCE(20, "带索引的四边形未实现"); return; }
         use_rec("buf", di->ibuf, (uint64_t)di->count * (1u << di->itype), 0, NULL);
@@ -5428,12 +5455,15 @@ static void clear_tex(const p_clear_tex *c) {
 
 // 一次提交的现场描述（mtl_sub_commit 每次提交取一份，命令缓冲出错时打进红行）：进崔凡克首帧的 GPU 内存故障，红行里只有序号与错误码，看不出那次提交里有什么
 // Context description of one submit (mtl_sub_commit takes one per submit and prints it into the failure line when the command buffer errors): for the GPU memory fault on the first frame entering Travincal, the failure line had only the sequence number and error code, and it was impossible to tell what was in that submit
+#include "nvn_command_replay.inc"
 static const char *cctx_snap(void) {
-    static char b[320]; static uint64_t p_pass, p_up, p_reup, p_ser; uint64_t up = 0, reup = 0; mtl_pkg_stats(&up, &reup);
+    static char b[1024]; static uint64_t p_pass, p_up, p_reup, p_ser; uint64_t up = 0, reup = 0; mtl_pkg_stats(&up, &reup);
     pthread_mutex_lock(&g_deferred_mu); unsigned long nd = (unsigned long)g_deferred.count; pthread_mutex_unlock(&g_deferred_mu);
     snprintf(b, sizeof b, "帧 %llu；自上次提交：通道 +%llu、贴图首传 +%llu、重传 +%llu、序号表变动 +%llu；延迟释放队列 %lu 个；世界冻结状态 %d",
              (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(g_stat_pass - p_pass), (unsigned long long)(up - p_up), (unsigned long long)(reup - p_reup),
              (unsigned long long)(g_ser_gen - p_ser), nd, g_frz_state);
+    size_t used=strlen(b);
+    snprintf(b+used,sizeof b-used,"; debug=%s groups=%s",g_debug_marker.UTF8String?:"none",g_debug_groups.description.UTF8String?:"none");
     p_pass = g_stat_pass; p_up = up; p_reup = reup; p_ser = g_ser_gen; return b;
 }
 // ---------- 世界冻结时不画世界（面板开着时整个游戏可以冻结） ----------
@@ -5662,6 +5692,16 @@ void mtl_exec(const uint8_t *p) {
         if(!dm_guest_d2r() && (!S.render_enable || S.conditional_active) && (h.op==OP_CLEAR_TEX || h.op==OP_DOWNSAMPLE))
             MDIE("P5R conditional texture clear/resolve is not implemented");
         switch (h.op) {
+            case OP_COMMAND_SYNC: replay_command_sync(a); break;
+            case OP_DEBUG_MARKER: replay_debug_marker(a); break;
+            case OP_REPORT_VALUE: replay_report_value(a); break;
+            case OP_CACHE_HINT: {
+                const p_dynamic_state *d=a;S.dynamic.cache_action=d->i[0];
+                // Metal's tracked render attachments preserve contents without
+                // NVN's optional binning cache. Flush requests end the pass.
+                if(d->i[0]==NVN_TILED_CACHE_ACTION_FLUSH || d->i[0]==NVN_TILED_CACHE_ACTION_FLUSH_NO_TILING)rp_flush();
+                break;
+            }
             case OP_END: g_exec_cur = NULL;
                 if (g_hoist_n && !g_ret_n && !g_nrest) {
                     if (g_fz.active) fz_unskip();
@@ -5725,7 +5765,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_DRAW_IDX: g_exec_next = p + h.size; draw(NULL, a); g_exec_next = NULL; break;
             // 状态没变就不置脏（游戏每次绘制前常重发同值的程序 / 状态块 / 顶点格式；脏标志只决定是否重取管线 / 深度模板对象，值相同则对象相同）
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
-            case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
+            case OP_DYNAMIC_STATE: case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
             case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART: case OP_RASTER_DISCARD: case OP_DEPTH_BOUNDS: case OP_SAMPLE_MASK: case OP_RENDER_ENABLE: case OP_CONSERVATIVE_RASTER: case OP_CONDITIONAL_RENDER:
                 state_op(h.op, a); break;

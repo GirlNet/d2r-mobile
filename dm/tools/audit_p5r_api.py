@@ -8,7 +8,7 @@ from pathlib import Path
 def audit(root):
     nvn = root / "dm/gfx/nvn"
     names = (nvn / "names.txt").read_text(encoding="utf-8").split()
-    sources = [(nvn / "hle_nvn.c"), (nvn / "nvn_startup_batch.inc"), (nvn / "nvn_texture_state.inc")]
+    sources = [(nvn / "hle_nvn.c"), (nvn / "nvn_startup_batch.inc"), (nvn / "nvn_texture_state.inc"), (nvn / "nvn_command_extensions.inc")]
     implementations = []
     for path in sources:
         implementations += re.findall(r"NVN(?:_NOPROTO)?\((nvn\w+),", path.read_text(encoding="utf-8"))
@@ -44,6 +44,9 @@ def audit(root):
     texture_extensions = set(re.findall(r"NVN\((nvn\w+),", sources[2].read_text(encoding="utf-8")))
     texture_tests = (root / "dm/gfx/tests/t_texture_state.inc").read_text(encoding="utf-8")
     assert texture_extensions <= set(re.findall(r"P\((nvn\w+)\)",texture_tests)), "Texture extension lacks a typed regression call"
+    command_tests=(root / "dm/gfx/tests/t_command_sequence_gpu.m").read_text(encoding="utf-8")
+    command_extensions=set(re.findall(r"NVN\((nvn\w+),",sources[3].read_text(encoding="utf-8")))
+    assert command_extensions <= set(re.findall(r"P\((nvn\w+)\)",command_tests)), "Command extension lacks a real-thunk sequence call"
     return dict(schema_version=1, registered=len(names), host_implemented=len(implementations),
                 named_unimplemented=len(set(names)-registered), batch_implemented=len(batch),
                 diagnostic_only_capture=len(captures), capture_requires_active_pre_submit_probe=True,

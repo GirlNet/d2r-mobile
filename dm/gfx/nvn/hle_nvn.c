@@ -530,24 +530,30 @@ NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { *(sync_t *)s = (s
 NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 // 围栏 = 「此前提交到队列的命令全部完成」：记下最近一次提交的栅栏值
 // Fence = "all commands previously submitted to the queue have completed": record the fence value of the most recent submit
-NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = mtl_last_fence(); }
+NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) {
+    (void)q;(void)c;(void)f;sync_t *o=(sync_t *)s;
+    __atomic_store_n(&o->fence,mtl_last_fence(),__ATOMIC_RELEASE);
+    __atomic_store_n(&o->fenced,1,__ATOMIC_RELEASE);
+}
 // 没围栏过的同步对象按真机行为等到超时；已围栏的只在 GPU 真正完成到该栅栏值后放行
 // A sync object that was never fenced waits until timeout, as on a real device; a fenced one is released only after the GPU has actually completed up to that fence value
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     const sync_t *o = (const sync_t *)s;
-    if (!o->fenced) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
-    if (mtl_wait(o->fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
-    return mtl_wait(o->fence, timeout) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+    if (!__atomic_load_n(&o->fenced,__ATOMIC_ACQUIRE)) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+    uint64_t fence=__atomic_load_n(&o->fence,__ATOMIC_ACQUIRE);
+    if (mtl_wait(fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
+    return mtl_wait(fence, timeout) ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
 }
 NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) {
     const queue_t *queue = (const queue_t *)q;
     const sync_t *sync = (const sync_t *)s;
     if (!queue || queue->magic != MAGIC('Q','U','E','U') || !sync ||
-        sync->magic != MAGIC('S','Y','N','C') || !sync->fenced || queue->dev != sync->dev ||
-        sync->fence > mtl_last_fence()) return 0;
+        sync->magic != MAGIC('S','Y','N','C') || !__atomic_load_n(&sync->fenced,__ATOMIC_ACQUIRE) || queue->dev != sync->dev) return 0;
+    uint64_t fence=__atomic_load_n(&sync->fence,__ATOMIC_ACQUIRE);
+    if(fence>mtl_last_fence())return 0;
     // A fence captured before any submission is already satisfied. Otherwise
     // enqueue a GPU dependency; this API must not block the submitting CPU.
-    if (sync->fence) mtl_queue_wait(sync->fence);
+    if (fence) mtl_queue_wait(fence);
     return 1;
 }
 NVN(nvnEventBuilderSetDefaults, void, NVNeventBuilder *b) { memset(b, 0, sizeof(ev_builder_t)); }
@@ -843,9 +849,15 @@ NVN(nvnCommandBufferSetStencilRef, void, NVNcommandBuffer *c, NVNface f, int v) 
 NVN(nvnCommandBufferSetPolygonOffsetClamp, void, NVNcommandBuffer *c, float fa, float un, float cl) {
     *REC(c, OP_POLY_OFFSET, p_poly_offset) = (p_poly_offset){fa, un, cl};
 }
-NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { *REC(c, OP_DRAW, p_draw) = (p_draw){pr, first, n}; }
+NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { *REC(c, OP_DRAW, p_draw) = (p_draw){.prim=pr,.first=first,.count=n}; }
+NVN(nvnCommandBufferDrawArraysInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n, int base_instance, int instances) {
+    if(first<0 || n<0 || base_instance<0 || instances<0)die("Invalid array instance parameters");
+    *REC(c, OP_DRAW, p_draw)=(p_draw){pr,first,n,instances-1,base_instance};
+}
 NVN(nvnCommandBufferDrawElementsInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib,
     int bv, int bi, int inst) {
+    if(n<0 || bi<0 || inst<0)die("Invalid indexed instance parameters");
+    if(!inst)n=0;
     *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, n, bv, bi, inst, ib};
 }
 NVN(nvnCommandBufferDispatchCompute, void, NVNcommandBuffer *c, int x, int y, int z) {
@@ -1047,10 +1059,6 @@ static const char *const g_nops[] = {
     "nvnCommandBufferMultiDrawElementsIndirectCount",
     "nvnCommandBufferDispatchComputeIndirect",
     "nvnCommandBufferDownsampleTextureView",
-    "nvnCommandBufferWaitSync",
-    "nvnCommandBufferPushDebugGroupDynamic",
-    "nvnCommandBufferPopDebugGroup",
-    "nvnCommandBufferInsertDebugMarkerDynamic",
     "nvnCommandBufferWaitEvent",
     "nvnWindowFinalize",
 #endif
@@ -1472,6 +1480,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
 }
 
 #include "nvn_startup_batch.inc"
+#include "nvn_command_extensions.inc"
 
 #ifdef DM_P5R_ONLY
 #include "nvn_probe_commands.inc"

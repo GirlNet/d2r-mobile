@@ -152,6 +152,27 @@ jobs:
           dm/gfx/tests/t_copy_draw_gpu
           make -C dm/gfx/tests t_shader_scratch_gpu
           dm/gfx/tests/t_shader_scratch_gpu
+      - name: Verify continuous command families, synchronization and instance IDs
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_command_sequence_gpu t_command_sequence_gpu_m4
+          python3 - <<'PY'
+          import os,subprocess
+          env=dict(os.environ,MTL_DEBUG_LAYER='1')
+          for binary in ('t_command_sequence_gpu','t_command_sequence_gpu_m4'):
+              result=subprocess.run(['dm/gfx/tests/'+binary],capture_output=True,text=True,env=env)
+              print(result.stdout,result.stderr)
+              if result.returncode in (77,78) and binary.endswith('_m4'):
+                  print('::warning::Metal 4 continuous sequence execution unavailable')
+                  continue
+              if result.returncode or 'COMMAND SEQUENCE GPU OK:' not in result.stdout:
+                  raise SystemExit('Continuous command sequence failed: '+binary)
+          for flag,reason in (('--bad-instances','Invalid array instance'),('--bad-point','Invalid dynamic raster'),('--bad-sync','sync object/device mismatch'),('--long-label','debug label exceeds'),('--wide-line','Wide lines unsupported'),('--point-size','point size unsupported'),('--subpixel','subpixel precision unsupported'),('--swizzle','viewport swizzle unsupported'),('--report-range','ReportValue destination invalid')):
+              result=subprocess.run(['dm/gfx/tests/t_command_sequence_gpu',flag],capture_output=True,text=True,env=env)
+              if result.returncode>=0 or reason not in result.stderr:
+                  raise SystemExit('Command sequence rejection failed: '+flag+' '+result.stdout+result.stderr)
+          print('COMMAND SEQUENCE REJECTIONS OK: nine unsupported/invalid cases')
+          PY
       - name: Verify conditional draws, clears and query ordering on Metal 3
         run: |
           make -C dm/gfx/tests t_conditional_render_gpu
@@ -160,7 +181,7 @@ jobs:
           dm/gfx/tests/t_nvn_gpu_setup --pre-submit-probe "$RUNNER_TEMP/p5r-real-pre-submit"
           dm/gfx/tests/t_nvn_gpu_setup --capture-disabled-check
           dm/gfx/tests/t_nvn_gpu_setup --capture-command-probe "$RUNNER_TEMP/p5r-command-capture"
-          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-command-capture/boot-report.json")); c=r["diagnostic_only_calls"]; assert len(c)==49 and r["diagnostic_only_call_count"]==49 and r["status"]=="blocked_before_unverified_operation" and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"] and not r["command_stream_gpu_verified"]; assert c["nvnCommandBufferSetLineWidth"]["last_argument_bits"]==["0x000000003e800000"]'
+          python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-command-capture/boot-report.json")); c=r["diagnostic_only_calls"]; assert len(c)==29 and r["diagnostic_only_call_count"]==29 and r["status"]=="blocked_before_unverified_operation" and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"] and not r["command_stream_gpu_verified"]; assert c["nvnCommandBufferSetPatchSize"]["last_argument_bits"]==["0x0000000000000101"]'
           python3 dm/gfx/tests/test_gpu_submit_guards.py
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-pre-submit/boot-report.json")); assert r["status"]=="blocked_before_unverified_operation" and r["gpu_initialization_completed"] and r["current_detail"]=="mtl_drain" and not r["guest_gpu_work_submitted"]'
           python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/p5r-real-metal-setup/boot-report.json")); assert r["status"]=="stopped_after_gpu_initialization" and r["gpu_backend"]=="Metal 3" and r["gpu_initialization_completed"] and not r["guest_gpu_work_submitted"] and not r["graphics_verified"] and not r["runtime_ready"]'

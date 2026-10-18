@@ -1,5 +1,19 @@
 # P5R port preparation
 
+Startup batch: 20 diagnostic-only APIs now record/replay instanced array draws,
+command fences/waits, 16-byte value/timestamp reports, domain debug breadcrumbs
+and common dynamic state. Nondefault point/line rasterization, viewport swizzles
+and subpixel bias still fail when consumed; point/line state is inert for
+triangles. Tiling hints use conservative persistent storage, with flush requests
+ending the render pass. Report publication currently waits for completion so
+later GPU commands can consume it. The legacy two-argument `PushDebugGroup` ABI,
+zero-instance indexed draws and overflowing buffer-range checks are corrected.
+The continuous sequence test covers six instancing/empty/conditional cases,
+nested debug domains, repeated internal fences, report-to-GPU copies and byte
+guards. There are 29 diagnostic APIs remaining. Regression/device validation is
+pending; this batch does not establish playability. Interface families are
+validated together before another candidate is offered for installation.
+
 2026-10-19: the new device log passes the oversized-view failure and then stops
 at unimplemented `SetScissors`. Batch scissors and `SetDepthRanges` now use the
 existing scalar command replay for a single item or uniform batches starting at

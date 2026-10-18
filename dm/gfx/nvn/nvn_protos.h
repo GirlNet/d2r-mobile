@@ -473,7 +473,7 @@ typedef void (*NVNT_nvnCommandBufferBindCoverageModulationTable)(NVNcommandBuffe
 typedef void (*NVNT_nvnCommandBufferResolveDepthBuffer)(NVNcommandBuffer*);
 typedef void (*NVNT_nvnCommandBufferPushDebugGroupStatic)(NVNcommandBuffer*, uint32_t, const char*);
 typedef void (*NVNT_nvnCommandBufferPushDebugGroupDynamic)(NVNcommandBuffer*, uint32_t, const char*);
-typedef void (*NVNT_nvnCommandBufferPushDebugGroup)(NVNcommandBuffer*, uint32_t, const char*);
+typedef void (*NVNT_nvnCommandBufferPushDebugGroup)(NVNcommandBuffer*, const char*);
 typedef void (*NVNT_nvnCommandBufferPopDebugGroup)(NVNcommandBuffer*);
 typedef void (*NVNT_nvnCommandBufferPopDebugGroupId)(NVNcommandBuffer*, uint32_t);
 typedef void (*NVNT_nvnCommandBufferInsertDebugMarkerStatic)(NVNcommandBuffer*, uint32_t, const char*);

@@ -141,7 +141,7 @@ enum {
     OP_BIND_PROGRAM, OP_BIND_STATE, OP_BIND_VATTR, OP_BIND_VSTREAM, OP_BIND_VBUF,
     OP_BIND_UBO, OP_BIND_SSBO, OP_BIND_TEX, OP_BIND_SAMP,
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
-    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_COPY_IMAGE_STRIDE, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_PRIMITIVE_RESTART, OP_RASTER_DISCARD, OP_DEPTH_BOUNDS, OP_DOWNSAMPLE, OP_SAMPLE_MASK, OP_RENDER_ENABLE, OP_CONSERVATIVE_RASTER, OP_CONDITIONAL_RENDER, OP_COUNT_
+    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_COPY_IMAGE_STRIDE, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_PRIMITIVE_RESTART, OP_RASTER_DISCARD, OP_DEPTH_BOUNDS, OP_DOWNSAMPLE, OP_SAMPLE_MASK, OP_RENDER_ENABLE, OP_CONSERVATIVE_RASTER, OP_CONDITIONAL_RENDER, OP_COMMAND_SYNC, OP_DEBUG_MARKER, OP_REPORT_VALUE, OP_DYNAMIC_STATE, OP_CACHE_HINT, OP_COUNT_
 };
 typedef struct { uint64_t address; uint32_t mode, reserved; } p_conditional_render;
 // 载荷（紧跟 op_hdr）
@@ -161,7 +161,9 @@ typedef struct { int32_t stage, index; uint64_t addr, size; } p_bind_buf;  // UB
 typedef struct { int32_t stage, first, n; uint64_t h[32]; } p_bind_handles; // 分离贴图 / 采样器句柄 | Separate texture / sampler handles
 typedef struct { int32_t face, value_mask, mask, ref, which; } p_stencil;  // which：0 值掩码 1 写掩码 2 参考值 | which: 0 value mask 1 write mask 2 reference value
 typedef struct { float factor, units, clamp; } p_poly_offset;
-typedef struct { int32_t prim, first, count; } p_draw;
+// Zero-initialized legacy records still mean one instance. Explicit zero
+// instances use -1, preserving a no-op without inventing a vertex invocation.
+typedef struct { int32_t prim, first, count, instance_count_minus_one, base_instance; } p_draw;
 typedef struct { int32_t prim, itype, count, base_vertex, base_instance, instances; uint64_t ibuf; } p_draw_idx;
 typedef struct { int32_t x, y, z; uint64_t caller; } p_dispatch;   // caller：游戏调用点返回地址（定位派发者） | caller: return address of the game call site (to locate the dispatcher)
 typedef struct { const dpool_t *pool; } p_set_pool;
@@ -174,6 +176,11 @@ typedef struct { uint32_t enabled,index; } p_primitive_restart;
 typedef struct { uint32_t enabled;float minimum,maximum; } p_depth_bounds;
 typedef struct { const tex_t *src,*dst; } p_downsample;
 typedef struct { float rgba[4]; } p_blend_color;
+typedef struct { sync_t *sync; NVNdevice *dev; uint32_t wait, condition, flags; } p_command_sync;
+typedef struct { uint32_t action, domain, length; char text[]; } p_debug_marker;
+typedef struct { uint64_t address; uint32_t value; } p_report_value;
+typedef struct { uint32_t kind; union { float f[4]; int32_t i[4]; }; } p_dynamic_state;
+typedef struct { float point_size,line_width,alpha_ref,conservative_dilate; int32_t subpixel[2],swizzle[4],cache_action,tile_size[2]; } dynamic_state;
 
 // Metal 回放层入口（nvn_mtl.m）：把一组命令句柄回放进当前提交
 // Entry point of the Metal replay layer (nvn_mtl.m): replays a set of command handles into the current submission
