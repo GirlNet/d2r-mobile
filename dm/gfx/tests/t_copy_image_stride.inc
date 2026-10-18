@@ -26,14 +26,22 @@ static int test_copy_image_stride_gpu(void) {
             memset(memory+SOURCE,0x7d,8192);memset(memory+OUTPUT,0xa7,8192);
             for(int z=0;z<2;z++)for(int y=0;y<3;y++)for(int x=0;x<28;x++)
                 memory[SOURCE+z*input_image+y*256+x]=(uint8_t)(z*73+y*13+x+reset);
-            NVNcopyRegion region={0,0,0,7,3,2};
+            // The game initializes a view in a 16-byte slot after constructing
+            // the adjacent region. Exercise that order through real thunks.
+            struct { uint64_t guard; NVNtextureView view; NVNcopyRegion region; } adjacent={
+                .guard=UINT64_C(0x123456789abcdef0),.region={0,0,0,7,3,2}};
+            P(nvnTextureViewSetDefaults)(&adjacent.view);
+            P(nvnTextureViewSetLevels)(&adjacent.view,0,1);
+            EXPECT("copy region survives adjacent view initialization",1,
+                   adjacent.region.width==7 && adjacent.region.height==3 && adjacent.region.depth==2 &&
+                   adjacent.guard==UINT64_C(0x123456789abcdef0));
             P(nvnCommandBufferBeginRecording)(&cb);
             P(nvnCommandBufferSetCopyRowStride)(&cb,256);
             P(nvnCommandBufferSetCopyImageStride)(&cb,reset?0:2048);
-            P(nvnCommandBufferCopyBufferToTexture)(&cb,(uintptr_t)(memory+SOURCE),&texture,NULL,&region,0);
+            P(nvnCommandBufferCopyBufferToTexture)(&cb,(uintptr_t)(memory+SOURCE),&texture,&adjacent.view,&adjacent.region,0);
             P(nvnCommandBufferSetCopyRowStride)(&cb,512);
             P(nvnCommandBufferSetCopyImageStride)(&cb,3072);
-            P(nvnCommandBufferCopyTextureToBuffer)(&cb,&texture,NULL,&region,(uintptr_t)(memory+OUTPUT),0);
+            P(nvnCommandBufferCopyTextureToBuffer)(&cb,&texture,&adjacent.view,&adjacent.region,(uintptr_t)(memory+OUTPUT),0);
             NVNcommandHandle handle=P(nvnCommandBufferEndRecording)(&cb);
             P(nvnQueueSubmitCommands)(&queue,1,&handle);P(nvnQueueFinish)(&queue);
             int pixels=0,padding=0;

@@ -64,11 +64,17 @@ typedef struct {
     uint64_t serial;                     // 初始化序号：回放层按它在宿主表里找 MTLTexture（游戏可能按值拷贝对象，不能存对象指针） | Initialization serial: the replay layer uses it to find the MTLTexture in the host table (the game may copy the object by value, so object pointers cannot be stored)
 } tex_t;                                                                                     FITS(tex_t, NVNtexture);
 typedef struct {
-    uint8_t set_levels, set_layers, set_format, set_target;
-    int32_t base_level, nlevels, min_layer, nlayers, format, target;
-    uint8_t set_swizzle, set_depth_mode, swizzle[4], depth_mode;
+    // Guest views are copied by value and can be immediately followed by a
+    // copy region on the guest stack. The complete object is exactly 16 bytes.
+    uint64_t min_layer:16, nlayers:16, base_level:8, nlevels:8, target:8;
+    uint64_t set_levels:1, set_layers:1, set_format:1, set_swizzle:1,
+             set_depth_mode:1, set_target:1, depth_mode:2;
+    int32_t format;
+    uint8_t swizzle[4];
 } view_t;
 FITS(view_t, NVNtextureView);
+_Static_assert(sizeof(view_t) == 16 && sizeof(NVNtextureView) == 16, "texture view guest ABI");
+_Static_assert(__builtin_offsetof(view_t, format) == 8 && __builtin_offsetof(view_t, swizzle) == 12, "texture view field offsets");
 
 // 采样器参数（builder 与对象共用一份）
 // Sampler parameters (one copy shared by builder and object)

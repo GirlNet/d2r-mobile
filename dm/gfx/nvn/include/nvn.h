@@ -123,7 +123,7 @@ typedef struct {
 } NVNtexture;
 
 typedef struct {
-    char reserved[0x28];
+    char reserved[0x10];
 } NVNtextureView;
 
 typedef struct {

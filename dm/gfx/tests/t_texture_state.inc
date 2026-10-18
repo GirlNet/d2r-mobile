@@ -1,5 +1,30 @@
 // Typed production APIs, inherited/overridden sampling state and reserved-size guards.
 static void test_texture_state(void) {
+    // Match the guest's 16-byte view followed immediately by its copy region.
+    // A larger host view used to erase width/height before recording the copy.
+    struct { uint64_t before; NVNtextureView v; NVNcopyRegion region; uint64_t after; } adjacent={
+        .before=17,.region={0,0,0,256,1,1},.after=23};
+    const NVNcopyRegion expected_region={0,0,0,256,1,1};
+    const uint8_t zero_view[16]={0};
+    EXPECT("view occupies guest's 16-byte stack slot",16,sizeof adjacent.v);
+    P(nvnTextureViewSetDefaults)(&adjacent.v);
+    EXPECT("view defaults initialize all 16 bytes",0,memcmp(&adjacent.v,zero_view,16));
+    EXPECT("view defaults preserve adjacent copy extent",0,memcmp(&adjacent.region,&expected_region,sizeof expected_region));
+    P(nvnTextureViewSetLevels)(&adjacent.v,0x1ab,0x2cd);
+    P(nvnTextureViewSetLayers)(&adjacent.v,0x1234,0x5678);
+    P(nvnTextureViewSetTarget)(&adjacent.v,NVN_TEXTURE_TARGET_3D);
+    P(nvnTextureViewSetFormat)(&adjacent.v,NVN_FORMAT_BGRA8);
+    P(nvnTextureViewSetSwizzle)(&adjacent.v,2,3,4,5);
+    P(nvnTextureViewSetDepthStencilMode)(&adjacent.v,(NVNtextureDepthStencilMode)5);
+    const uint8_t expected_view[16]={0x34,0x12,0x78,0x56,0xab,0xcd,2,0x7f,0x9a,0,0,0,2,3,4,5};
+    EXPECT("view raw ABI matches independent SDK words",0,memcmp(&adjacent.v,expected_view,16));
+    EXPECT("all view setters preserve adjacent region",0,memcmp(&adjacent.region,&expected_region,sizeof expected_region));
+    EXPECT("compact view guard words",1,adjacent.before==17 && adjacent.after==23);
+    int base=-1,count=-1;
+    EXPECT("view levels getter valid",1,P(nvnTextureViewGetLevels)(&adjacent.v,&base,&count));
+    EXPECT("view levels retain byte values",1,base==0xab && count==0xcd);
+    EXPECT("view layers getter valid",1,P(nvnTextureViewGetLayers)(&adjacent.v,&base,&count));
+    EXPECT("view layers retain 16-bit values",1,base==0x1234 && count==0x5678);
     struct { uint64_t before; NVNtextureView v; uint64_t after; } gv={.before=17,.after=23};
     struct { uint64_t before; NVNtextureBuilder b; uint64_t after; } gb={.before=29,.after=31};
     struct { uint64_t before; NVNtexture t; uint64_t after; } gt={.before=37,.after=41};

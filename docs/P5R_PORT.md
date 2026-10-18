@@ -1,13 +1,15 @@
 # P5R port preparation
 
 2026-10-18 device investigation: normal launch passes SDK/module initialization,
-language queries and swapchain creation and reaches graphics submission. No game
-frame or playable scene has been verified. Matching the native crash UUID to the
-host binary locates the current abort in buffer-to-texture layout validation;
-the final `OpenAudioOut` log line does not establish an audio failure. Failed
-texture copies now report the region, block format, row/image pitches, texture
-and view parameters and guest recording call site. Validation remains enforced;
-this diagnostic change does not establish a layout fix or working gameplay.
+language queries and swapchain creation and reaches graphics submission. The new
+diagnostic traces a `0x0x1` copy extent to an oversized texture view: the guest's
+16-byte slot was followed by the copy region, whose width/height were erased by
+the old 36-byte host layout. Views now use the compact 16-byte representation
+checked against the local SDK, including public storage, accessors and command
+snapshots. Regressions protect the adjacent region, check raw field encoding and
+exercise view-based array/3D GPU round trips. Layout validation and rejected
+operand diagnostics remain enforced. Device confirmation of this fix, a game
+frame and playability are still pending.
 
 P5R argument encoding now checks the resolved Metal sampling view against each
 shader's texture dimension and numeric class before dispatch. Nonzero missing
