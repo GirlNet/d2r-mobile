@@ -63,6 +63,7 @@ typedef struct {
     // Vertex - .x / .y of interpolated output locn = fma(.x / .y of attribute uv_aff_attr[locn], scale, offset), where scale / offset reference a uniform: (slot << 8) | (vector << 2) | component
     int8_t uv_aff_attr[32]; uint16_t uv_aff[32][4];   // [sx, ox, sy, oy]
     uint8_t c1[4096];        // c1 常数段原样（B） | c1 constant segment as-is (B)
+    uint8_t guarded_candidate; // Requires explicit candidate loading and per-draw runtime checks.
 } nvn_refl;
 
 #ifdef __OBJC__
@@ -70,4 +71,5 @@ typedef struct {
 // 成功 0；失败返回非 0 并把原因写进 err（未知绑定类型、超定长上限、字段缺失）
 // 0 on success; on failure returns non-0 and writes the reason into err (unknown binding type, fixed-length limit exceeded, missing field)
 int nvn_refl_from_json(NSDictionary *j, nvn_refl *out, char *err, int errlen);
+int nvn_refl_from_json_candidate(NSDictionary *j, nvn_refl *out, char *err, int errlen);
 #endif

@@ -67,3 +67,23 @@ the shell chain and diagnostic provenance, hashes copied assets, and keeps
 `runtime_ready=false` and normal launch disabled. This completes cache layout and
 transport only; translation defaults, actual game graphics and playability remain
 unverified. All generated files stay local.
+
+An explicit guarded candidate path now connects this cache to game launch.
+Run staging with `--guarded-runtime`, then package with both `--shader-bundle`
+and `--guarded-runtime` using a newly built shell that advertises contract version
+1. The policy compiler accepts only audited query answers, corroborated texture
+instruction shapes, mapped slots and compute shaders whose local/shared memory
+is proven unused. The loader accepts these reflections only when the dedicated
+launcher selects guarded mode. It validates resources and buffer ranges during
+execution; draws require upper-left origin, zero-to-one depth, supported triangle
+primitives, disabled alpha test/logic operations and no dual-source blending.
+Other API/state gaps remain explicit failures. Ordinary diagnostic staging and
+loading retain their previous behavior.
+
+Candidate metadata exposes experimental launch while retaining
+`runtime_ready=false`, `graphics_verified=false` and `device_verified=false`.
+This is an executable candidate, not a verified playable release. The retained
+RomFS, main/SDK/subsdk0 modules and new native cache all stay local. Existing
+movie implementations are still excluded from the P5R shell, and remaining
+platform calls may stop startup. Do not infer gameplay success from synthetic
+GPU tests or from an enabled launch button.

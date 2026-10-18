@@ -26,6 +26,8 @@ on:
       - 'dm/tools/test_p5r_reflection.py'
       - 'dm/tools/stage_p5r_shaders.py'
       - 'dm/tools/test_stage_p5r_shaders.py'
+      - 'dm/tools/p5r_runtime_policy.py'
+      - 'dm/tools/test_p5r_runtime_policy.py'
       - 'dm/tools/maxwell_memory_audit.py'
       - 'dm/tools/test_maxwell_memory_audit.py'
       - 'dm/tools/nvn_handle_layout.py'
@@ -223,6 +225,31 @@ jobs:
                       raise SystemExit('Expected production binding rejection: ' + name + ' ' + argument)
               print(name + ': four invalid bindings rejected before dispatch')
           PY
+      - name: Verify explicit candidate disk loading and guarded execution
+        run: |
+          set -euo pipefail
+          if ! xcrun -sdk macosx metal --version; then xcodebuild -downloadComponent metalToolchain; fi
+          xcrun -sdk macosx metal -c -fno-fast-math dm/gfx/tests/guarded_runtime.metal -o "$RUNNER_TEMP/guarded.air"
+          xcrun -sdk macosx metallib "$RUNNER_TEMP/guarded.air" -o "$RUNNER_TEMP/guarded.metallib"
+          make -C dm/gfx/tests t_guarded_runtime_gpu t_guarded_runtime_gpu_m4
+          export DM_GUARDED_LIB="$RUNNER_TEMP/guarded.metallib" DM_GUARDED_SOURCE="$PWD/dm/gfx/tests/guarded_runtime.metal"
+          python3 - <<'PY'
+          import subprocess
+          for name in ('t_guarded_runtime_gpu', 't_guarded_runtime_gpu_m4'):
+              binary='dm/gfx/tests/'+name
+              result=subprocess.run([binary],capture_output=True,text=True)
+              print(result.stdout,result.stderr)
+              if result.returncode in (77,78):
+                  print('::warning::Candidate GPU execution unavailable: '+name)
+                  continue
+              if result.returncode: raise SystemExit('Candidate execution failed: '+name)
+              for flag,reason in (('--bad-coordinate','coordinate contract mismatch'),('--bad-alpha','alpha-test/logic-op contract mismatch'),('--bad-storage','storage buffer range/alignment invalid')):
+                  bad=subprocess.run([binary,flag],capture_output=True,text=True)
+                  if bad.returncode in (0,77,78) or reason not in bad.stdout+bad.stderr:
+                      print(bad.stdout,bad.stderr)
+                      raise SystemExit('Candidate contract failed to reject '+flag)
+              print(name+': three invalid execution contracts rejected')
+          PY
       - name: Check sampler descriptor mapping and available GPU reduction
         run: |
           set -euo pipefail
@@ -352,6 +379,7 @@ jobs:
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_diagnose_p5r_shaders.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_p5r_reflection.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_stage_p5r_shaders.py -v
+          "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_p5r_runtime_policy.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_memory_audit.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_maxwell_texture_audit.py -v
           "$RUNNER_TEMP/p5r-tests/bin/python" -m unittest discover -s dm/tools -p test_nvn_handle_layout.py -v

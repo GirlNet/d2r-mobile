@@ -56,6 +56,8 @@ class ShaderBundleTests(unittest.TestCase):
             source={name: self.source[name] for name in ('control_sha256', 'code_sha256', 'c1_sha256')},
             threadgroup_size=self.source['compute_workgroup'], compute_memory_audit=dict(memory_unused_proven=True),
             msl_sha256=digest(msl), artifacts=artifacts, blockers=['Unverified game state'])
+        self.plan['query_audit']=dict(entries=[])
+        self.plan['texture_resource_constraints']=dict(bindings=[])
         self.row = dict(key=self.key, stage=stage, status='diagnostic_passed', reflection_plan={}, metal=[dict(
             sdk='iphoneos', target='air64-apple-ios18.0', strict_float=True, diagnostic_only=True,
             source_sha256=digest(msl), sha256=digest(library), path='ignored/report-supplied/path')])
@@ -111,6 +113,14 @@ class ShaderBundleTests(unittest.TestCase):
         self.write_inputs()
         with self.assertRaisesRegex(ValueError, 'compute memory'):
             self.stage()
+
+    def test_guarded_candidate_is_explicit_and_does_not_claim_verification(self):
+        result=stage_bundle(self.prep,self.diag,self.out,'0123456789ab',guarded=True)
+        self.assertEqual(result['status'],'guarded_candidate')
+        self.assertTrue(result['experimental_launch_allowed']);self.assertFalse(result['runtime_ready'])
+        reflection=json.loads((self.out/'msl/b-0123456789ab'/(self.key+'_b.json')).read_text())
+        self.assertFalse(reflection['diagnostic_only']);self.assertFalse(reflection['resource_facts_verified'])
+        self.assertEqual(reflection['runtime_contract']['resources'],'per_binding')
 
     def test_graphics_code_size_includes_removed_prefix(self):
         for stage in ('vs', 'ps'):

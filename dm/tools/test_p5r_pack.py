@@ -116,7 +116,9 @@ class P5RPackTests(unittest.TestCase):
     def make_shader_bundle(self):
         chain='0123456789ab';directory=self.root/'staged';cache=directory/'msl'/('b-'+chain);cache.mkdir(parents=True)
         self.shell_files['dm/p5r-shell.json']=json.dumps(dict(profile='p5r',game_content_included=False,shader_chain=chain)).encode();self.write_shell()
-        plan=json.loads(self.plan_path.read_text());plan.update(bindings=[],source=dict(c1_sha256=digest(b'')),msl_sha256=digest(b'synthetic'))
+        plan=json.loads(self.plan_path.read_text());plan.update(bindings=[],source=dict(c1_sha256=digest(b'')),msl_sha256=digest(b'synthetic'),
+            profile='p5r',route='B',resource_facts_verified=False,binding_coverage_complete=True,missing_descriptors=[],
+            query_audit=dict(entries=[]),texture_resource_constraints=dict(bindings=[]),compute_memory_audit=dict(memory_unused_proven=True))
         self.plan_path.write_text(json.dumps(plan));self.diag_report['shaders'][0]['reflection_plan']['sha256']=digest(self.plan_path.read_bytes())
         self.diag_report['shaders'][0]['metal']=[dict(sdk='iphoneos',target='air64-apple-ios18.0',strict_float=True,
             sha256=digest(b'MTLB native synthetic'),source_sha256=digest(b'synthetic'))];self.write_diagnostic_report()
@@ -157,6 +159,22 @@ class P5RPackTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'source-matched unverified'):
                 package(self.shell,self.prep,self.diag,self.out,shader_bundle=directory)
             self.assertFalse(self.out.exists())
+
+    def test_guarded_runtime_requires_explicit_packaging_opt_in(self):
+        from p5r_runtime_policy import guarded_reflection
+        directory,cache,report=self.make_shader_bundle()
+        shell=json.loads(self.shell_files['dm/p5r-shell.json']);shell['guarded_runtime_contract_version']=1
+        self.shell_files['dm/p5r-shell.json']=json.dumps(shell).encode();self.write_shell()
+        reflection_path=cache/(self.key+'_b.json');reflection=json.loads(reflection_path.read_text())
+        plan=json.loads(self.plan_path.read_text());converted=guarded_reflection(plan)
+        for name in ('diagnostic_only','execution_mode','runtime_contract'):reflection[name]=converted[name]
+        reflection_path.write_text(json.dumps(reflection));report['shader_records'][0]['artifacts'][self.key+'_b.json']=digest(reflection_path.read_bytes())
+        report.update(status='guarded_candidate',execution_mode='guarded_candidate',diagnostic_only=False,runtime_contract_version=1,experimental_launch_allowed=True)
+        (directory/'bundle-report.json').write_text(json.dumps(report))
+        with self.assertRaises(ValueError):package(self.shell,self.prep,self.diag,self.out,shader_bundle=directory)
+        result=package(self.shell,self.prep,self.diag,self.out,shader_bundle=directory,guarded_runtime=True)
+        self.assertEqual(result['package_kind'],'guarded_runtime_candidate');self.assertTrue(result['experimental_launch_allowed'])
+        self.assertFalse(result['runtime_ready']);self.assertFalse(result['graphics_verified'])
 
 
 if __name__=='__main__': unittest.main()

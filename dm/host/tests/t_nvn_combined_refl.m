@@ -38,6 +38,15 @@ int main(void) { @autoreleasepool {
     for (id group in @[[NSNull null], @[], @[@0,@1,@1], @[@1,@0,@1], @[@1,@1,@0], @[@65536,@1,@1], @[@1024,@2,@1], @[@(-1),@1,@1], @[@1.5,@1,@1], @[@"32",@1,@1]])
         CHECK(nvn_refl_from_json(@{@"route":@"B", @"stage":@"cs", @"bindings":@[], @"threadgroup_size":group}, &reflection, err, sizeof err));
     CHECK(nvn_refl_from_json(@{@"route":@"B", @"stage":@"cs", @"bindings":@[]}, &reflection, err, sizeof err));
+    NSMutableDictionary *candidate=[@{@"route":@"B",@"profile":@"p5r",@"stage":@"vs",@"bindings":@[],
+        @"diagnostic_only":@NO,@"resource_facts_verified":@NO,@"runtime_ready":@NO,
+        @"binding_coverage_complete":@YES,@"missing_descriptors":@[],@"drv_reads":@{},
+        @"execution_mode":@"guarded_candidate",@"runtime_contract":@{@"version":@1,@"pipeline":@"p5r_nvn11",
+        @"resources":@"per_binding",@"coordinates":@"normalized",@"storage":@"exact_gpu_pointer"}} mutableCopy];
+    CHECK(nvn_refl_from_json(candidate,&reflection,err,sizeof err));
+    CHECK(!nvn_refl_from_json_candidate(candidate,&reflection,err,sizeof err));CHECK(reflection.guarded_candidate);
+    candidate[@"runtime_ready"]=@YES;CHECK(nvn_refl_from_json_candidate(candidate,&reflection,err,sizeof err));candidate[@"runtime_ready"]=@NO;
+    candidate[@"runtime_contract"]=@{@"version":@1};CHECK(nvn_refl_from_json_candidate(candidate,&reflection,err,sizeof err));
     puts("NVN COMBINED REFLECTION OK: independent slots, sampler source, upper bound, invalid arguments");
     return 0;
 } }

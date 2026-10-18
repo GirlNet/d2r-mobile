@@ -108,7 +108,7 @@ def build(output,metal_backend=3):
                 UIFileSharingEnabled=True, LSSupportsOpeningDocumentsInPlace=True, UILaunchScreen={},
                 UISupportedInterfaceOrientations=['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'])
     (app / 'Info.plist').write_bytes(plistlib.dumps(info))
-    (app / 'dm/p5r-shell.json').write_text(json.dumps(dict(schema_version=1, profile='p5r', game_content_included=False,
+    (app / 'dm/p5r-shell.json').write_text(json.dumps(dict(schema_version=1, profile='p5r', game_content_included=False,guarded_runtime_contract_version=1,
         source_fingerprint_schema=2,build_configuration=configuration,
         source_fingerprint=hashlib.sha256(json.dumps(configuration,sort_keys=True).encode()+b'\0'+b''.join(p.read_bytes() for p in fingerprint_files)).hexdigest(),
         shader_chain=(REPO / 'dm/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]), indent=2) + '\n')

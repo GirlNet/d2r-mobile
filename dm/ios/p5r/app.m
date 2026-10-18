@@ -21,6 +21,12 @@ static int started;
 static void *runHost(void *unused);
 int dm_main(int argc, char **argv);
 static NSString *text(const char *key) { return @(dm_ui(key)); }
+static BOOL guardedCandidate(NSDictionary *package) {
+    return [package[@"package_kind"] isEqual:@"guarded_runtime_candidate"] &&
+        [package[@"experimental_launch_allowed"] isEqual:@YES] && [package[@"runtime_contract_version"] isEqual:@1] &&
+        [package[@"game_content_included"] isEqual:@YES] && [package[@"runtime_ready"] isEqual:@NO];
+}
+static BOOL canLaunch(NSDictionary *package) { return [package[@"runtime_ready"] isEqual:@YES] || guardedCandidate(package); }
 void *front_metal_layer(void) { return (__bridge void *)metalLayer; }
 uint64_t front_game_res(int docked) { return (uint64_t)(docked ? 900 : 720) << 32 | (docked ? 1600 : 1280); }
 void front_run(void (*guest)(void)) { guest(); }
@@ -115,8 +121,8 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     NSData *data = [NSData dataWithContentsOfFile:path];
     self.package = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     BOOL ready = [self.package[@"runtime_ready"] isEqual:@YES];
-    self.status.text = text(ready ? "dmP5RReady" : self.package ? "dmP5RGraphicsPending" : "dmP5RShell");
-    self.launch.enabled = ready;
+    self.status.text = text(ready ? "dmP5RReady" : guardedCandidate(self.package) ? "dmP5RCandidate" : self.package ? "dmP5RGraphicsPending" : "dmP5RShell");
+    self.launch.enabled = canLaunch(self.package);
     self.bootProbe.enabled = [self.package[@"game_content_included"] isEqual:@YES];
     self.poll = [CADisplayLink displayLinkWithTarget:self selector:@selector(pollController)];
     [self.poll addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
@@ -149,7 +155,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
                pad.rightThumbstick.xAxis.value * 32767, pad.rightThumbstick.yAxis.value * 32767);
 }
 - (void)startGuest {
-    if (started || self.testingGpu || ![self.package[@"runtime_ready"] isEqual:@YES]) return;
+    if (started || self.testingGpu || !canLaunch(self.package)) return;
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *romfs = [documents stringByAppendingPathComponent:@"romfs"];
     if (![NSFileManager.defaultManager fileExistsAtPath:[romfs stringByAppendingPathComponent:@"CPK/ALL_ASIA.CPK"]]) {
@@ -160,6 +166,8 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     NSString *save = [documents stringByAppendingPathComponent:@"save-p5r"], *temporary = [documents stringByAppendingPathComponent:@"temp-p5r"];
     for (NSString *directory in @[save, temporary]) [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
     setenv("DM_GUEST_PROFILE", "p5r", 1); setenv("DM_ROMFS", romfs.fileSystemRepresentation, 1);
+    if(guardedCandidate(self.package))setenv("DM_P5R_RUNTIME_MODE","guarded",1);
+    else unsetenv("DM_P5R_RUNTIME_MODE");
     setenv("DM_SAVE", save.fileSystemRepresentation, 1); setenv("DM_TEMP", temporary.fileSystemRepresentation, 1);
     setenv("DM_NVN_SHMAP", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/shader_map.tsv"].fileSystemRepresentation, 1);
     setenv("DM_MSL_DIR", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 1);
@@ -228,7 +236,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         dispatch_async(dispatch_get_main_queue(), ^{
             self.testingGpu = NO; self.gpuTest.enabled = YES;
             self.bootProbe.enabled = [self.package[@"game_content_included"] isEqual:@YES];
-            self.launch.enabled = [self.package[@"runtime_ready"] isEqual:@YES];
+            self.launch.enabled = canLaunch(self.package);
             if (!saved) self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RGpuSaveFailed"),result];
             else if (result == 0) self.gpuStatus.text = text("dmP5RGpuPassed");
             else if (result == NVN_TEXTURE_SELFTEST_METAL4_UNSUPPORTED) self.gpuStatus.text = text("dmP5RGpuPartial");

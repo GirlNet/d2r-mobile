@@ -2289,9 +2289,13 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (![j[@"chain"] isEqual:@DMSH_CHAIN]) { MLOG("【红】着色器 %s 的翻译链版本 %s 与本宿主期望的 %s 不符", pc.UTF8String, [[j[@"chain"] description] UTF8String], DMSH_CHAIN); return nil; }
     NvShader *o = [NvShader new];
     char err[160];
-    if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
+    const char *mode=getenv("DM_P5R_RUNTIME_MODE");
+    int candidate=!dm_guest_d2r() && mode && !strcmp(mode,"guarded");
+    if ((candidate?nvn_refl_from_json_candidate(j,&o->rf,err,sizeof err):nvn_refl_from_json(j,&o->rf,err,sizeof err))) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
+    if(o->rf.guarded_candidate && ![j[@"stage"] isEqual:stage==0?@"vs":stage==1?@"ps":stage==5?@"cs":@""]) return nil;
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
+    if(!o->fn)return nil;
     if((stage==0||stage==1)&&!dm_guest_d2r()) {
         NSData *source=[NSData dataWithContentsOfFile:lp];
         if(source.length>=4&&!memcmp(source.bytes,"MTLB",4))source=[NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.metal",g_msl_dir,pc]];
@@ -2385,12 +2389,14 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提�
         NSString *k = [NSString stringWithFormat:@"%02x%02x%02x%02x%02x%02x%02x%02x", md[0], md[1], md[2], md[3], md[4], md[5], md[6], md[7]];
         NSString *zh = g_shmap[k];
         if (!zh) {   // 不在包里：查 main 本体内嵌的计算核（nvn_builtin.h） | Not in the package: look up the compute kernels embedded in the main body (nvn_builtin.h)
+            if(!dm_guest_d2r())MDIE("P5R shader control key is absent from its bundle: %s",k.UTF8String);
             NvShader *b = dm_guest_d2r() ? builtin_get(k.UTF8String) : nil;
             if (b) { o->sh[5] = b; continue; }
             MLOG("【红】着色器控制段 %s 不在映射表里", k.UTF8String); continue;
         }
         int st = stage_of(zh);
         NvShader *sh = st >= 0 ? shader_get([k stringByAppendingString:@"_b"], st) : nil;
+        if(!sh && !dm_guest_d2r())MDIE("P5R shader cannot be loaded: %s stage=%d",k.UTF8String,st);
         if (sh) o->sh[st] = sh; else MLOG("【红】着色器 %s（%s）加载失败：先跑 dm/gfx/tools/dmsh_build.py 出包", k.UTF8String, zh.UTF8String);
     }
     if (p->serial) serial_put(p->serial, o);
@@ -2570,6 +2576,25 @@ static struct {
     p_primitive_restart restart;
     p_depth_bounds depth_bounds;
 } S;
+static unsigned g_guest_origin,g_guest_depth;
+void mtl_guest_coordinates(unsigned origin,unsigned depth) { g_guest_origin=origin;g_guest_depth=depth; }
+static void check_candidate_draw(NvProg *program,int primitive) {
+    if(!program)return;
+    int guarded=0;for(unsigned i=0;i<6;i++)if(program->sh[i] && program->sh[i]->rf.guarded_candidate)guarded=1;
+    if(!guarded)return;
+    if(g_guest_origin!=NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT || g_guest_depth!=NVN_DEPTH_MODE_NEAR_IS_ZERO)
+        MDIE("P5R candidate coordinate contract mismatch: origin=%u depth=%u",g_guest_origin,g_guest_depth);
+    if(S.color.alpha_func!=NVN_ALPHA_FUNC_ALWAYS || S.color.logic_op!=NVN_LOGIC_OP_COPY)
+        MDIE("P5R candidate alpha-test/logic-op contract mismatch");
+    if(primitive!=NVN_DRAW_PRIMITIVE_TRIANGLES && primitive!=NVN_DRAW_PRIMITIVE_TRIANGLE_STRIP && primitive!=NVN_DRAW_PRIMITIVE_QUADS)
+        MDIE("P5R candidate primitive contract unsupported: %d",primitive);
+    if(S.has_vp && (S.vp[0][2]<0 || S.vp[0][3]<0))MDIE("P5R candidate viewport inversion unsupported");
+    for(unsigned i=0;i<8;i++)if((S.color.blend_en>>i)&1) {
+        const blend_st *b=&S.blend[i];unsigned f[]={b->src_rgb,b->dst_rgb,b->src_a,b->dst_a};
+        for(unsigned j=0;j<4;j++)if(f[j]>=NVN_BLEND_FUNC_SRC1_COLOR && f[j]<=NVN_BLEND_FUNC_ONE_MINUS_SRC1_ALPHA)
+            MDIE("P5R candidate dual-source blending unsupported");
+    }
+}
 static int render_allowed(void) {
     if(dm_guest_d2r())return 1;
     if(!S.render_enable)return 0;
@@ -3147,6 +3172,8 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         if (b->kind == NVN_RB_CBUF) {
             const p_bind_buf *u = reg < 16 ? &S.ubo[nvn_stage][reg] : NULL;
             void *mb; uint64_t mo, gpu;
+            if(sh->rf.guarded_candidate && (!u || !u->addr || !u->size || (u->addr&15) || !mtl_gpu_addr(u->addr,u->size,&mb,&mo,&gpu)))
+                MDIE("P5R candidate uniform buffer range/alignment invalid: stage=%d slot=%d",nvn_stage,reg);
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "阶段 %d cb%d 没有绑定 uniform 缓冲", nvn_stage, reg); continue; }
             use_rec("buf", u->addr, u->size, 0, NULL);
             if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
@@ -3205,6 +3232,8 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         } else if (b->kind == NVN_RB_SBUFP || b->kind == NVN_RB_UBOP) {   // B：存储缓冲 / 计算阶段 uniform 是设备指针，按 NVN 槽取地址 | B: storage buffers / compute-stage uniforms are device pointers; the address is taken by NVN slot
             const p_bind_buf *u = reg < 16 ? (b->kind == NVN_RB_UBOP ? &S.ubo[nvn_stage][reg] : &S.ssbo[nvn_stage][reg]) : NULL;
             void *mb; uint64_t mo, gpu;
+            if(sh->rf.guarded_candidate && (!u || !u->addr || !u->size || (u->addr&3) || !mtl_gpu_addr(u->addr,u->size,&mb,&mo,&gpu)))
+                MDIE("P5R candidate storage buffer range/alignment invalid: stage=%d slot=%d",nvn_stage,reg);
             if (u && u->addr && mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) { use_rec("buf", u->addr, u->size, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
             else { slots[aid] = dummy_buf_gpu(); USE(dummy_buf(), MTLResourceUsageRead); }
             if (bl) PD("B %llu st%d sbufp reg%d %s addr=%#llx size=%llu %s", g_stat_pass, nvn_stage, reg, u && u->addr ? "实" : "哑", u ? (unsigned long long)u->addr : 0ull, u ? (unsigned long long)u->size : 0ull, b->rw ? "rw" : "ro");
@@ -4704,7 +4733,17 @@ static prepared_indices prepare_indices(const p_draw_idx *draw) {
     uint32_t native_restart=width==2?UINT16_MAX:UINT32_MAX;
     if(width>1 && (dm_guest_d2r() || (S.restart.enabled && S.restart.index==native_restart)))
         return (prepared_indices){gpu,bytes,width==2?MTLIndexTypeUInt16:MTLIndexTypeUInt32};
-    if(width==4 && !S.restart.enabled)MDIE("Disabled restart with 32-bit indices requires a vertex-pulling variant");
+    if(width==4 && !S.restart.enabled) {
+        id<MTLBuffer> buffer=(__bridge id<MTLBuffer>)source;
+        if(!buffer.contents)MDIE("Disabled 32-bit restart requires readable indices");
+        uint64_t fence=mtl_sub_commit();
+        if(!mtl_wait(fence,5000000000ull) || mtl_last_commit_error())MDIE("32-bit index synchronization failed");
+        const uint8_t *data=(const uint8_t *)buffer.contents+offset;
+        for(int i=0;i<draw->count;i++){uint32_t value;memcpy(&value,data+(size_t)i*4,4);if(value==UINT32_MAX)
+            MDIE("Disabled 32-bit restart with a literal UINT32_MAX index requires vertex pulling");}
+        vis_fold_completed();mtl_sub_begin();
+        return (prepared_indices){gpu,bytes,MTLIndexTypeUInt32};
+    }
     // No CPU readback: prior GPU-produced index data remains ordered. Widening
     // also keeps a legitimate 0xffff vertex usable when 16-bit restart is off.
     rp_end();if(g_blit){enc_b_end(g_blit);g_blit=nil;}
@@ -4733,6 +4772,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); return; }
     prepared_indices indices=di?prepare_indices(di):(prepared_indices){0};
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
+    check_candidate_draw(pr,dw?dw->prim:di->prim);
     if (g_ruler_truth == 0) {   // 尺子负对照（DM_NVN_RULER_NEG=<片元键>）：被测模式下丢掉该着色器的绘制，尺子必须报不等价 | Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
         if (ng && pr) for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (sh && sh->stage == 1 && !strncmp(sh->key, neg, strlen(neg))) { static int once; if (!once++) MLOG("DM_NVN_RULER_NEG：被测模式丢弃着色器 %s 的绘制", sh->key); return; } }

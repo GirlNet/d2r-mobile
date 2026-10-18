@@ -12,6 +12,7 @@ import struct
 import zipfile
 
 import guest_dylib
+from p5r_runtime_policy import CONTRACT,guarded_reflection
 
 
 MODULES = ('main', 'sdk', 'subsdk0')
@@ -101,15 +102,18 @@ def diagnostics_inputs(directory):
     return assets, len(keys), report['source_sha256'], report
 
 
-def staged_shader_inputs(directory, chain, diagnostic_assets, diagnostic_report):
+def staged_shader_inputs(directory, chain, diagnostic_assets, diagnostic_report, allow_guarded=False):
     if not isinstance(chain, str) or not re.fullmatch(r'[0-9a-f]{12}', chain):
         raise ValueError('Invalid staged shader chain')
     report_blob = (directory / 'bundle-report.json').read_bytes()
     report = json.loads(report_blob)
+    guarded=allow_guarded and report.get('status')=='guarded_candidate'
+    if guarded and (report.get('execution_mode')!='guarded_candidate' or report.get('runtime_contract_version')!=1 or report.get('experimental_launch_allowed') is not True):
+        raise ValueError('Invalid guarded candidate bundle')
     if (report.get('schema_version') != 1 or report.get('profile') != 'p5r'
-            or report.get('status') != 'staged_unverified' or report.get('shader_chain') != chain
+            or report.get('status') != ('guarded_candidate' if guarded else 'staged_unverified') or report.get('shader_chain') != chain
             or report.get('source_sha256') != diagnostic_report['source_sha256']
-            or report.get('diagnostic_only') is not True or report.get('runtime_ready') is not False
+            or report.get('diagnostic_only') is not (False if guarded else True) or report.get('runtime_ready') is not False
             or report.get('graphics_verified') is not False or report.get('game_launch_enabled') is not False):
         raise ValueError('Expected a source-matched unverified P5R shader bundle with matching chain')
     native_rows = {row['key']:row for row in diagnostic_report['shaders']}
@@ -133,11 +137,15 @@ def staged_shader_inputs(directory, chain, diagnostic_assets, diagnostic_report)
         reflection_blob = (directory / relative / (key + '_b.json')).read_bytes()
         reflection = json.loads(reflection_blob)
         plan = json.loads(diagnostic_assets['reflection-plans/' + key + '.plan.json'])
+        if guarded:
+            guarded_reflection(plan)
+            if reflection.get('execution_mode')!='guarded_candidate' or reflection.get('runtime_contract')!=CONTRACT:
+                raise ValueError('Guarded reflection execution contract mismatch')
         if (digest(reflection_blob) != hashes[key + '_b.json'] or reflection.get('key') != key + '_b'
                 or reflection.get('dm_ctl') != key or reflection.get('chain') != chain
                 or reflection.get('profile') != 'p5r' or reflection.get('route') != 'B'
                 or reflection.get('stage') != native_rows[key]['stage'] or row.get('stage') != reflection.get('stage')
-                or reflection.get('diagnostic_only') is not True or reflection.get('runtime_ready') is not False
+                or reflection.get('diagnostic_only') is not (False if guarded else True) or reflection.get('runtime_ready') is not False
                 or reflection.get('resource_facts_verified') is not False or reflection.get('bindings') != plan['bindings']
                 or digest(bytes.fromhex(reflection['c1'])) != plan['source']['c1_sha256']
                 or hashes[key + '_b.metal'] != plan['msl_sha256']):
@@ -153,7 +161,7 @@ def staged_shader_inputs(directory, chain, diagnostic_assets, diagnostic_report)
     return files, additions, len(seen)
 
 
-def package(shell, preparation, diagnostics, output, shader_bundle=None):
+def package(shell, preparation, diagnostics, output, shader_bundle=None, guarded_runtime=False):
     shell, preparation, diagnostics, output = [p.resolve() for p in (shell, preparation, diagnostics, output)]
     if output.is_relative_to(REPO) or output.is_relative_to(preparation) or output.is_relative_to(diagnostics):
         raise ValueError('Package output must stay outside source and preparation trees')
@@ -174,12 +182,20 @@ def package(shell, preparation, diagnostics, output, shader_bundle=None):
     additions = {'dm/' + name:data for name, data in modules.items()}
     additions.update({'p5r-diagnostics/' + name:data for name, data in assets.items()})
     staged_files = []
+    if guarded_runtime and shader_bundle is None:raise ValueError('Guarded runtime requires a checked shader bundle')
+    if guarded_runtime and shell_info.get('guarded_runtime_contract_version')!=1:raise ValueError('Shell does not support the guarded runtime contract')
     if shader_bundle is not None:
         shader_bundle = shader_bundle.resolve()
         if output.is_relative_to(shader_bundle): raise ValueError('Package output must stay outside the shader bundle')
-        staged_files, shared, count = staged_shader_inputs(shader_bundle, shell_info['shader_chain'], assets, diagnostic_report)
+        staged_files, shared, count = staged_shader_inputs(shader_bundle, shell_info['shader_chain'], assets, diagnostic_report,guarded_runtime)
         additions.update(shared)
         manifest.update(staged_native_shaders=count, staged_shader_bundle_ready=False)
+        if guarded_runtime:
+            bundle=read_json(shader_bundle/'bundle-report.json')
+            if bundle.get('status')!='guarded_candidate':raise ValueError('Guarded runtime requires candidate reflections')
+            manifest.update(package_kind='guarded_runtime_candidate',experimental_launch_allowed=True,runtime_contract_version=1)
+            manifest['blockers']=['Actual startup, graphics, platform compatibility and gameplay remain unverified',
+                'Sign the application and Guest framework together before installation']
     additions['dm/p5r-package.json'] = (json.dumps(manifest, indent=2) + '\n').encode()
     additions['Frameworks/Guest.framework/Guest'] = guest
     additions['Frameworks/Guest.framework/Info.plist'] = (guest_dylib.INFO_PLIST % (plist['CFBundleIdentifier'] + '.guest')).encode()
@@ -217,6 +233,7 @@ if __name__ == '__main__':
     parser.add_argument('shell', type=Path); parser.add_argument('preparation', type=Path)
     parser.add_argument('diagnostics', type=Path); parser.add_argument('output', type=Path)
     parser.add_argument('--shader-bundle',type=Path,help='Optional locally staged native shader bundle; normal game launch stays disabled')
+    parser.add_argument('--guarded-runtime',action='store_true',help='Allow a checked guarded candidate bundle to expose experimental game launch')
     args = parser.parse_args()
-    try: print(json.dumps(package(args.shell, args.preparation, args.diagnostics, args.output,args.shader_bundle), indent=2))
+    try: print(json.dumps(package(args.shell, args.preparation, args.diagnostics, args.output,args.shader_bundle,args.guarded_runtime), indent=2))
     except (ValueError, OSError, KeyError, zipfile.BadZipFile) as error: parser.exit(1, str(error) + '\n')

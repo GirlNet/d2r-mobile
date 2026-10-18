@@ -9,6 +9,7 @@
 #include <stddef.h>
 
 void mtl_init(void);
+void mtl_guest_coordinates(unsigned origin, unsigned depth);
 void bf_want_note(const char *key);
 
 // 内存池：[mem, mem+size) 外扩到页边界建零拷贝缓冲；按 GPU 地址（= CPU 地址）反查缓冲与偏移

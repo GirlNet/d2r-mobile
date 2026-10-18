@@ -257,6 +257,8 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         regs[0] = 0; regs[1] = v; return 0;
     }
     default:
+        if(!dm_guest_d2r() && !dm_boot_probe_active())
+            die("P5R unsupported kernel call SVC %#x x0=%#llx x1=%#llx x2=%#llx lr=%#llx",num,regs[0],regs[1],regs[2],regs[30]);
         // 启动诊断不能把未知内核操作当成功；保留原现场并在操作前停驻。
         // Startup probes must not treat unknown kernel operations as success; preserve the checkpoint and park before the operation.
         if (dm_boot_probe_active()) {

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import struct
+from p5r_runtime_policy import guarded_reflection
 
 KEY = re.compile(r'[0-9a-f]{16}')
 CHAIN = re.compile(r'[0-9a-f]{12}')
@@ -42,7 +43,7 @@ def checked_bytes(path, expected, label):
     return blob
 
 
-def stage_shader(key, source, job, row, preparation, diagnostics, cache, chain):
+def stage_shader(key, source, job, row, preparation, diagnostics, cache, chain, guarded):
     stage = row['stage']
     if stage not in STAGES or source['stage'] != stage or job['stage'] != stage or row['status'] != 'diagnostic_passed':
         raise ValueError('Shader stage/status mismatch: ' + key)
@@ -109,6 +110,8 @@ def stage_shader(key, source, job, row, preparation, diagnostics, cache, chain):
     # No driver-bank bindings are accepted above; do not infer dynamic c0/c2 contents.
     # Without a raster proof the existing backend uses its conservative defaults.
     reflection['raster'] = dict(colors=[item['location'] for item in plan.get('fragment_outputs', [])], discard=1, sample_mask=1)
+    if guarded:
+        reflection = guarded_reflection(reflection)
     assets = {key + '_b.metallib': library, key + '_b.metal': msl,
               key + '_b.json': (json.dumps(reflection, indent=2) + '\n').encode()}
     hashes = {}
@@ -118,7 +121,7 @@ def stage_shader(key, source, job, row, preparation, diagnostics, cache, chain):
     return dict(key=key, stage=stage, c1_bytes=len(c1), artifacts=hashes)
 
 
-def stage_bundle(preparation, diagnostics, output, chain, workers=4):
+def stage_bundle(preparation, diagnostics, output, chain, workers=4, guarded=False):
     preparation, diagnostics, output = (Path(path).resolve() for path in (preparation, diagnostics, output))
     if not CHAIN.fullmatch(chain) or type(workers) is not int or not 1 <= workers <= 16:
         raise ValueError('Invalid chain or worker count')
@@ -148,7 +151,7 @@ def stage_bundle(preparation, diagnostics, output, chain, workers=4):
     try:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             staged = list(executor.map(lambda key: stage_shader(key, sources[key], jobs[key], shaders[key],
-                preparation, diagnostics, cache, chain), sorted(sources)))
+                preparation, diagnostics, cache, chain, guarded), sorted(sources)))
         mapping = 'package\tindex\tstage\tcontrol_key\n' + ''.join(
             'p5r\t0\t' + STAGES[row['stage']][1] + '\t' + row['key'] + '\n' for row in staged)
         (dm / 'shader_map.tsv').write_text(mapping, encoding='utf-8')
@@ -157,6 +160,10 @@ def stage_bundle(preparation, diagnostics, output, chain, workers=4):
         result.update(status='staged_unverified', shaders=len(staged), shader_records=staged,
                       blockers=['Translation defaults and actual game resource/state contracts remain unverified',
                                 'Staged reflections intentionally retain markers rejected by the runtime loader'])
+        if guarded:
+            result.update(status='guarded_candidate', diagnostic_only=False, execution_mode='guarded_candidate',
+                          runtime_contract_version=1, experimental_launch_allowed=True,
+                          blockers=['Actual game startup, GPU frames and gameplay require device validation'])
     except BaseException as error:
         result.update(status='staging_failed', error=str(error))
         raise
@@ -172,9 +179,10 @@ if __name__ == '__main__':
     parser.add_argument('output', type=Path)
     parser.add_argument('--chain', required=True)
     parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--guarded-runtime',action='store_true',help='Build explicitly guarded executable reflections; does not mark the game verified')
     args = parser.parse_args()
     try:
-        result = stage_bundle(args.preparation, args.diagnostics, args.output, args.chain, args.workers)
+        result = stage_bundle(args.preparation, args.diagnostics, args.output, args.chain, args.workers,args.guarded_runtime)
         print(json.dumps({key: value for key, value in result.items() if key != 'shader_records'}, indent=2))
     except (ValueError, OSError, KeyError) as error:
         parser.exit(1, str(error) + '\n')

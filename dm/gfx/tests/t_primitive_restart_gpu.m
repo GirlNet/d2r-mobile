@@ -18,7 +18,7 @@ int main(void){@autoreleasepool{
       "vertex float4 v(uint i[[vertex_id]]){uint n=i==65535?7:i;float2 p[8]={float2(-1,-1),float2(-1,1),float2(-.25,-1),float2(-.25,1),float2(.25,-1),float2(.25,1),float2(1,-1),float2(1,1)};return float4(p[n],.5,1);}\n"
       "fragment float4 f(){return float4(1,0,0,1);}" options:nil error:&error];
     if(!library)fprintf(stderr,"%s\n",error.localizedDescription.UTF8String);CHECK(library);
-    const struct { int type,enabled;uint32_t marker; } cases[]={{0,1,255},{0,1,9},{1,1,65535},{1,1,9},{2,1,65535},{2,1,UINT32_MAX},{1,0,65535}};
+    const struct { int type,enabled;uint32_t marker; } cases[]={{0,1,255},{0,1,9},{1,1,65535},{1,1,9},{2,1,65535},{2,1,UINT32_MAX},{1,0,65535},{2,0,UINT32_MAX}};
     for(unsigned c=0;c<sizeof cases/sizeof *cases;c++) {
         tex_t colour={.serial=930000+c};colour.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=8,.height=4,.depth=1,.levels=1,.samples=1};
         prog_t program={.serial=940000+c};NvProg *native=[NvProg new];native->sh[0]=[NvShader new];native->sh[0]->fn=[library newFunctionWithName:@"v"];
@@ -48,5 +48,5 @@ int main(void){@autoreleasepool{
         CHECK(((uint8_t *)memory)[33791]==0x53&&((uint8_t *)memory)[33792+count*width]==0x53);
         mtl_pool_del(memory);free(memory);
     }
-    puts("PRIMITIVE RESTART GPU OK: seven 8/16/32-bit, custom/fixed/disabled cases, prior GPU copy and guards");return 0;
+    puts("PRIMITIVE RESTART GPU OK: eight 8/16/32-bit, custom/fixed/disabled cases, prior GPU copy and guards");return 0;
 }}

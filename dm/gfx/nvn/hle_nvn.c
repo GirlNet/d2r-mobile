@@ -999,6 +999,8 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
     uint64_t t0 = now_ns(), c0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID), i0, y0, s0 = thr_sys_ns(); thr_counts(&i0, &y0);
     ((queue_t *)q)->submits++;
     mtl_sub_begin();
+    const dev_t_ *device=(const dev_t_ *)((queue_t *)q)->dev;
+    mtl_guest_coordinates(device?device->origin:0,device?device->depth_mode:0);
     mtl_sub_index((const uint64_t *)h, n);
     for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
     mtl_exec_rest(NULL, 0);
