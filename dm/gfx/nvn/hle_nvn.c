@@ -526,14 +526,24 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
 
 // ---------- 同步 / 事件 ----------
 // ---------- Sync / events ----------
+// All guest queues share one Metal replay context. Serialize the entire public
+// call, including internal report/conditional/fence commit-and-restart points.
+static pthread_mutex_t g_queue_api_mu=PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local int g_queue_api_owned;
+static void queue_api_enter(void) {
+    if(g_queue_api_owned)die("Recursive NVN queue API call on the replay thread");
+    pthread_mutex_lock(&g_queue_api_mu);g_queue_api_owned=1;
+}
+static void queue_api_leave(void) { g_queue_api_owned=0;pthread_mutex_unlock(&g_queue_api_mu); }
 NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { *(sync_t *)s = (sync_t){MAGIC('S', 'Y', 'N', 'C'), 0, 0, d}; return 1; }
 NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 // 围栏 = 「此前提交到队列的命令全部完成」：记下最近一次提交的栅栏值
 // Fence = "all commands previously submitted to the queue have completed": record the fence value of the most recent submit
 NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) {
-    (void)q;(void)c;(void)f;sync_t *o=(sync_t *)s;
+    (void)q;(void)c;(void)f;sync_t *o=(sync_t *)s;queue_api_enter();
     __atomic_store_n(&o->fence,mtl_last_fence(),__ATOMIC_RELEASE);
     __atomic_store_n(&o->fenced,1,__ATOMIC_RELEASE);
+    queue_api_leave();
 }
 // 没围栏过的同步对象按真机行为等到超时；已围栏的只在 GPU 真正完成到该栅栏值后放行
 // A sync object that was never fenced waits until timeout, as on a real device; a fenced one is released only after the GPU has actually completed up to that fence value
@@ -550,10 +560,12 @@ NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) {
     if (!queue || queue->magic != MAGIC('Q','U','E','U') || !sync ||
         sync->magic != MAGIC('S','Y','N','C') || !__atomic_load_n(&sync->fenced,__ATOMIC_ACQUIRE) || queue->dev != sync->dev) return 0;
     uint64_t fence=__atomic_load_n(&sync->fence,__ATOMIC_ACQUIRE);
-    if(fence>mtl_last_fence())return 0;
+    queue_api_enter();
+    if(fence>mtl_last_fence()){queue_api_leave();return 0;}
     // A fence captured before any submission is already satisfied. Otherwise
     // enqueue a GPU dependency; this API must not block the submitting CPU.
     if (fence) mtl_queue_wait(fence);
+    queue_api_leave();
     return 1;
 }
 NVN(nvnEventBuilderSetDefaults, void, NVNeventBuilder *b) { memset(b, 0, sizeof(ev_builder_t)); }
@@ -589,16 +601,16 @@ NVN(nvnQueueBuilderGetQueueMemorySize, size_t, const NVNqueueBuilder *b) {
 }
 NVN(nvnQueueBuilderSetQueueMemory, void, NVNqueueBuilder *b, void *m, size_t n) { QB(b)->mem = m; QB(b)->mem_sz = (uint32_t)n; }
 NVN(nvnQueueInitialize, NVNboolean, NVNqueue *q, const NVNqueueBuilder *b) {
-    *(queue_t *)q = (queue_t){MAGIC('Q', 'U', 'E', 'U'), ((const queue_builder_t *)b)->dev, 0};
+    *(queue_t *)q = (queue_t){.magic=MAGIC('Q', 'U', 'E', 'U'), .dev=((const queue_builder_t *)b)->dev};
     dm_boot_probe_note("nvn_queue_initialized","CPU queue object initialized; no submission");
     OLOG("QueueInitialize %p", (void *)q); return 1;
 }
-NVN(nvnQueueFinalize, void, NVNqueue *q) { ((queue_t *)q)->magic = 0; }
+NVN(nvnQueueFinalize, void, NVNqueue *q) { queue_api_enter();queue_t *o=(queue_t *)q;mtl_queue_release(o->replay_state);o->replay_state=NULL;o->magic=0;queue_api_leave(); }
 NVN(nvnQueueGetError, NVNqueueGetErrorResult, NVNqueue *q, NVNqueueErrorInfo *info) {
     (void)q; if (info) memset(info, 0, sizeof *info); return NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR;
 }
 NVN(nvnQueueFlush, void, NVNqueue *q) { (void)q; }
-NVN(nvnQueueFinish, void, NVNqueue *q) { (void)q; mtl_finish(); }
+NVN(nvnQueueFinish, void, NVNqueue *q) { (void)q;queue_api_enter();mtl_finish();queue_api_leave(); }
 
 // ---------- 命令缓冲：录进游戏的命令内存，提交时执行 CPU 可见副作用 ----------
 // ---------- Command buffer: record into the game's command memory, perform CPU-visible side effects at submit ----------
@@ -1029,8 +1041,10 @@ void dm_gfx_suspend(int on) {
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
     dm_boot_probe_block("guest_gpu_submission","nvnQueueSubmitCommands");
     gfx_enter();
+    queue_api_enter();
     uint64_t t0 = now_ns(), c0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID), i0, y0, s0 = thr_sys_ns(); thr_counts(&i0, &y0);
     ((queue_t *)q)->submits++;
+    mtl_queue_restore(&((queue_t *)q)->replay_state);
     mtl_sub_begin();
     const dev_t_ *device=(const dev_t_ *)((queue_t *)q)->dev;
     mtl_guest_coordinates(device?device->origin:0,device?device->depth_mode:0);
@@ -1038,13 +1052,14 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
     for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
     mtl_exec_rest(NULL, 0);
     mtl_sub_commit();
+    mtl_queue_capture(((queue_t *)q)->replay_state);
     uint64_t dw = now_ns() - t0;
     atomic_fetch_add(&g_nvn_ns, dw); atomic_fetch_add(&g_sub_wall_ns, dw);
     uint64_t i1, y1; thr_counts(&i1, &y1); uint64_t dc = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - c0, di = i1 - i0;
     atomic_fetch_add(&g_cum_sub_cyc, y1 - y0); atomic_fetch_add(&g_cum_sub_sys_ns, thr_sys_ns() - s0); atomic_fetch_add(&g_cum_sub_wall_ns, dw);
     atomic_fetch_add(&g_sub_cpu_ns, dc); atomic_fetch_add(&g_cum_sub_cpu_ns, dc);
     atomic_fetch_add(&g_sub_instr, di); atomic_fetch_add(&g_cum_sub_instr, di);
-    gfx_leave();
+    queue_api_leave();gfx_leave();
 }
 
 // 只影响 GPU 状态 / 只在 GPU 上执行的命令：空设备只计数（跳板已计）
@@ -1367,6 +1382,7 @@ static uint64_t present_period(const win_t *o) {
 }
 int (*g_nvn_loadscreen_up)(void);   // 宿主登记：读取画面此刻是否开着（diag.c 订阅界面消息时填；图形单测里为空 = 不设闸） | host registration: whether the loading screen is up right now (filled in when diag.c subscribes to UI messages; null in graphics unit tests = no gate)
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
+    gfx_enter();queue_api_enter();
     (void)q; win_t *o = (win_t *)w; o->presents++;
     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
     // 第一次进局的读取画面：后台管线预热没跑完就在这里等它（读取画面多停一会儿），进局后不在提交线程现编管线。预热早已完成时一次判断即过
@@ -1374,10 +1390,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     { static int gate;
       if (!gate && g_nvn_loadscreen_up && g_nvn_loadscreen_up()) { gate = 1; int ms = mtl_warm_wait(15000); if (ms) LOG("[nvn] 进局读取画面等管线预热 %d ms", ms); } }
     present_cfg(o);
-    gfx_enter();
     uint64_t t0 = now_ns();
     if (idx >= 0 && idx < o->ntex && idx < 4) o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // 只入队，立即返回 | enqueue only, return immediately
-    gfx_leave();
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);
     if (nvn_real[0] || nvn_real[1]) {   // DM_NVN_PROF：录制期 = 除提交外全部已实现函数耗时；提交期 = QueueSubmitCommands | DM_NVN_PROF: record phase = time of all implemented functions except submit; submit phase = QueueSubmitCommands
@@ -1481,6 +1495,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6); }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
     if (f >= 8 && slow_on()) slow_emit(f - 8);
     prev_out = now_ns();
+    queue_api_leave();gfx_leave();
 }
 
 #include "nvn_startup_batch.inc"

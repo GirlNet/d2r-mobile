@@ -552,10 +552,10 @@ static void up_flush(void);
 // 不符当场打栈中止——让「别的线程碰批」在 Mac 上也确定性暴露，不靠时序（iOS 真机卡主菜单：出图线程经 q_cb 冲刷了提交线程的批）。
 // The upload batch belongs only to the submit thread (the thread that called mtl_sub_begin): the batch's encoder cannot be used across threads. Every entry point asserts current thread == submit thread,
 // and on mismatch prints the stack and aborts on the spot - so that 'another thread touched the batch' is exposed deterministically on Mac too, not by timing (real iOS device stuck at the main menu: the present thread flushed the submit thread's batch via q_cb).
-static pthread_t g_sub_thread; static _Atomic int g_sub_thread_set;
-static int on_sub_thread(void) { return atomic_load(&g_sub_thread_set) && pthread_equal(pthread_self(), g_sub_thread); }
+static _Atomic uintptr_t g_sub_owner;
+static int on_sub_thread(void) { return atomic_load(&g_sub_owner)==(uintptr_t)pthread_self(); }
 static void up_owner_check(const char *where) {
-    if (!atomic_load(&g_sub_thread_set) || on_sub_thread()) return;
+    if (!atomic_load(&g_sub_owner) || on_sub_thread()) return;
     char name[64] = ""; pthread_getname_np(pthread_self(), name, sizeof name);
     MLOG("【红】上传批只属于提交线程：%s 在线程「%s」上被调用", where, name);
     void *bt[32]; int n = backtrace(bt, 32); backtrace_symbols_fd(bt, n, 2);
@@ -583,13 +583,14 @@ static int tbdr_on(void);
 static uint64_t g_sub_serial;   // 第几次提交（并行预编「每次提交只预测一次」用） | Submission index (used by the parallel precompile's 'predict only once per submission')
 void mtl_sub_begin(void) {
     dm_boot_probe_block("guest_gpu_submission","mtl_sub_begin");
-    mtl_init(); g_sub_serial++;
+    mtl_init();
+    if (g_cb) MDIE("Nested Metal submit: owner=%#llx caller=%#llx",(unsigned long long)atomic_load(&g_sub_owner),(unsigned long long)(uintptr_t)pthread_self());
+    g_sub_serial++;
     if (tbdr_on() == 0 && g_ruler_pending) { g_ruler_truth = 0; g_ruler_pending = 0; MLOG("DM_NVN_RULER：切到被测模式"); }
     defer_drain();
     defer_reset();
     warm_claim();
-    if (g_cb) MDIE("提交重入");
-    g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1);
+    atomic_store(&g_sub_owner,(uintptr_t)pthread_self());
     atomic_store(&g_last_commit_error, 0);
     g_sub_pool = objc_autoreleasePoolPush();
 #if DM_NVN_M3
@@ -870,6 +871,7 @@ static void rp_flush(void);
 static const char *cctx_snap(void);   // 这次提交里有什么（出错时打进红行；定义在 mtl_exec 之前） | What is in this submission (printed into the failure line on error; defined before mtl_exec)
 uint64_t mtl_sub_commit(void) {
     dm_boot_probe_block("guest_gpu_submission","mtl_sub_commit");
+    if(!g_cb || !on_sub_thread())MDIE("Metal commit without ownership of the active submit");
     defer_fallback();   // 推迟合并通道：提交结束仍有未回放的 P 绘制（正常路径不会到这里） | Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
@@ -919,6 +921,7 @@ uint64_t mtl_sub_commit(void) {
     g_cb = nil;
     g_commit_blocks = nil;
     objc_autoreleasePoolPop(g_sub_pool); g_sub_pool = NULL;
+    atomic_store(&g_sub_owner,0);
     return fence;
 }
 
@@ -6595,7 +6598,8 @@ void mtl_wait_state_dump(void) {
     MLOG("等待点状态：主栅栏 已提交 %llu / 已完成 %llu；主分配器栅栏 [%llu %llu %llu]；上传 未完成 %d、分配器占用 [%d %d %d]、序号 %u、有未冲刷批次 %d；出图队列 入 %llu / 完成 %llu；主命令缓冲在编 %d、提交线程已设 %d",
          (unsigned long long)g_fence, (unsigned long long)g_done, (unsigned long long)g_alloc_fence[0], (unsigned long long)g_alloc_fence[1], (unsigned long long)g_alloc_fence[2],
          atomic_load(&g_up_pending), atomic_load(&g_up_alloc_busy[0]), atomic_load(&g_up_alloc_busy[1]), atomic_load(&g_up_alloc_busy[2]), g_up_seq, g_up_cb != nil,
-         (unsigned long long)g_pq_in, (unsigned long long)g_pq_done, g_cb != nil, atomic_load(&g_sub_thread_set));
+         (unsigned long long)g_pq_in, (unsigned long long)g_pq_done, g_cb != nil, atomic_load(&g_sub_owner)!=0);
 }
 void mtl_alloc_stats(uint64_t *waits, uint64_t *grown, int *n) { *waits = g_alloc_waits; *grown = g_alloc_grown; *n = g_alloc_n; }   // 主提交分配器池：等过几次、扩过几次、现有几个 | Main submit allocator pool: how many times it waited, how many times it grew, how many exist now
+#include "nvn_queue_state.inc"
 #pragma clang attribute pop

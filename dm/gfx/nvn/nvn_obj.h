@@ -35,7 +35,7 @@ FITS(dev_t_, NVNdevice);
 typedef struct { NVNdevice *dev; uint32_t flags, has_sizes, cmd_sz, comp_sz, ctl_sz, flush; void *mem; uint32_t mem_sz; } queue_builder_t;
 FITS(queue_builder_t, NVNqueueBuilder);
 _Static_assert(sizeof(queue_builder_t)<=60,"queue builder must fit original SDK default-write span");
-typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; } queue_t;                 FITS(queue_t, NVNqueue);
+typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; void *replay_state; } queue_t; FITS(queue_t, NVNqueue);
 
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
 typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; } pool_t;                FITS(pool_t, NVNmemoryPool);

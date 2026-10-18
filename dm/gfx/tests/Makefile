@@ -66,6 +66,9 @@ t_viewport_batch_gpu: t_viewport_batch_gpu.m nvn_gpu_test_device.h ../../host/cr
 t_command_sequence_gpu: t_command_sequence_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_command_sequence_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 
+t_queue_concurrency_gpu: t_queue_concurrency_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_queue_concurrency_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
 %_m4: %.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=0 -mmacosx-version-min=26.0 -fobjc-arc -o $@ $< ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 

@@ -1,5 +1,22 @@
 # P5R port preparation
 
+The source-matched startup-batch phone now reaches submission and aborts with
+`submit reentry`. Both native crash reports show two guest threads concurrently
+inside `QueueSubmitCommands`, one encoding while another begins a submission.
+The backend has one shared replay context. Public submits now serialize across
+their entire encode/commit sequence, including internal fence/report/conditional
+splits. Queue fences, waits, finish, finalization and presentation use the same
+ordering scope. True same-thread recursive queue calls fail promptly.
+
+P5R queues retain independent render/binding/copy state, debug domains and
+visibility-counter totals across queue switches. Counter samples are folded
+before visibility-ring reuse; ordinary submissions remain asynchronous. Active
+backend ownership is atomic and cleared after commit. A deterministic four-thread
+GPU regression overlaps public calls with active encoding, runs 64 submissions
+across two queues, checks internal report/fence/wait splits, then verifies
+queue-local pixels, cumulative queries, inherited state and byte guards. Device
+execution of this fix and actual gameplay remain unverified.
+
 The builder/query ABI audit corrects four queue-size getters to return a
 one-byte validity flag and write a four-byte output. Defaults clear both the
 value and validity; explicitly setting zero remains distinguishable. Queue and

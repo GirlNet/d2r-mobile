@@ -1,0 +1,116 @@
+// Reproduce simultaneous public submissions while another thread owns the
+// backend, then check queue-local state with independent GPU pixels/counters.
+#include "../nvn/nvn_mtl.m"
+#include "../nvn/hle_nvn.c"
+#include "nvn_gpu_test_device.h"
+#include "../../host/guest_bootstrap.h"
+uint64_t g_t0_ns;
+void *front_metal_layer(void){return NULL;}
+module_t *module_of(const void *p){(void)p;return NULL;}
+module_t g_mod[MAX_MOD];int g_nmod;
+void svc_thread_dump(void){}
+uint64_t now_ns(void){return bp_now();}
+static PFNNVNDEVICEGETPROCADDRESSPROC gpa;
+static void *proc(const char *name){void *p=(void *)gpa(NULL,name);if(!p)abort();return p;}
+#define P(name) ((NVNT_##name)proc(#name))
+#define CHECK(x) do{if(!(x)){fprintf(stderr,"queue concurrency check failed at %d: %s\n",__LINE__,#x);return 1;}}while(0)
+enum { WORKERS=4, ROUNDS=16 };
+typedef struct { NVNqueue *queue,*other;NVNcommandHandle handle;NVNsync done;_Atomic int returned; } worker;
+static void *submit_worker(void *arg){@autoreleasepool{
+    worker *w=arg;
+    for(int i=0;i<ROUNDS;i++) {
+        P(nvnQueueSubmitCommands)(w->queue,1,&w->handle);
+        P(nvnQueueFenceSync)(w->queue,&w->done,NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE,0);
+        if(!P(nvnQueueWaitSync)(w->other,&w->done))abort();
+    }
+    P(nvnQueueFinish)(w->queue);atomic_store(&w->returned,1);return NULL;
+}}
+static int concurrent_submit(void) {
+    size_t size=1024*1024;uint8_t *memory=NULL;CHECK(!posix_memalign((void **)&memory,getpagesize(),size));memset(memory,0xa7,size);
+    pool_t pool={.magic=MAGIC('P','O','O','L'),.flags=0x22,.mem=memory,.size=size};mtl_pool_add(memory,size);
+    NVNqueueBuilder qb={0};NVNqueue queues[2];P(nvnQueueBuilderSetDefaults)(&qb);
+    for(int i=0;i<2;i++)CHECK(P(nvnQueueInitialize)(&queues[i],&qb));
+    NVNcommandBuffer commands[WORKERS];NVNsync internal[WORKERS];worker workers[WORKERS]={0};pthread_t threads[WORKERS];
+    for(int i=0;i<WORKERS;i++) {
+        uint8_t *src=memory+i*4096,*dst=src+1024,*report=src+2048;
+        for(int j=0;j<256;j++)src[j]=(uint8_t)(i*31+j*17+9);
+        CHECK(P(nvnCommandBufferInitialize)(&commands[i],NULL));P(nvnCommandBufferAddCommandMemory)(&commands[i],(const NVNmemoryPool *)&pool,65536+i*65536,65536);
+        CHECK(P(nvnSyncInitialize)(&internal[i],NULL));CHECK(P(nvnSyncInitialize)(&workers[i].done,NULL));
+        workers[i].queue=&queues[i%2];workers[i].other=&queues[(i+1)%2];
+        P(nvnCommandBufferBeginRecording)(&commands[i]);
+        P(nvnCommandBufferCopyBufferToBuffer)(&commands[i],(uintptr_t)src,(uintptr_t)dst,256,0);
+        P(nvnCommandBufferReportValue)(&commands[i],0xcafe0000u+i,(uintptr_t)report);
+        P(nvnCommandBufferFenceSync)(&commands[i],&internal[i],NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE,0);
+        P(nvnCommandBufferWaitSync)(&commands[i],&internal[i]);
+        workers[i].handle=P(nvnCommandBufferEndRecording)(&commands[i]);
+    }
+    // Deterministic overlap: all four public calls reach gfx_enter while this
+    // thread holds an active Metal encoding scope. They must wait, not abort.
+    queue_api_enter();mtl_sub_begin();mtl_sub_copy((uintptr_t)memory,(uintptr_t)(memory+32768),256);
+    for(int i=0;i<WORKERS;i++)CHECK(!pthread_create(&threads[i],NULL,submit_worker,&workers[i]));
+    uint64_t deadline=bp_now()+5000000000ull;int entered=0;
+    do {pthread_mutex_lock(&g_susp_mu);entered=g_inflight_api;pthread_mutex_unlock(&g_susp_mu);if(entered==WORKERS)break;usleep(1000);}while(bp_now()<deadline);
+    CHECK(entered==WORKERS);for(int i=0;i<WORKERS;i++)CHECK(!atomic_load(&workers[i].returned));
+    CHECK(g_cb && on_sub_thread());mtl_sub_commit();CHECK(!atomic_load(&g_sub_owner));queue_api_leave();
+    for(int i=0;i<WORKERS;i++)CHECK(!pthread_join(threads[i],NULL));
+    CHECK(!mtl_last_commit_error() && !atomic_load(&g_sub_owner));CHECK(!memcmp(memory,memory+32768,256));
+    for(int i=0;i<WORKERS;i++) {
+        uint8_t *src=memory+i*4096,*dst=src+1024,*report=src+2048;uint64_t value,time;
+        memcpy(&value,report,8);memcpy(&time,report+8,8);CHECK(value==0xcafe0000u+i && time>0);CHECK(!memcmp(src,dst,256));
+        for(int j=-16;j<272;j++)if(j<0 || j>=256)CHECK(dst[j]==0xa7);
+        for(int j=-16;j<32;j++)if(j<0 || j>=16)CHECK(report[j]==0xa7);
+        CHECK(((sync_t *)&workers[i].done)->fenced && atomic_load(&workers[i].returned));
+        P(nvnCommandBufferFinalize)(&commands[i]);P(nvnSyncFinalize)(&internal[i]);P(nvnSyncFinalize)(&workers[i].done);
+    }
+    for(int i=0;i<2;i++){CHECK(((queue_t *)&queues[i])->submits==2*ROUNDS);P(nvnQueueFinalize)(&queues[i]);CHECK(!((queue_t *)&queues[i])->replay_state);}
+    mtl_pool_del(memory);free(memory);return 0;
+}
+static int queue_state_pixels(void) {
+    NSError *error=nil;NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
+      "vertex float4 v(uint n[[vertex_id]]){float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return float4(p[n],.5,1);}\n"
+      "fragment float4 red(){return float4(1,0,0,1);}\nfragment float4 green(){return float4(0,1,0,1);}";
+    id<MTLLibrary> lib=[g_dev newLibraryWithSource:source options:nil error:&error];CHECK(lib);
+    uint8_t *memory=NULL;CHECK(!posix_memalign((void **)&memory,getpagesize(),262144));memset(memory,0xa7,262144);
+    pool_t pool={.magic=MAGIC('P','O','O','L'),.flags=0x22,.mem=memory,.size=262144};mtl_pool_add(memory,262144);
+    NVNqueueBuilder qb={0};NVNqueue queues[2];NVNcommandBuffer cb[2];prog_t programs[2]={{.serial=1900001},{.serial=1900002}};tex_t textures[2]={0};
+    P(nvnQueueBuilderSetDefaults)(&qb);
+    for(int i=0;i<2;i++) {
+        NvProg *native=[NvProg new];native->sh[0]=[NvShader new];native->sh[0]->fn=[lib newFunctionWithName:@"v"];
+        native->sh[1]=[NvShader new];native->sh[1]->fn=[lib newFunctionWithName:i?@"green":@"red"];native->sh[1]->stage=1;serial_put(programs[i].serial,native);
+        textures[i].serial=1900010+i;textures[i].d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=8,.height=4,.depth=1,.levels=1,.samples=1};
+        CHECK(P(nvnQueueInitialize)(&queues[i],&qb));CHECK(P(nvnCommandBufferInitialize)(&cb[i],NULL));P(nvnCommandBufferAddCommandMemory)(&cb[i],(const NVNmemoryPool *)&pool,65536+i*65536,65536);
+        P(nvnCommandBufferBeginRecording)(&cb[i]);P(nvnCommandBufferPushDebugGroupStatic)(&cb[i],7,i?"queue.green":"queue.red");
+        const NVNtexture *targets[]={(const NVNtexture *)&textures[i]};P(nvnCommandBufferSetRenderTargets)(&cb[i],1,targets,NULL,NULL,NULL);
+        P(nvnCommandBufferClearColor)(&cb[i],0,(float[]){0,0,0,1},15);P(nvnCommandBufferSetViewport)(&cb[i],0,0,8,4);
+        P(nvnCommandBufferSetScissor)(&cb[i],i*4,0,4,4);P(nvnCommandBufferBindProgram)(&cb[i],(const NVNprogram *)&programs[i],3);
+        P(nvnCommandBufferResetCounter)(&cb[i],NVN_COUNTER_TYPE_SAMPLES_PASSED);
+        P(nvnCommandBufferDrawArrays)(&cb[i],NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);
+        P(nvnCommandBufferReportCounter)(&cb[i],NVN_COUNTER_TYPE_SAMPLES_PASSED,(uintptr_t)(memory+i*64));
+        NVNcommandHandle h=P(nvnCommandBufferEndRecording)(&cb[i]);P(nvnQueueSubmitCommands)(&queues[i],1,&h);
+    }
+    for(int i=0;i<2;i++) {
+        // No program, RT, viewport or scissor rebinding: all four must survive
+        // another queue's intervening submission. Counter totals stay local.
+        P(nvnCommandBufferBeginRecording)(&cb[i]);P(nvnCommandBufferDrawArrays)(&cb[i],NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);
+        P(nvnCommandBufferReportCounter)(&cb[i],NVN_COUNTER_TYPE_SAMPLES_PASSED,(uintptr_t)(memory+i*64+16));
+        P(nvnCommandBufferPopDebugGroupId)(&cb[i],7);NVNcommandHandle h=P(nvnCommandBufferEndRecording)(&cb[i]);P(nvnQueueSubmitCommands)(&queues[i],1,&h);P(nvnQueueFinish)(&queues[i]);
+        queue_api_enter();mtl_queue_restore(&((queue_t *)&queues[i])->replay_state);CHECK(!g_debug_groups.count);queue_api_leave();
+    }
+    for(int i=0;i<2;i++) {
+        CHECK(*(uint64_t *)(memory+i*64)==16 && *(uint64_t *)(memory+i*64+16)==32);
+        id<MTLBuffer> output=[g_dev newBufferWithLength:1024 options:MTLResourceStorageModeShared];memset(output.contents,0xa7,1024);
+        id<MTLCommandBuffer> command=[g_q commandBuffer];id<MTLBlitCommandEncoder> b=[command blitCommandEncoder];
+        [b copyFromTexture:tex_mtl(&textures[i]) sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(8,4,1) toBuffer:output destinationOffset:0 destinationBytesPerRow:256 destinationBytesPerImage:1024];
+        [b endEncoding];[command commit];[command waitUntilCompleted];CHECK(command.status==MTLCommandBufferStatusCompleted);
+        for(int y=0;y<4;y++)for(int x=0;x<256;x++){int lit=x<32 && ((x/4>=4)==i);uint8_t expected=x>=32?0xa7:x%4==3 || (lit && x%4==i)?255:0;CHECK(((uint8_t *)output.contents)[y*256+x]==expected);}
+        P(nvnQueueFinalize)(&queues[i]);P(nvnCommandBufferFinalize)(&cb[i]);mtl_tex_release(&textures[i]);mtl_prog_release(&programs[i]);
+    }
+    mtl_pool_del(memory);free(memory);return 0;
+}
+int main(int argc,char **argv){@autoreleasepool{
+    if(argc==2 && !strcmp(argv[1],"--recursive-api")){queue_api_enter();queue_api_enter();return 1;}
+    int available=nvn_gpu_test_device();if(available)return available;
+    CHECK(dm_guest_profile_select("p5r"));mtl_init();gpa=h_nvnBootstrapLoader("nvnDeviceGetProcAddress");
+    CHECK(!concurrent_submit());CHECK(!queue_state_pixels());
+    puts("QUEUE CONCURRENCY GPU OK: deterministic four-thread overlap, 64 submits on two queues, internal report/fence/wait splits, independent pixels/counters/state and byte guards");return 0;
+}}
