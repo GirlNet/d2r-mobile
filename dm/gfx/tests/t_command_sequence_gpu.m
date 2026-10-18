@@ -66,6 +66,11 @@ int main(int argc,char **argv){@autoreleasepool{
         const NVNtexture *targets[]={(const NVNtexture *)&colour};P(nvnCommandBufferSetRenderTargets)(&cb,1,targets,NULL,NULL,NULL);
         P(nvnCommandBufferClearColor)(&cb,0,(float[]){0,0,0,1},15);P(nvnCommandBufferSetViewports)(&cb,0,1,(float[]){0,0,8,4});
         P(nvnCommandBufferSetScissors)(&cb,0,1,(int[]){0,0,8,4});P(nvnCommandBufferSetDepthRanges)(&cb,0,1,(float[]){0,1});
+        NVNcolorState colour_state;P(nvnColorStateSetDefaults)(&colour_state);
+        P(nvnColorStateSetLogicOp)(&colour_state,NVN_LOGIC_OP_XOR);P(nvnColorStateSetAlphaTest)(&colour_state,NVN_ALPHA_FUNC_NEVER);
+        P(nvnCommandBufferBindColorState)(&cb,&colour_state);
+        P(nvnColorStateSetLogicOp)(&colour_state,NVN_LOGIC_OP_COPY);P(nvnColorStateSetAlphaTest)(&colour_state,NVN_ALPHA_FUNC_ALWAYS);
+        P(nvnCommandBufferBindColorState)(&cb,&colour_state);
         P(nvnCommandBufferSetPointSize)(&cb,2);P(nvnCommandBufferSetLineWidth)(&cb,3);P(nvnCommandBufferSetAlphaRef)(&cb,.375f);
         P(nvnCommandBufferSetConservativeRasterDilate)(&cb,.25f);P(nvnCommandBufferSetSubpixelPrecisionBias)(&cb,1,1);
         P(nvnCommandBufferSetSubpixelPrecisionBias)(&cb,0,0);
@@ -95,6 +100,7 @@ int main(int argc,char **argv){@autoreleasepool{
         CHECK(([(g_debug_groups[@7]) isEqualToArray:@[@"static.scope",@"dynamic.scope"]]));
         CHECK([(g_debug_groups[@0]) isEqualToArray:@[@"legacy.scope"]]);CHECK([g_debug_marker containsString:@"copied.marker"]);
         CHECK(S.dynamic.alpha_ref==.375f && S.dynamic.conservative_dilate==.25f && S.dynamic.tile_size[0]==32);
+        CHECK(S.color.logic_op==NVN_LOGIC_OP_COPY && S.color.alpha_func==NVN_ALPHA_FUNC_ALWAYS);
         for(unsigned i=0;i<16;i++) {
             uint32_t expected=0;
             if(!cases[c].disabled && cases[c].count && i>=cases[c].base && i<cases[c].base+cases[c].instances)

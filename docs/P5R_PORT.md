@@ -11,6 +11,13 @@ unreadable page to catch overreads. Three unset texture-view getters now write
 default words before returning false. These CPU ABI checks do not establish
 game rendering or playability.
 
+Two color-state setters now preserve/query logic and alpha functions; 128
+independent SDK cases cover valid combinations and neighboring fields. The GPU
+sequence binds a temporary nondefault state then restores COPY/ALWAYS before
+drawing. Active nondefault candidate rendering remains explicitly unsupported.
+Window acquisition now publishes its fence before its ready flag, using the
+same atomic ordering as command and queue fences.
+
 Startup batch: 20 diagnostic-only APIs now record/replay instanced array draws,
 command fences/waits, 16-byte value/timestamp reports, domain debug breadcrumbs
 and common dynamic state. Nondefault point/line rasterization, viewport swizzles

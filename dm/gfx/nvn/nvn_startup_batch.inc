@@ -86,6 +86,8 @@ NVN(nvnVertexStreamStateGetStride, ptrdiff_t, const NVNvertexStreamState *p) { r
 NVN(nvnVertexStreamStateGetDivisor, int, const NVNvertexStreamState *p) { return (int)(((const vs_st *)p)->divisor); }
 NVN(nvnColorStateGetLogicOp, NVNlogicOp, const NVNcolorState *p) { return (NVNlogicOp)(((const color_st *)p)->logic_op); }
 NVN(nvnColorStateGetAlphaTest, NVNalphaFunc, const NVNcolorState *p) { return (NVNalphaFunc)(((const color_st *)p)->alpha_func); }
+NVN(nvnColorStateSetLogicOp, void, NVNcolorState *p, NVNlogicOp op) { ((color_st *)p)->logic_op=op; }
+NVN(nvnColorStateSetAlphaTest, void, NVNcolorState *p, NVNalphaFunc fn) { ((color_st *)p)->alpha_func=fn; }
 NVN(nvnMultisampleStateGetMultisampleEnable, NVNboolean, const NVNmultisampleState *p) { return (NVNboolean)(((const ms_st *)p)->enable); }
 NVN(nvnMultisampleStateGetSamples, int, const NVNmultisampleState *p) { return (int)(((const ms_st *)p)->samples); }
 NVN(nvnMultisampleStateGetAlphaToCoverageEnable, NVNboolean, const NVNmultisampleState *p) { return (NVNboolean)(((const ms_st *)p)->a2c); }
