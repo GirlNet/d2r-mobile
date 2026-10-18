@@ -10,6 +10,10 @@ uint64_t now_ns(void) { return bp_now(); }
 static id<MTLTexture> registered(int index) {
     pthread_mutex_lock(&g_rmu);id<MTLTexture> t=tex_by_id(index);pthread_mutex_unlock(&g_rmu);return t;
 }
+static int contract(id<MTLTexture> texture,unsigned type,unsigned numeric) {
+    nvn_rbind binding={.kind=NVN_RB_TEX,.dtt=type,.dpf=numeric};
+    return nvn_texture_binding_error(&binding,texture)==NULL;
+}
 static int read_pixel(id<MTLCommandQueue> q,id<MTLComputePipelineState> pipeline,id<MTLTexture> texture,float out[4]) {
     id<MTLBuffer> output=[g_dev newBufferWithLength:32 options:MTLResourceStorageModeShared];
     if (!output) return 0;
@@ -75,7 +79,12 @@ int main(void) { @autoreleasepool {
     id<MTLCommandBuffer> command=[q commandBuffer];[[command renderCommandEncoderWithDescriptor:pass] endEncoding];[command commit];[command waitUntilCompleted];CHECK(command.status==MTLCommandBufferStatusCompleted);
     tex_t depth={.serial=800002};depth.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_DEPTH32F_STENCIL8,.width=1,.height=1,.depth=1,.levels=1};depth.sampling.depth_mode=1;serial_put(depth.serial,ds);
     view_t aspect={0};mtl_reg_tex(10,&depth,&aspect);CHECK(registered(10).pixelFormat==MTLPixelFormatX32_Stencil8);CHECK(read_pixel(q,sp,registered(10),out));CHECK(out[0]==93);
+    CHECK(contract(registered(10),MTLTextureType2D,NVN_DPF_UINT));
+    CHECK(!contract(registered(10),MTLTextureType2D,NVN_DPF_FLOAT));
+    CHECK(!contract(registered(10),MTLTextureType2D,NVN_DPF_DEPTH));
     aspect.set_depth_mode=1;aspect.depth_mode=0;mtl_reg_tex(10,&depth,&aspect);CHECK(read_pixel(q,dp,registered(10),out));CHECK(out[0]==.375f);
+    CHECK(contract(registered(10),MTLTextureType2D,NVN_DPF_DEPTH));
+    CHECK(!contract(registered(10),MTLTextureTypeCube,NVN_DPF_DEPTH));
     aspect.depth_mode=1;depth.sampling.depth_mode=0;mtl_reg_tex(10,&depth,&aspect);CHECK(read_pixel(q,sp,registered(10),out));CHECK(out[0]==93);
     printf("texture views GPU: %u swizzles, builder inheritance, view override, mip/layer, snapshots, cache replacement, depth/stencil and output guards passed\n",cases);
     return 0;

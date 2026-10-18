@@ -192,6 +192,35 @@ jobs:
             exit 0
           fi
           exit "$result"
+      - name: Verify checked resource bindings through public dispatch
+        run: |
+          set -euo pipefail
+          xcrun clang -Wall -Wextra -Werror dm/gfx/tests/t_resource_contract.c -o "$RUNNER_TEMP/resource-contract"
+          "$RUNNER_TEMP/resource-contract"
+          make -C dm/gfx/tests t_resource_binding_gpu t_resource_binding_gpu_m4
+          python3 - <<'PY'
+          import subprocess
+          for name in ('t_resource_binding_gpu', 't_resource_binding_gpu_m4'):
+              binary = 'dm/gfx/tests/' + name
+              good = subprocess.run([binary], capture_output=True, text=True)
+              print(good.stdout, good.stderr)
+              if good.returncode in (77, 78):
+                  print('::warning::Resource binding GPU execution unavailable for ' + name)
+                  continue
+              if good.returncode:
+                  raise SystemExit('Valid resource dispatch failed: ' + name)
+              for argument, reason in (
+                  ('--bad-format', 'texture numeric type mismatch'),
+                  ('--bad-dimension', 'texture dimension mismatch'),
+                  ('--missing-texture', 'missing texture descriptor'),
+                  ('--missing-sampler', 'missing sampler descriptor'),
+              ):
+                  bad = subprocess.run([binary, argument], capture_output=True, text=True)
+                  if bad.returncode in (0, 77, 78) or 'P5R resource binding: ' + reason not in bad.stdout + bad.stderr:
+                      print(bad.stdout, bad.stderr)
+                      raise SystemExit('Expected production binding rejection: ' + name + ' ' + argument)
+              print(name + ': four invalid bindings rejected before dispatch')
+          PY
       - name: Check sampler descriptor mapping and available GPU reduction
         run: |
           set -euo pipefail

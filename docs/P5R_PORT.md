@@ -1,5 +1,14 @@
 # P5R port preparation
 
+P5R argument encoding now checks the resolved Metal sampling view against each
+shader's texture dimension and numeric class before dispatch. Nonzero missing
+texture/sampler descriptors fail with the shader, stage and slot; incompatible
+image/buffer views no longer silently use a dummy resource. Zero handles retain
+the existing unbound-resource path. Checks use the effective format/aspect of
+the descriptor view, including signed reinterpretation and stencil views.
+This supplies runtime resource checks; it does not verify the translation
+defaults, package runtime shaders or enable normal game launch.
+
 中文: [P5R_PORT.zh-CN.md](P5R_PORT.zh-CN.md)
 
 Status: **experimental runtime adaptation in progress; P5R does not yet run on iOS through this project.** The user-specified target is iPhone 18 Pro on iOS 27, without device verification. Module preparation is complete and separation of D2R startup, input and save logic has begun; graphics, video and real game startup remain unfinished; touch controls are implemented but unverified on device.
