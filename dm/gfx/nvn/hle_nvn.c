@@ -841,10 +841,12 @@ NVN(nvnCommandBufferSetSamplerPool, void, NVNcommandBuffer *c, const NVNsamplerP
 NVN(nvnCommandBufferCopyBufferToTexture, void, NVNcommandBuffer *c, NVNbufferAddress src, const NVNtexture *t, const NVNtextureView *v,
     const NVNcopyRegion *r, int flags) {
     p_copy_b2t *o = REC(c, OP_COPY_B2T, p_copy_b2t); o->src = src; o->tex = (const tex_t *)t; copy_view(&o->view, &o->has_view, v); o->r = *r; o->flags = flags;
+    o->caller = (uint64_t)__builtin_return_address(0);
 }
 NVN(nvnCommandBufferCopyTextureToBuffer, void, NVNcommandBuffer *c, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r,
     NVNbufferAddress dst, int flags) {
     p_copy_b2t *o = REC(c, OP_COPY_T2B, p_copy_b2t); o->src = dst; o->tex = (const tex_t *)t; copy_view(&o->view, &o->has_view, v); o->r = *r; o->flags = flags;
+    o->caller = (uint64_t)__builtin_return_address(0);
 }
 // 用给定值清贴图区域（浮点 / 无符号整数两版；mask = 通道写掩码）
 // Clear a texture region with the given value (float / unsigned integer versions; mask = channel write mask)

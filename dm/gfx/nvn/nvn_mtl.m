@@ -5155,6 +5155,24 @@ static void dispatch(const p_dispatch *dp) {
 }
 // GPU：贴图 → 缓冲（行距取 SetCopyRowStride，0 = 紧排）
 // GPU: texture -> buffer (row stride taken from SetCopyRowStride, 0 = tightly packed)
+// Keep the rejected operands and the recording guest call site: a bare abort
+// loses this context in an optimized, inlined mtl_exec on device.
+__attribute__((cold, noinline, noreturn))
+static void copy_layout_failure(const p_copy_b2t *c, const char *direction, int bw, int bh, int bpb) {
+    module_t *m = module_of((void *)c->caller);
+    const nvn_texdesc *d = &c->tex->d;
+    MDIE("invalid %s layout: region=%d,%d,%d+%dx%dx%d block=%dx%d/%d "
+         "row=%lld image=%lld texture=%ux%ux%u levels=%u format=%#x target=%d "
+         "view=%u level=%d layer=%d view_format=%d buffer=%#llx flags=%#x caller=%s+%#llx",
+         direction, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth,
+         bw, bh, bpb, (long long)S.copy_stride, (long long)S.copy_image_stride,
+         d->width, d->height, d->depth, d->levels, d->format, d->target,
+         c->has_view, c->has_view && c->view.set_levels ? c->view.base_level : 0,
+         c->has_view && c->view.set_layers ? c->view.min_layer : 0,
+         c->has_view && c->view.set_format ? c->view.format : -1,
+         (unsigned long long)c->src, c->flags, m ? m->name : "host",
+         (unsigned long long)(m ? c->caller - (uint64_t)m->base : c->caller));
+}
 static void copy_t2b(const p_copy_b2t *c) {
     if (c->tex) xv_check(c->tex->serial, c->has_view && c->view.set_levels ? c->view.base_level : 0, c->has_view && c->view.set_layers ? c->view.min_layer : 0, "贴图读缓冲");
     id<MTLTexture> t = tex_mtl(c->tex);
@@ -5163,7 +5181,7 @@ static void copy_t2b(const p_copy_b2t *c) {
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     size_t row, img, span;
     if (!nvn_copy_layout(c->r.width, c->r.height, c->r.depth, bw, bh, bpb,
-                         S.copy_stride, S.copy_image_stride, &row, &img, &span)) abort();
+                         S.copy_stride, S.copy_image_stride, &row, &img, &span)) copy_layout_failure(c, "texture-to-buffer", bw, bh, bpb);
     int is3d = c->tex->d.target == 2, nz = c->r.depth ? c->r.depth : 1;
     void *mb; uint64_t mo;
     if (!mtl_addr(c->src, span, &mb, &mo)) { RED_ONCE(31, "贴图→缓冲拷贝的目标不在内存池里"); return; }
@@ -5215,7 +5233,7 @@ static void copy_b2t(const p_copy_b2t *c) {
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     size_t row, img, span;
     if (!nvn_copy_layout(c->r.width, c->r.height, c->r.depth, bw, bh, bpb,
-                         S.copy_stride, S.copy_image_stride, &row, &img, &span)) abort();
+                         S.copy_stride, S.copy_image_stride, &row, &img, &span)) copy_layout_failure(c, "buffer-to-texture", bw, bh, bpb);
     int is3d = c->tex->d.target == 2, nz = c->r.depth ? c->r.depth : 1;
     void *mb; uint64_t mo;
     if (!mtl_addr(c->src, span, &mb, &mo)) { RED_ONCE(23, "缓冲→贴图拷贝的源不在内存池里"); return; }

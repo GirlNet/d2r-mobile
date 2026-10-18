@@ -1,5 +1,14 @@
 # P5R port preparation
 
+2026-10-18 device investigation: normal launch passes SDK/module initialization,
+language queries and swapchain creation and reaches graphics submission. No game
+frame or playable scene has been verified. Matching the native crash UUID to the
+host binary locates the current abort in buffer-to-texture layout validation;
+the final `OpenAudioOut` log line does not establish an audio failure. Failed
+texture copies now report the region, block format, row/image pitches, texture
+and view parameters and guest recording call site. Validation remains enforced;
+this diagnostic change does not establish a layout fix or working gameplay.
+
 P5R argument encoding now checks the resolved Metal sampling view against each
 shader's texture dimension and numeric class before dispatch. Nonzero missing
 texture/sampler descriptors fail with the shader, stage and slot; incompatible
