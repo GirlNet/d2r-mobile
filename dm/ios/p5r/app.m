@@ -173,6 +173,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     setenv("DM_MSL_DIR", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 1);
     chdir(documents.fileSystemRepresentation);
     freopen([documents stringByAppendingPathComponent:@"p5r-runtime.log"].fileSystemRepresentation, "a", stderr);
+    NSData *identityData=[NSData dataWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/p5r-shell.json"]];
+    NSDictionary *identity=identityData?[NSJSONSerialization JSONObjectWithData:identityData options:0 error:nil]:nil;
+    LOG("P5R normal launch build=%s shader_chain=%s mode=%s",[identity[@"source_fingerprint"] UTF8String]?:"unknown",
+        [identity[@"shader_chain"] UTF8String]?:"unknown",guardedCandidate(self.package)?"guarded":"ready");
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 8 << 20);
     pthread_t thread; if (pthread_create(&thread, &attr, runHost, NULL)) { started = 0; self.menu.hidden = NO; self.status.text = text("dmP5RStartFailed"); }
     else pthread_detach(thread);

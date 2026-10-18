@@ -3,6 +3,7 @@
 #include "../hle_net.c"
 #include "../hle_account.c"
 #include "../hle_misc.c"
+#include "../hle_friends.c"
 #include <assert.h>
 #include <stdatomic.h>
 
@@ -15,6 +16,9 @@ static void *errno_worker(void *unused) {
     assert(h_sk_GetErrnoLegacy() == 71);
     assert(h_sk_SocketLegacy(2, 1, 0) == -1);
     assert(h_sk_GetErrnoLegacy() == 50);
+    assert(!strcmp(h_sk_GAIStrError(4),"Network unavailable"));
+    assert(h_sk_GetErrnoLegacy() == 50);
+    assert(h_fr_AddPlayHistoryUid((void *)1,(void *)1,(void *)1,(void *)1)!=0);
     return NULL;
 }
 int main(void) {

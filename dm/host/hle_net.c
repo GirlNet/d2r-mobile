@@ -49,6 +49,9 @@ HLE_FORCE_OPTIONAL("_ZN2nn6socket6SendToEiPKvmNS0_7MsgFlagEPKNS0_8SockAddrEj", "
 HLE_FORCE_OPTIONAL("_ZN2nn6socket11GetAddrInfoEPKcS2_PK8addrinfoPPS3_", "Offline resolver; EAI_FAIL and null result", int, h_sk_GetAddrInfoLegacy, const char *h, const char *s, const void *hint, void **out) { (void)h; (void)s; (void)hint; if (out) *out = NULL; t_skerr = SK_ENETDOWN; return 4; }
 HLE_FORCE_OPTIONAL("_ZN2nn6socket12FreeAddrInfoEP8addrinfo", "Offline resolver has no allocated results", void, h_sk_FreeAddrInfoLegacy, void *p) { (void)p; }
 HLE_FORCE_OPTIONAL("_ZN2nn6socket12GetLastErrnoEv", "Share the host BSD thread-local errno", int, h_sk_GetErrnoLegacy, void) { return t_skerr; }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket11GAIStrErrorENS0_7AiErrnoE", "Host offline resolver error description; do not initialize the resolver service", const char *, h_sk_GAIStrError, int error) {
+    (void)error; return "Network unavailable";
+}
 HLE_FORCE_OPTIONAL("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", "Offline request completes with network unavailable", Result, h_nifm_SubmitWait, void) { return RES_FAIL; }
 HLE_FORCE_OPTIONAL("_ZN2nn4nifm26GetCurrentPrimaryIpAddressEP7in_addr", "Offline address overload; no IP", Result, h_nifm_GetIpLegacy, uint32_t *out) { if (out) *out = 0; return RES_FAIL; }
 #undef SKO
