@@ -50,6 +50,7 @@
 #include "nvn_copy_layout.h"
 #include "nvn_vertex_bits.h"
 #include "nvn_fragment_bits.h"
+#include "nvn_texture_bits.h"
 #include "../tex/nvn_fmt_mtl.h"
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/nvn_deswizzle_gpu.h"
@@ -2145,6 +2146,7 @@ static void shmap_load(void) {
 @interface NvShader : NSObject { @public id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     NSString *vertex_source,*vertex_entry; NSMutableDictionary<NSNumber *,id<MTLFunction>> *vertex_variants;
     NSString *fragment_source,*fragment_entry; NSMutableDictionary<NSNumber *,id<MTLFunction>> *fragment_variants;
+    NSString *resource_source,*resource_entry; NSMutableDictionary<NSData *,NvShader *> *resource_variants;
     // 上次编好的参数缓冲
     // The argument buffer encoded last time
     id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass;   // ab_pass：编这块参数的渲染通道序号——只在同一通道内复用（跨通道 / 跨提交的块所在 arena 可能已回收重写） | ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
@@ -2304,12 +2306,13 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
     if(!o->fn)return nil;
-    if((stage==0||stage==1)&&!dm_guest_d2r()) {
+    if(!dm_guest_d2r()) {
         NSData *source=[NSData dataWithContentsOfFile:lp];
         if(source.length>=4&&!memcmp(source.bytes,"MTLB",4))source=[NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.metal",g_msl_dir,pc]];
         NSString *text=source?[[NSString alloc] initWithData:source encoding:NSUTF8StringEncoding]:nil;
+        o->resource_source=text;o->resource_entry=j[@"entry"];
         if(stage==0){o->vertex_source=text;o->vertex_entry=j[@"entry"];}
-        else {o->fragment_source=text;o->fragment_entry=j[@"entry"];}
+        else if(stage==1){o->fragment_source=text;o->fragment_entry=j[@"entry"];}
     }
     if (o->rf.nb) {
         o->ae = [o->fn newArgumentEncoderWithBufferIndex:o->rf.abi];
@@ -2694,6 +2697,64 @@ static void state_reset(void) {
     S.poly = (poly_st){NVN_FACE_NONE, NVN_FRONT_FACE_CCW, NVN_POLYGON_MODE_FILL, 0};
     S.ds = (ds_st){0, 1, NVN_DEPTH_FUNC_LESS, 0, NVN_STENCIL_FUNC_ALWAYS, NVN_STENCIL_FUNC_ALWAYS, 1, 1, 1, 1, 1, 1};
     S.st_vmask[0] = S.st_vmask[1] = S.st_wmask[0] = S.st_wmask[1] = 0xff; S.dr[1] = 1;
+}
+
+// Maxwell texture loads return register bits. Offline float declarations need
+// an integer load variant when a descriptor selects the stencil aspect. Use
+// descriptor snapshots (including view overrides), not the base texture format.
+// Each variant owns its reflection and argument cache; its pointer participates
+// in the existing pipeline key, so rebinding a depth view selects the base again.
+static NvShader *shader_stencil_variant(NvShader *shader) {
+    if(!shader||dm_guest_d2r()||!shader->rf.guarded_candidate)return shader;
+    uint8_t kinds[64]={0};int any=0;
+    pthread_mutex_lock(&g_rmu);
+    for(int i=0;i<shader->rf.nb;i++) {
+        const nvn_rbind *b=&shader->rf.b[i];
+        if(b->kind!=NVN_RB_TEX||b->dpf!=NVN_DPF_FLOAT||b->aid>=64)continue;
+        int tid=(int)nvn_handle_texture_id(nvn_rbind_handle(b,S.tex[shader->stage],S.samp[shader->stage],S.img[shader->stage]));
+        if(tid<=0||tid>=g_ntreg||!g_treg[tid].ok||(g_tpool_n&&tid>=g_tpool_n))continue;
+        const treg_t *r=&g_treg[tid];const view_t *v=r->has_v?&r->v:NULL;
+        int format=v&&v->set_format?v->format:r->t.d.format,mode=0;uint32_t pf=0;uint8_t swizzle[4];
+        if(!nvn_texture_sampling_plan(&r->t,v,format,&pf,swizzle,&mode))continue;
+        if(format==NVN_FORMAT_STENCIL8||((format==NVN_FORMAT_DEPTH24_STENCIL8||format==NVN_FORMAT_DEPTH32F_STENCIL8)&&mode==NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL))
+            kinds[b->aid]=NVN_DPF_UINT,any=1;
+    }
+    pthread_mutex_unlock(&g_rmu);
+    if(!any)return shader;
+    NSData *identity=[NSData dataWithBytes:kinds length:sizeof kinds];
+    @synchronized(shader) {
+        NvShader *variant=shader->resource_variants[identity];if(variant)return variant;
+        if(!shader->resource_source)MDIE("P5R stencil load requires retained MSL source: %s",shader->key);
+        char *converted=NULL,error[160];uint64_t applied=0;
+        if(nvn_texture_bits_source(shader->resource_source.UTF8String,kinds,&converted,&applied,error,sizeof error))
+            MDIE("P5R stencil load specialization shader=%s: %s",shader->key,error);
+        NSString *source=[[NSString alloc] initWithUTF8String:converted];free(converted);
+        MTLCompileOptions *options=[MTLCompileOptions new];options.fastMathEnabled=NO;NSError *failure=nil;
+        id<MTLLibrary> library=[g_dev newLibraryWithSource:source options:options error:&failure];
+        variant=[NvShader new];variant->fn=library?[library newFunctionWithName:shader->resource_entry?:shader->fn.name]:nil;
+        if(!variant->fn)MDIE("P5R stencil load compilation shader=%s: %s",shader->key,failure.localizedDescription.UTF8String);
+        variant->stage=shader->stage;variant->rf=shader->rf;variant->range_ro=shader->range_ro;memcpy(variant->key,shader->key,sizeof variant->key);
+        for(int i=0;i<variant->rf.nb;i++)if(variant->rf.b[i].kind==NVN_RB_TEX&&variant->rf.b[i].aid<64&&kinds[variant->rf.b[i].aid])variant->rf.b[i].dpf=kinds[variant->rf.b[i].aid];
+        variant->ae=[variant->fn newArgumentEncoderWithBufferIndex:variant->rf.abi];variant->arg_len=variant->ae.encodedLength;
+        if(!variant->ae||variant->arg_len!=shader->arg_len)MDIE("P5R stencil variant changed argument layout: %s",shader->key);
+        variant->c1buf=shader->c1buf;variant->c1_gpu=shader->c1_gpu;variant->c1off=shader->c1off;
+        variant->resource_source=source;variant->resource_entry=shader->resource_entry;
+        if(shader->stage==0){variant->vertex_source=source;variant->vertex_entry=shader->vertex_entry;}
+        if(shader->stage==1){variant->fragment_source=source;variant->fragment_entry=shader->fragment_entry;}
+        if(!shader->resource_variants)shader->resource_variants=[NSMutableDictionary dictionary];shader->resource_variants[identity]=variant;
+        MLOG("P5R stencil load variant shader=%s stage=%d arguments=%#llx",shader->key,shader->stage,(unsigned long long)applied);
+        return variant;
+    }
+}
+static NvProg *program_resources(NvProg *program,unsigned stages) {
+    if(!program||dm_guest_d2r())return program;
+    NvShader *selected[6];void *key[6];int changed=0;
+    for(unsigned i=0;i<6;i++){selected[i]=(stages&(1u<<i))?shader_stencil_variant(program->sh[i]):program->sh[i];key[i]=(__bridge void *)selected[i];changed|=selected[i]!=program->sh[i];}
+    if(!changed)return program;
+    static NSMutableDictionary<NSData *,NvProg *> *variants;if(!variants)variants=[NSMutableDictionary dictionary];
+    NSData *identity=[NSData dataWithBytes:key length:sizeof key];NvProg *result=variants[identity];
+    if(!result){result=[NvProg new];for(unsigned i=0;i<6;i++)result->sh[i]=selected[i];variants[identity]=result;}
+    return result;
 }
 
 static MTLVertexFormat vfmt(int f) {
@@ -3635,7 +3696,7 @@ static void pso_predict_rest(void) {
         if (hq.op == OP_DRAW || hq.op == OP_DRAW_IDX) {
             if(!dm_guest_d2r() && (!S.render_enable || S.conditional_active))continue;
             draws++;
-            __unsafe_unretained NvProg *pr = programs_get(&S.programs); if (!pr || !pr->sh[0]) continue;
+            __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3); if (!pr || !pr->sh[0]) continue;
             __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
             const uint32_t dv[4] = {dfull, 0, 0, dfull}, sv[4] = {sfull, 0, sfull, 0};
             for (int v = 0; v < 4; v++) {
@@ -4836,7 +4897,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if((primitive==NVN_DRAW_PRIMITIVE_LINES || primitive==NVN_DRAW_PRIMITIVE_LINE_STRIP) && S.dynamic.line_width!=1)MDIE("Wide lines unsupported");
     if(S.dynamic.subpixel[0] || S.dynamic.subpixel[1])MDIE("Nondefault subpixel precision unsupported");
     for(int i=0;i<4;i++)if(S.dynamic.swizzle[i]!=i*2)MDIE("Nonidentity viewport swizzle unsupported");
-    __unsafe_unretained NvProg *pr = programs_get(&S.programs);
+    __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3);
     if (!pr) { RED_ONCE(18, "绘制前没有绑定程序"); return; }
     prepared_indices indices=di?prepare_indices(di):(prepared_indices){0};
     check_candidate_draw(pr,dw?dw->prim:di->prim);
@@ -5181,7 +5242,7 @@ static void bright_lut(NvShader *cs) {
 }
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
-    NvProg *program=programs_get(&S.programs);
+    NvProg *program=program_resources(programs_get(&S.programs),1u<<5);
     if (!program) { RED_ONCE(27, "派发前没有绑定程序"); return; }
     NvShader *cs = program->sh[5];
     if (!cs) { RED_ONCE(28, "派发的程序没有计算着色器（或未映射）"); return; }

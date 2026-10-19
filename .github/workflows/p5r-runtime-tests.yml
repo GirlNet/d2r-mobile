@@ -267,6 +267,28 @@ jobs:
               exit "$result"
             fi
           done
+      - name: Verify stencil loads preserve guest register bits
+        run: |
+          set -euo pipefail
+          xcrun clang -Wall -Wextra -Werror dm/gfx/tests/t_texture_bits.c dm/gfx/nvn/nvn_texture_bits.c -o "$RUNNER_TEMP/texture-bits"
+          "$RUNNER_TEMP/texture-bits"
+          make -C dm/gfx/tests t_stencil_load_gpu t_stencil_load_gpu_m4
+          python3 - <<'PY'
+          import os,subprocess
+          env=dict(os.environ,MTL_DEBUG_LAYER='1')
+          for name in ('t_stencil_load_gpu','t_stencil_load_gpu_m4'):
+              result=subprocess.run(['dm/gfx/tests/'+name],capture_output=True,text=True,env=env)
+              print(result.stdout,result.stderr)
+              if result.returncode in (77,78):
+                  print('::warning::Stencil load GPU execution unavailable: '+name)
+                  continue
+              if result.returncode or 'STENCIL LOAD GPU OK:' not in result.stdout:
+                  raise SystemExit('Stencil load GPU regression failed: '+name)
+              bad=subprocess.run(['dm/gfx/tests/'+name,'--sample'],capture_output=True,text=True,env=env)
+              if bad.returncode>=0 or 'Integer texture requires direct loads' not in bad.stdout+bad.stderr:
+                  raise SystemExit('Unsupported integer sampling was not rejected: '+bad.stdout+bad.stderr)
+              print(name+': unsupported integer sampling rejected before dispatch')
+          PY
       - name: Check production texture views with synthetic GPU pixels
         run: |
           set -euo pipefail

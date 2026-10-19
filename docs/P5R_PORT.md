@@ -1,5 +1,18 @@
 # P5R port preparation
 
+The stage-binding fix (`1e7de7519249`) passed Apple CI and now displays the
+loading logo and Chinese network prompt on the phone, followed by an abort.
+The native report is SIGABRT. A live breakpoint confirms descriptor 315 selects
+the DEPTH32F_STENCIL8 stencil aspect with RRR1 swizzle, while translated MSL
+loads through a float texture before interpreting the returned bits as uint.
+Direct stencil loads now select a uint shader variant from descriptor snapshots,
+preserve register bits, and own separate reflection, argument and pipeline caches.
+Depth rebinding restores the original shader. Resource validation remains strict;
+unsupported integer sampling and source shapes are rejected. There are 78 local
+source checks plus new draw/compute GPU readbacks for stencil values, swizzles and
+depth rebinding. Apple GPU execution and a new device run are still required;
+sustained gameplay is unverified.
+
 The depth-bounds fix (`d9350a1d7360`) now presents over 600 frames on the phone
 without the null-index or depth-bounds abort, but the game picture is black.
 The log reports a missing vertex shader. Live breakpoints and control hashes
@@ -13,7 +26,7 @@ the current draw's combination. Missing P5R vertex stages now fail explicitly.
 All 64 masks pass 1408 local state checks. New GPU cases cover separate binding,
 replacement, selective unbind and graphics/compute interleaving with pixel/buffer
 readback; dual-queue inheritance now uses single-stage programs. Apple regression
-and installation of this source fix on the phone remain pending.
+and phone rendering are verified; stencil loading is the current blocker above.
 
 The zero-size-buffer fix now has a normal phone launch with source fingerprint
 `9070a417e7c3`; execution passed the previous null index-address failure. Drawing
