@@ -3303,14 +3303,18 @@ static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
     // 实验开关：整局关掉模板测试（面板内文字被模板裁掉时会立刻显形）。
     // Experiment: disable stencil testing entirely (text clipped by a stencil mask shows up immediately).
     static int nostencil = -1; if (nostencil < 0) nostencil = getenv("DM_P5R_NOSTENCIL") != NULL;
-    struct { ds_st ds; uint32_t vm[2], wm[2]; int hd, hs, ovr, ns; } k;
+    // 实验开关：整局关掉深度测试（面板先写深度、文字被深度测试挡掉时会立刻显形）。
+    // Experiment: disable depth testing entirely (text hidden by a panel that wrote depth shows up at once).
+    static int nodepth = -1; if (nodepth < 0) nodepth = getenv("DM_P5R_NODEPTH") != NULL;
+    struct { ds_st ds; uint32_t vm[2], wm[2]; int hd, hs, ovr, ns, nd; } k;
     memset(&k, 0, sizeof k); k.ds = S.ds; memcpy(k.vm, S.st_vmask, 8); memcpy(k.wm, S.st_wmask, 8); k.hd = has_depth; k.hs = has_stencil; k.ovr = has_stencil ? g_rt_ovr : 0;
     k.ns = nostencil;
+    k.nd = nodepth;
     if (!g_dss.klen) g_dss.klen = sizeof k;
     id<MTLDepthStencilState> s = hm_get_id(&g_dss, &k);
     if (s) return s;
     MTLDepthStencilDescriptor *d = [MTLDepthStencilDescriptor new];
-    if (has_depth && S.ds.dt) { d.depthCompareFunction = (MTLCompareFunction)(S.ds.df - 1); d.depthWriteEnabled = S.ds.dw; }
+    if (!k.nd && has_depth && S.ds.dt) { d.depthCompareFunction = (MTLCompareFunction)(S.ds.df - 1); d.depthWriteEnabled = S.ds.dw; }
     if (!k.ns && has_stencil && S.ds.st) {
         MTLStencilDescriptor *f = [MTLStencilDescriptor new], *b = [MTLStencilDescriptor new];
         f.stencilCompareFunction = (MTLCompareFunction)(S.ds.sf_f - 1); f.stencilFailureOperation = (MTLStencilOperation)(S.ds.fail_f - 1);
