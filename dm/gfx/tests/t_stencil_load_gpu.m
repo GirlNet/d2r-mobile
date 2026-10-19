@@ -59,7 +59,7 @@ int main(int argc,char **argv){@autoreleasepool{
     void *memory=NULL;CHECK(!posix_memalign(&memory,getpagesize(),131072));mtl_pool_add(memory,131072);memset(memory,0xa7,131072);
     pool_t pool={.magic=MAGIC('P','O','O','L'),.mem=memory,.size=131072};NVNcommandBuffer cb;
     CHECK(h_nvnCommandBufferInitialize(&cb,NULL));h_nvnCommandBufferAddCommandMemory(&cb,(const NVNmemoryPool *)&pool,65536,65536);
-    state_reset();memset(&R,0,sizeof R);const unsigned values[]={0,1,93,255};unsigned cases=0;
+    state_reset();memset(&R,0,sizeof R);const unsigned values[]={93,1,0,255};unsigned cases=0;
     for(unsigned mode=0;mode<2;mode++)for(unsigned n=0;n<8;n++) {
         if(!n){id<MTLTexture> fresh=[g_dev newTextureWithDescriptor:d];CHECK(fresh);res_add(fresh);serial_put(depth.serial,fresh);}
         unsigned stencil=values[n/2];int aspect=(n%2)==0;CHECK(clear_aspects(tex_mtl(&depth),stencil));
@@ -98,7 +98,11 @@ int main(int argc,char **argv){@autoreleasepool{
                 toBuffer:pixels destinationOffset:0 destinationBytesPerRow:256 destinationBytesPerImage:512];
             [blit endEncoding];[command commit];[command waitUntilCompleted];CHECK(command.status==MTLCommandBufferStatusCompleted);
             const uint8_t expected[8]={0,0,255,255,255,0,0,255};
-            for(unsigned y=0;y<2;y++){CHECK(!memcmp((uint8_t *)pixels.contents+y*256,expected,8));for(unsigned x=8;x<256;x++)CHECK(((uint8_t *)pixels.contents)[y*256+x]==0xa7);}
+            for(unsigned y=0;y<2;y++) {
+                const uint8_t *row=(const uint8_t *)pixels.contents+y*256;
+                printf("PREPARATION PIXELS row=%u rgba=%u,%u,%u,%u;%u,%u,%u,%u passes=%llu draws=%llu\n",y,row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7],(unsigned long long)g_stat_pass,(unsigned long long)g_stat_draw);
+                CHECK(!memcmp(row,expected,8));for(unsigned x=8;x<256;x++)CHECK(row[x]==0xa7);
+            }
         }
     }
     CHECK(native->sh[1]->rf.b[0].dpf==NVN_DPF_FLOAT&&native->sh[5]->rf.b[0].dpf==NVN_DPF_FLOAT);
