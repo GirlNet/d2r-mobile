@@ -1464,6 +1464,26 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
         serial_put(t->serial, mt);
         return mt;
     }
+    // Linear 2D textures backed by guest memory (the movie Y/UV planes are
+    // written by the guest every frame): view the pool buffer directly, so
+    // the shader reads the current bytes instead of a one-time empty upload.
+    if (t->mem && t->d.target == 1 && t->d.levels <= 1 && t->d.samples <= 1
+        && (t->d.flags & NVN_TEXTURE_FLAGS_VIDEO_DECODE) && nvn_tex_is_linear(&t->d)) {
+        uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+        if (bpb > 0 && nvn_fmt_to_mtl(t->d.format, &pf, swz) && pf) {
+            size_t row = t->d.stride ? t->d.stride : (size_t)((t->d.width + bw - 1) / bw) * bpb;
+            size_t size = row * (size_t)t->d.height * (t->d.depth ? t->d.depth : 1);
+            void *mb; uint64_t mo;
+            if (mtl_addr((uint64_t)t->mem, size, &mb, &mo)) {
+                NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf];
+                if (al && row % al) row = (row + al - 1) / al * al;
+                MTLTextureDescriptor *d2 = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pf width:t->d.width height:t->d.height mipmapped:NO];
+                d2.usage = MTLTextureUsageShaderRead; d2.storageMode = MTLStorageModeShared;
+                id<MTLTexture> mt = [(__bridge id<MTLBuffer>)mb newTextureWithDescriptor:d2 offset:mo bytesPerRow:row];
+                if (mt) { res_add(mt); serial_put(t->serial, mt); return mt; }
+            }
+        }
+    }
     MTLTextureDescriptor *d = tex_desc(t, 0);
     if (!d) return nil;
     id<MTLTexture> mt = [g_dev newTextureWithDescriptor:d];
@@ -2637,8 +2657,9 @@ static void check_candidate_draw(NvProg *program,int primitive) {
             uint64_t h=nvn_rbind_handle(b,S.tex[1],S.samp[1],S.img[1]);
             int tid=(int)nvn_handle_texture_id(h);
             if(tid>=0&&tid<g_ntreg&&g_treg[tid].ok)
-                LOG("P5R movie binding kind=%d reg=%d aid=%d h=%#llx tid=%d fmt=%#x %ux%u serial=%llu",
-                    b->kind,b->reg,b->aid,(unsigned long long)h,tid,g_treg[tid].t.d.format,g_treg[tid].t.d.width,g_treg[tid].t.d.height,(unsigned long long)g_treg[tid].t.serial);
+                LOG("P5R movie binding kind=%d reg=%d aid=%d h=%#llx tid=%d fmt=%#x %ux%u serial=%llu flags=%#x stride=%u layout=%d mem=%p",
+                    b->kind,b->reg,b->aid,(unsigned long long)h,tid,g_treg[tid].t.d.format,g_treg[tid].t.d.width,g_treg[tid].t.d.height,(unsigned long long)g_treg[tid].t.serial,
+                    g_treg[tid].t.d.flags,g_treg[tid].t.d.stride,g_treg[tid].t.has_layout,(void *)g_treg[tid].t.mem);
             else
                 LOG("P5R movie binding kind=%d reg=%d aid=%d h=%#llx tid=%d unbound",b->kind,b->reg,b->aid,(unsigned long long)h,tid);
         }
