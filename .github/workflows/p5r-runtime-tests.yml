@@ -428,6 +428,10 @@ jobs:
       - name: Compile changed Metal backend
         run: |
           set -euo pipefail
+          xcrun clang -fsyntax-only -fobjc-arc -mmacosx-version-min=26.0 -DNVN_RT_RANGE_TEST=1 \
+            -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include dm/gfx/nvn/nvn_mtl.m
+          xcrun clang -fsyntax-only -fobjc-arc -mmacosx-version-min=26.0 -DNVN_RT_RANGE_TEST=1 -DDM_NVN_M3=1 \
+            -Werror=implicit-function-declaration -I dm/host -I dm/gfx/nvn/include dm/gfx/nvn/nvn_mtl.m
           xcrun clang -fobjc-arc -mmacosx-version-min=26.0 -Werror=implicit-function-declaration \
             -I dm/host -I dm/gfx/nvn/include -c dm/gfx/nvn/nvn_mtl.m -o "$RUNNER_TEMP/p5r-nvn-macos.o"
           xcrun --sdk iphoneos clang -arch arm64 -fobjc-arc -miphoneos-version-min=26.0 \
