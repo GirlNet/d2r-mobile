@@ -1474,10 +1474,9 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
     // Linear 2D textures backed by guest memory (the movie Y/UV planes are
     // written by the guest every frame): view the pool buffer directly, so
     // the shader reads the current bytes instead of a one-time empty upload.
-    if (t->mem && t->d.target == 1 && t->d.levels <= 1 && t->d.samples <= 1
-        && nvn_tex_is_linear(&t->d) && !t->has_layout
-        && (t->d.format == 0x1 || t->d.format == 0x0D
-            || (t->d.format >= 0x49 && t->d.format <= 0x4c))) {
+    int bc_atlas = t->d.format >= 0x41 && t->d.format <= 0x4E;
+    if (t->mem && t->d.target == 1 && t->d.levels <= 1 && t->d.samples <= 1 && !t->has_layout
+        && (bc_atlas || ((t->d.format == 0x1 || t->d.format == 0x0D) && nvn_tex_is_linear(&t->d)))) {
         uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
         if (bpb > 0 && nvn_fmt_to_mtl(t->d.format, &pf, swz) && pf) {
             size_t row = t->d.stride ? t->d.stride : (size_t)((t->d.width + bw - 1) / bw) * bpb;
@@ -1487,7 +1486,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
                 NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf];
                 if (al && row % al) row = (row + al - 1) / al * al;
                 MTLTextureDescriptor *d2 = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pf width:t->d.width height:t->d.height mipmapped:NO];
-                d2.usage = MTLTextureUsageShaderRead | ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) ? MTLTextureUsageShaderWrite : 0);
+                d2.usage = MTLTextureUsageShaderRead | ((!bc_atlas && (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE)) ? MTLTextureUsageShaderWrite : 0);
                 d2.storageMode = MTLStorageModeShared;
                 id<MTLTexture> mt = [(__bridge id<MTLBuffer>)mb newTextureWithDescriptor:d2 offset:mo bytesPerRow:row];
                 if (mt) {
