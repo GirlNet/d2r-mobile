@@ -201,6 +201,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         }
         if (applied.count) LOG("P5R config: %s", ([applied componentsJoinedByString:@" "]).UTF8String);
       } }
+    { extern void nvn_prof_apply(void); nvn_prof_apply(); }   // 配置读完后才能决定是否套计时包装 | Decide on the timing wrappers only after the config is read
     chdir(documents.fileSystemRepresentation);
     freopen([documents stringByAppendingPathComponent:@"p5r-runtime.log"].fileSystemRepresentation, "a", stderr);
     setvbuf(stderr, NULL, _IONBF, 0); // Preserve final diagnostics even when a guest abort uses _exit.

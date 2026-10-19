@@ -1070,6 +1070,16 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
 // 只影响 GPU 状态 / 只在 GPU 上执行的命令：空设备只计数（跳板已计）
 // Commands that only affect GPU state / only execute on the GPU: the null device only counts them (the thunk has already counted)
 static void nvn_nop(void) {}
+// DM_NVN_PROF 是在构造函数里套的，那时 Documents/p5r-config.txt 还没读；壳读完配置后再调一次即可生效（幂等）。
+// DM_NVN_PROF is installed from a constructor, before the shell has read Documents/p5r-config.txt; the shell calls this
+// once after reading the config so the switch still works (idempotent).
+void nvn_prof_apply(void) {
+    if (!getenv("DM_NVN_PROF")) return;
+    for (unsigned i = 0; i < NVN_NFUNC; i++)
+        if (!nvn_real[i] && nvn_slot[i].fn != (void *)nvn_unimpl_entry && strcmp(nvn_names[i], "nvnQueuePresentTexture")) {
+            nvn_real[i] = nvn_slot[i].fn; nvn_slot[i].fn = (void *)nvn_prof_entry;
+        }
+}
 static const char *const g_nops[] = {
 #ifndef DM_P5R_ONLY
     // P5R 诊断必须使用受限捕获或具名停止；保留原 D2R 空实现表。
@@ -1097,9 +1107,7 @@ __attribute__((constructor)) static void nvn_nops_register(void) {
     unsigned nnop = sizeof g_nops / sizeof *g_nops;
     // DM_NVN_PROF=1：已实现的函数（未实现桩与出图除外：出图含节拍等待，单独计）套计时包装，用于拆「翻译层录制期」耗时
     // DM_NVN_PROF=1: implemented functions (except unimplemented stubs and present: present includes the display-link wait and is counted separately) get a timing wrapper, used to break down the time spent in the "translation layer recording phase"
-    if (getenv("DM_NVN_PROF"))
-        for (unsigned i = 0; i < NVN_NFUNC; i++)
-            if (nvn_slot[i].fn != (void *)nvn_unimpl_entry && strcmp(nvn_names[i], "nvnQueuePresentTexture")) { nvn_real[i] = nvn_slot[i].fn; nvn_slot[i].fn = (void *)nvn_prof_entry; }
+    nvn_prof_apply();
     LOG("[nvn] 空设备：名字 %u，登记处理器 %u（含受限诊断 %u + 空实现 %u），其余 %u 个接报红桩；不代表 GPU 已验证",
         NVN_NFUNC, g_nsem + nnop, g_nsem, nnop, NVN_NFUNC - g_nsem - nnop);
 }
