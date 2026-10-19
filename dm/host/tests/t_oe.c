@@ -55,13 +55,13 @@ static void test_active_time(void) {
     atomic_store(&test_guest_ns, 9000000000ULL);
     CHECK(h_oe_GetProgramTotalActiveTime() == 4000000000LL, "active time: clock regression cannot underflow or reduce elapsed time");
     atomic_store(&test_guest_ns, 14000000000ULL);
-    pthread_t threads[8]; unsigned started = 0; int ok = 1;
+    pthread_t threads[8]; unsigned started = 0; int workers_ok = 1;
     while (started < 8 && !pthread_create(&threads[started], NULL, active_time_queries, NULL)) started++;
     for (unsigned i = 0; i < started; i++) {
         void *result = NULL;
-        if (pthread_join(threads[i], &result) || result) ok = 0;
+        if (pthread_join(threads[i], &result) || result) workers_ok = 0;
     }
-    CHECK(started == 8 && ok && h_oe_GetProgramTotalActiveTime() == 4000008000LL, "active time: concurrent queries are monotonic and preserve exact elapsed time");
+    CHECK(started == 8 && workers_ok && h_oe_GetProgramTotalActiveTime() == 4000008000LL, "active time: concurrent queries are monotonic and preserve exact elapsed time");
     atomic_store(&test_guest_ns, UINT64_MAX);
     CHECK(h_oe_GetProgramTotalActiveTime() == INT64_MAX, "active time: oversized elapsed time saturates signed TimeSpan");
     CHECK(hle_force_h_oe_GetProgramTotalActiveTime.fn == (void *)h_oe_GetProgramTotalActiveTime &&
