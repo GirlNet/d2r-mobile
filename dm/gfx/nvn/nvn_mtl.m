@@ -3101,7 +3101,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         if (a < 16 && k->attr[a].fmt && vf == MTLVertexFormatInvalid) RED_ONCE(15, "顶点属性格式 %#x 未映射", k->attr[a].fmt);
         // 实验：属性 15（文字顶点色）固定读 (1,1,1,1)。黑底黑字 = 这一项取成了 0。
         // Experiment: force attribute 15 (text vertex colour) to read (1,1,1,1); black-on-black means it reads 0.
-        if (a == 15 && getenv("DM_P5R_WHITEATTR")) {
+        if (a == 15 && getenv("DM_P5R_WHITEATTR") && fs && !strncmp(fs->key, "720fc52850f3c28d", 16)) {
             vd.attributes[loc].format = MTLVertexFormatFloat4; vd.attributes[loc].offset = 0; vd.attributes[loc].bufferIndex = 29;   // Metal 顶点缓冲下标必须 < 31 | Metal vertex buffer index must be < 31
             vd.layouts[29].stride = 16; vd.layouts[29].stepFunction = MTLVertexStepFunctionConstant; vd.layouts[29].stepRate = 0;
             continue;
@@ -5398,6 +5398,28 @@ frz_plain:;
         sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
     }
     enc_r_scissor(en, sc);
+    // 文字着色器：第一次真正走到绘制时，记下视口 / 裁剪 / 剔除和它用的 uniform 块。
+    // 位置由 vp_c3 里的屏幕尺寸换算；那块为 0 时顶点会落到屏幕外或变成 NaN。
+    // Text shader: on the first real draw, record viewport / scissor / cull and its uniform block.
+    // Positions come from the screen size in vp_c3; a zero block sends vertices off-screen or to NaN.
+    if (!dm_guest_d2r() && pr->sh[1] && !strncmp(pr->sh[1]->key, "720fc52850f3c28d", 16)) {
+        static int once2;
+        if (!once2++) {
+            MLOG("P5R text draw pass=%llu target=%lux%lu vp=%d sc=%d cull=%d count=%d",
+                 (unsigned long long)(g_stat_pass + 1), (unsigned long)tw, (unsigned long)th, S.has_vp, R.has_sc,
+                 (int)S.poly.cull, dw ? dw->count : di->count);
+            if (S.has_vp) MLOG("P5R text viewport %g,%g %gx%g near=%g far=%g", S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3], S.dr[0], S.dr[1]);
+            else MLOG("P5R text viewport unset (default %lux%lu)", (unsigned long)tw, (unsigned long)th);
+            if (R.has_sc) MLOG("P5R text scissor %d,%d %dx%d", R.sc.x, R.sc.y, R.sc.w, R.sc.h);
+            const p_bind_buf *u = &S.ubo[0][3];
+            if (u->addr) {
+                float v[8] = {0};
+                memcpy(v, (const void *)u->addr, sizeof v);
+                MLOG("P5R text ubo3 addr=%#llx size=%llu f=%g,%g,%g,%g,%g,%g,%g,%g", (unsigned long long)u->addr,
+                     (unsigned long long)u->size, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+            } else MLOG("P5R text ubo3 unbound");
+        }
+    }
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
     enc_r_cull(en, S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone);
     enc_r_winding(en, S.poly.front == NVN_FRONT_FACE_CCW ? MTLWindingCounterClockwise : MTLWindingClockwise);
@@ -5415,7 +5437,7 @@ frz_plain:;
     static id<MTLBuffer> zero; if (!zero) { zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(zero); }
     static uint64_t zero_gpu; if (!zero_gpu) zero_gpu = zero.gpuAddress;
     enc_r_vbuf(en, 30, zero_gpu);
-    if (getenv("DM_P5R_WHITEATTR")) {   // 属性 15 的白常量（见 pso_desc 的同名实验） | White constant for attribute 15 (see the same experiment in pso_desc)
+    if (getenv("DM_P5R_WHITEATTR") && pr->sh[1] && !strncmp(pr->sh[1]->key, "720fc52850f3c28d", 16)) {   // 只给文字着色器 | Text shader only
         static id<MTLBuffer> white; static uint64_t white_gpu;
         if (!white) { white = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared]; float w4[4] = {1, 1, 1, 1}; memcpy(white.contents, w4, 16); res_add(white); white_gpu = white.gpuAddress; }
         enc_r_vbuf(en, 29, white_gpu);
