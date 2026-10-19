@@ -5578,6 +5578,7 @@ static void downsample(const p_downsample *c) {
     attachment.storeAction=MTLStoreActionStoreAndMultisampleResolve;
     ser_gate();enc_r_end(enc_r_begin(pass));
 }
+#if DM_NVN_M3
 static id<MTLLibrary> g_partial_lib;
 static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *g_partial_pipes;
 static id<MTLRenderPipelineState> partial_clear_pipeline(MTLPixelFormat pf, MTLColorWriteMask mask) {
@@ -5613,6 +5614,7 @@ static id<MTLRenderPipelineState> partial_clear_pipeline(MTLPixelFormat pf, MTLC
     }
     return pipe;
 }
+#endif
 static void clear_tex(const p_clear_tex *c) {
     if (c->tex) zskip_del(c->tex->serial);
     id<MTLTexture> t = tex_mtl(c->tex);
@@ -5638,6 +5640,7 @@ static void clear_tex(const p_clear_tex *c) {
     }
     MTLPixelFormat pf = t.pixelFormat;
     int depth = pf == MTLPixelFormatDepth32Float || pf == MTLPixelFormatDepth16Unorm || pf == MTLPixelFormatDepth32Float_Stencil8, stencil = pf == MTLPixelFormatStencil8 || pf == MTLPixelFormatDepth32Float_Stencil8;
+#if DM_NVN_M3
     unsigned cmask = c->mask & 0xf;
     if (!depth && !stencil && cmask && cmask != 0xf && c->value_type == 0 && c->tex->d.target == 1
         && !c->r.xoffset && !c->r.yoffset && (NSUInteger)c->r.width == w && (NSUInteger)c->r.height == h
@@ -5659,6 +5662,7 @@ static void clear_tex(const p_clear_tex *c) {
             return;
         }
     }
+#endif
     if (c->r.xoffset || c->r.yoffset || (NSUInteger)c->r.width != w || (NSUInteger)c->r.height != h || (c->mask & 0xf) != 0xf
         || !(t.usage & MTLTextureUsageRenderTarget)) {
         RED_ONCE(44, "清贴图未实现的形态：区域 %d,%d %dx%d（本级 %lux%lu）掩码 %#x 可作渲染目标 %d", c->r.xoffset, c->r.yoffset, c->r.width, c->r.height,
