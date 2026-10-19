@@ -15,5 +15,6 @@ dm_vp9 *dm_vp9_create_software(dm_vp9_output output, void *user);
 const char *dm_vp9_backend(dm_vp9 *decoder);
 int dm_vp9_decode(dm_vp9 *decoder, const void *packet, size_t size, int64_t pts_us);
 void dm_vp9_destroy(dm_vp9 *decoder);
+int dm_p5r_movie_frame_copy(uint8_t *dst, size_t capacity, int *width, int *height, unsigned *sequence);
 // Validate the first keyframe before creating a format description.
 int dm_vp9_keyframe(const void *packet, size_t size, int *width, int *height, int *full_range);

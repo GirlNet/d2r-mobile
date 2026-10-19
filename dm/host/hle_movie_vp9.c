@@ -32,6 +32,40 @@ static void (*vp9_buffer_range)(void *, int, int);
 static void (*vp9_signal)(void *);
 static pthread_once_t vp9_symbols_once=PTHREAD_ONCE_INIT;
 static void vp9_symbols(void);
+static pthread_mutex_t g_movie_frame_mu;
+static pthread_once_t g_movie_frame_once = PTHREAD_ONCE_INIT;
+static void movie_frame_init(void){ pthread_mutex_init(&g_movie_frame_mu,NULL); }
+static void movie_frame_lock(void){ pthread_once(&g_movie_frame_once,movie_frame_init); pthread_mutex_lock(&g_movie_frame_mu); }
+static uint8_t *g_movie_frame;
+static size_t g_movie_frame_cap;
+static int g_movie_frame_w, g_movie_frame_h;
+static unsigned g_movie_frame_seq;
+static void movie_frame_publish(const uint8_t *data,int w,int h) {
+    size_t size=(size_t)w*h+2*((w+1)/2)*((h+1)/2);
+    if(!data||!size) return;
+    movie_frame_lock();
+    if(size>g_movie_frame_cap) {
+        uint8_t *next=realloc(g_movie_frame,size);
+        if(next) { g_movie_frame=next; g_movie_frame_cap=size; }
+    }
+    if(g_movie_frame&&g_movie_frame_cap>=size) {
+        memcpy(g_movie_frame,data,size);
+        g_movie_frame_w=w; g_movie_frame_h=h; g_movie_frame_seq++;
+    }
+    pthread_mutex_unlock(&g_movie_frame_mu);
+}
+int dm_p5r_movie_frame_copy(uint8_t *dst,size_t capacity,int *width,int *height,unsigned *sequence) {
+    int copied=0;
+    movie_frame_lock();
+    size_t size=(size_t)g_movie_frame_w*g_movie_frame_h+2*((g_movie_frame_w+1)/2)*((g_movie_frame_h+1)/2);
+    if(dst&&g_movie_frame&&size&&capacity>=size) {
+        memcpy(dst,g_movie_frame,size);
+        if(width)*width=g_movie_frame_w; if(height)*height=g_movie_frame_h; if(sequence)*sequence=g_movie_frame_seq;
+        copied=1;
+    }
+    pthread_mutex_unlock(&g_movie_frame_mu);
+    return copied;
+}
 static movie_vp9 *vp9_state(void *self) {
     movie_self *s=self;
     return s && s->vtable==vp9_vtable+2 ? s->state : NULL;
@@ -78,6 +112,7 @@ static int vp9_output(void *user, dm_vp9_frame *frame) {
         uint8_t *uv=nv12+w*h;
         for(size_t n=0;n<cw*ch;n++) { uv[2*n]=u[n]; uv[2*n+1]=v[n]; }
         free(frame->data); frame->data=nv12; frame->size=size;
+        movie_frame_publish(frame->data,frame->width,frame->height);
         s->frames[i]=*frame; s->occupied[i]=1; s->flags[i]=0;
         s->queue[(s->head+s->count)%VP9_SLOTS]=i; s->count++;
         if(!s->format_seen || s->width!=frame->width || s->height!=frame->height) s->format_pending=1;

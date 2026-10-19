@@ -64,6 +64,7 @@
 #include "nvn_hmap.h"
 #include "nvn_shader_control.h"
 #include "../../host/dm.h"
+#include "../../host/movie_vp9.h"
 #include "../../host/boot_probe.h"
 #import <CommonCrypto/CommonDigest.h>
 #include <stdarg.h>
@@ -1468,7 +1469,8 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
     // written by the guest every frame): view the pool buffer directly, so
     // the shader reads the current bytes instead of a one-time empty upload.
     if (t->mem && t->d.target == 1 && t->d.levels <= 1 && t->d.samples <= 1
-        && nvn_tex_is_linear(&t->d) && !t->has_layout) {
+        && nvn_tex_is_linear(&t->d) && !t->has_layout
+        && (t->d.flags & 0x4c) == 0x4c && (t->d.format == 0x1 || t->d.format == 0x0D)) {
         uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
         if (bpb > 0 && nvn_fmt_to_mtl(t->d.format, &pf, swz) && pf) {
             size_t row = t->d.stride ? t->d.stride : (size_t)((t->d.width + bw - 1) / bw) * bpb;
@@ -3304,11 +3306,42 @@ static void check_guest_texture(NvShader *shader, const nvn_rbind *binding, int 
 // the encoder used by this draw/dispatch, and retain them through argument use.
 // Descriptor registration may subsequently replace the table entry; this draw
 // continues to use its captured objects rather than resolving it a second time.
+static id<MTLTexture> g_movie_y_texture, g_movie_uv_texture;
+static int g_movie_texture_w, g_movie_texture_h;
+static unsigned g_movie_texture_seq;
+static uint8_t *g_movie_texture_frame;
+static void movie_textures_update(void) {
+    if (!g_movie_texture_frame) g_movie_texture_frame = malloc(1920 * 1080 * 3 / 2);
+    if (!g_movie_texture_frame) return;
+    int w = 0, h = 0; unsigned seq = 0;
+    if (!dm_p5r_movie_frame_copy(g_movie_texture_frame, 1920 * 1080 * 3 / 2, &w, &h, &seq)) return;
+    if (!w || !h || w > 1920 || h > 1080 || seq == g_movie_texture_seq) return;
+    if (!g_movie_y_texture || g_movie_texture_w != w || g_movie_texture_h != h) {
+        MTLTextureDescriptor *dy = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm width:w height:h mipmapped:NO];
+        MTLTextureDescriptor *du = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG8Unorm width:(w + 1) / 2 height:(h + 1) / 2 mipmapped:NO];
+        dy.usage = du.usage = MTLTextureUsageShaderRead;
+        dy.storageMode = du.storageMode = MTLStorageModeShared;
+        id<MTLTexture> y = [g_dev newTextureWithDescriptor:dy];
+        id<MTLTexture> uv = [g_dev newTextureWithDescriptor:du];
+        if (!y || !uv) return;
+        g_movie_y_texture = y; g_movie_uv_texture = uv;
+        g_movie_texture_w = w; g_movie_texture_h = h;
+    }
+    size_t cw = (w + 1) / 2, ch = (h + 1) / 2;
+    [g_movie_y_texture replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:g_movie_texture_frame bytesPerRow:w];
+    [g_movie_uv_texture replaceRegion:MTLRegionMake2D(0, 0, cw, ch) mipmapLevel:0 withBytes:g_movie_texture_frame + (size_t)w * h bytesPerRow:2 * cw];
+    g_movie_texture_seq = seq;
+}
 static void prepare_shader_textures(NvShader *shader,int stage,id<MTLTexture> __strong textures[NVN_REFL_MAXB]) {
     if(!shader)return;
     pthread_mutex_lock(&g_rmu);
     for(int i=0;i<shader->rf.nb;i++) {
         const nvn_rbind *b=&shader->rf.b[i];
+        if(!strcmp(shader->key,"372fb3bf90397b4e_b")&&(b->reg==128||b->reg==129)) {
+            movie_textures_update();
+            id<MTLTexture> override_texture=b->reg==128?g_movie_y_texture:g_movie_uv_texture;
+            if(override_texture) { textures[i]=override_texture; continue; }
+        }
         if(b->kind!=NVN_RB_TEX&&b->kind!=NVN_RB_IMG&&b->kind!=NVN_RB_TBUF)continue;
         int tid=(int)nvn_handle_texture_id(nvn_rbind_handle(b,S.tex[stage],S.samp[stage],S.img[stage]));
         textures[i]=tid?(__bridge id<MTLTexture>)tex_fast(tid):nil;
