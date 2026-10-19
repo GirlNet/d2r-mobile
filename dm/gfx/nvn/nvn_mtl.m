@@ -1421,6 +1421,12 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp) {
 static id<MTLTexture> tex_mtl(const tex_t *ct) {
     tex_t *t = (tex_t *)ct;
     if (!t || !t->serial) return nil;
+    if ((t->d.format == 0x1 || t->d.format == 0x0D || (t->d.format >= 0x41 && t->d.format <= 0x4E))
+        && t->d.width >= 512 && t->d.height >= 512) {
+        static int logged;
+        if (logged++ < 30) LOG("P5R atlas candidate ser=%llu fmt=%#x %ux%u flags=%#x layout=%d mem=%p",
+            (unsigned long long)t->serial,t->d.format,t->d.width,t->d.height,t->d.flags,t->has_layout,(void *)t->mem);
+    }
     int packaged = t->has_layout && t->mem;
     id have = serial_get(t->serial);
     if (packaged) {
@@ -3335,6 +3341,15 @@ static void movie_textures_update(void) {
 }
 static void prepare_shader_textures(NvShader *shader,int stage,id<MTLTexture> __strong textures[NVN_REFL_MAXB]) {
     if(!shader)return;
+    static char ui_seen[64][24]; static int ui_seen_n; int log_ui=0;
+    if(shader->rf.nb>=4) {
+        int found=0;
+        for(int n=0;n<ui_seen_n;n++) if(!strcmp(ui_seen[n],shader->key)) { found=1; break; }
+        if(!found&&ui_seen_n<64) {
+            strncpy(ui_seen[ui_seen_n++],shader->key,23);
+            log_ui=1; LOG("P5R ui shader key=%s nb=%d",shader->key,shader->rf.nb);
+        }
+    }
     pthread_mutex_lock(&g_rmu);
     for(int i=0;i<shader->rf.nb;i++) {
         const nvn_rbind *b=&shader->rf.b[i];
@@ -3345,6 +3360,13 @@ static void prepare_shader_textures(NvShader *shader,int stage,id<MTLTexture> __
         }
         if(b->kind!=NVN_RB_TEX&&b->kind!=NVN_RB_IMG&&b->kind!=NVN_RB_TBUF)continue;
         int tid=(int)nvn_handle_texture_id(nvn_rbind_handle(b,S.tex[stage],S.samp[stage],S.img[stage]));
+        if(log_ui&&(b->kind==NVN_RB_TEX||b->kind==NVN_RB_TBUF||b->kind==NVN_RB_IMG)) {
+            if(tid>=0&&tid<g_ntreg&&g_treg[tid].ok)
+                LOG("P5R ui tex key=%s reg=%d aid=%d tid=%d fmt=%#x %ux%u serial=%llu layout=%d mem=%p",
+                    shader->key,b->reg,b->aid,tid,g_treg[tid].t.d.format,g_treg[tid].t.d.width,g_treg[tid].t.d.height,
+                    (unsigned long long)g_treg[tid].t.serial,g_treg[tid].t.has_layout,(void *)g_treg[tid].t.mem);
+            else LOG("P5R ui tex key=%s reg=%d aid=%d tid=%d unbound",shader->key,b->reg,b->aid,tid);
+        }
         textures[i]=tid?(__bridge id<MTLTexture>)tex_fast(tid):nil;
         check_guest_texture(shader,b,tid,textures[i]);
         // A null binding can also lazily allocate/clear its dummy. Do that
