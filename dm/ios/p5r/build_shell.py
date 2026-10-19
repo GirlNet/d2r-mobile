@@ -11,6 +11,7 @@ import subprocess
 import struct
 import sys
 import zipfile
+import build_vp9
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -35,6 +36,7 @@ def fingerprint_sources(plan):
     result = [p[0] for p in plan]
     for directory in ('dm/host', 'dm/gfx', 'dm/ios/p5r'):
         result += sorted(p for p in (REPO / directory).rglob('*') if p.suffix in ('.h', '.inc'))
+    result += [Path(__file__).resolve(), REPO / 'dm/ios/p5r/build_vp9.py']
     return list(dict.fromkeys(result))
 
 
@@ -52,10 +54,11 @@ def build(output,metal_backend=3):
     objects = output / 'objects'; objects.mkdir()
     logs = output / 'logs'; logs.mkdir()
     app = output / 'Payload/P5RMobile.app'; (app / 'dm').mkdir(parents=True)
+    vp9 = build_vp9.build(output / 'vp9', 'ios')
     flags = ['xcrun', '--sdk', 'iphoneos', 'clang', '-arch', 'arm64', '-miphoneos-version-min=26.0', '-O1',
              '-fobjc-arc', '-fblocks', '-Werror=implicit-function-declaration', '-DDM_P5R_ONLY=1', '-DDM_SHELL=1',
              '-DDM_NVN_M3='+str(int(metal_backend==3)),
-             '-I' + str(REPO / 'dm/host'), '-I' + str(REPO / 'dm/gfx/nvn/include')]
+             '-I' + str(REPO / 'dm/host'), '-I' + str(REPO / 'dm/gfx/nvn/include'), '-I' + str(vp9 / 'include')]
     plan = []
     for index, source in enumerate(sources()):
         obj = objects / f'{index:03d}-{source.stem}.o'
@@ -65,12 +68,13 @@ def build(output,metal_backend=3):
         results = list(pool.map(lambda p: run(p[2], p[3]), plan))
     failed = [str(p[0].relative_to(REPO)) for p, code in zip(plan, results) if code]
     fingerprint_files = fingerprint_sources(plan)
-    configuration=dict(metal_backend='Metal '+str(metal_backend),architecture='arm64',minimum_ios='26.0',optimization='O1')
+    configuration=dict(metal_backend='Metal '+str(metal_backend),architecture='arm64',minimum_ios='26.0',optimization='O1',
+                       vp9_decoder='libvpx-'+build_vp9.VERSION, vp9_source_sha256=build_vp9.SOURCE_SHA256)
     report = dict(profile='p5r', game_content_included=False, signed=False, runtime_ready=False,
                   sources=[str(p[0].relative_to(REPO)) for p in plan], failed_sources=failed,
                   fingerprint_sources=[str(p.relative_to(REPO)) for p in fingerprint_files],
                   build_configuration=configuration,
-                  linked=False, packaged=False)
+                  vp9_dependency=json.loads((vp9 / 'libvpx-build.json').read_text()), linked=False, packaged=False)
     report_path = output / 'build-report.json'
     def save(): report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     save()
@@ -80,6 +84,7 @@ def build(output,metal_backend=3):
         raise RuntimeError('Host compilation failed; see logs and build-report.json')
     executable = app / 'P5RMobile'
     command = flags[:8] + [p[1] for p in plan] + ['-Wl,-dead_strip', '-Wl,-rpath,@executable_path/Frameworks']
+    command += [vp9 / 'lib/libvpx.a']
     for framework in FRAMEWORKS: command += ['-framework', framework]
     command += ['-o', executable]
     if run(command, logs / 'link.log'):
@@ -111,7 +116,10 @@ def build(output,metal_backend=3):
     (app / 'dm/p5r-shell.json').write_text(json.dumps(dict(schema_version=1, profile='p5r', game_content_included=False,guarded_runtime_contract_version=1,
         source_fingerprint_schema=2,build_configuration=configuration,
         source_fingerprint=hashlib.sha256(json.dumps(configuration,sort_keys=True).encode()+b'\0'+b''.join(p.read_bytes() for p in fingerprint_files)).hexdigest(),
-        shader_chain=(REPO / 'dm/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]), indent=2) + '\n')
+        shader_chain=(REPO / 'dm/gfx/nvn/dmsh_chain.h').read_text().split('"')[1],
+        third_party_notices={'libvpx':dict(version=build_vp9.VERSION,source_sha256=build_vp9.SOURCE_SHA256,
+            copyright_and_license=(vp9 / ('source/libvpx-'+build_vp9.VERSION) / 'LICENSE').read_text(),
+            patent_license=(vp9 / ('source/libvpx-'+build_vp9.VERSION) / 'PATENTS').read_text())}), indent=2) + '\n')
     archive = output / 'P5RMobile-shell-unsigned.ipa'
     with zipfile.ZipFile(archive, 'x', compression=zipfile.ZIP_DEFLATED) as zipped:
         for path in sorted(app.rglob('*')):

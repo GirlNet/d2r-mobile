@@ -11,6 +11,8 @@ typedef struct {
 } dm_vp9_frame;
 typedef int (*dm_vp9_output)(void *user, dm_vp9_frame *frame);
 dm_vp9 *dm_vp9_create(dm_vp9_output output, void *user);
+dm_vp9 *dm_vp9_create_software(dm_vp9_output output, void *user);
+const char *dm_vp9_backend(dm_vp9 *decoder);
 int dm_vp9_decode(dm_vp9 *decoder, const void *packet, size_t size, int64_t pts_us);
 void dm_vp9_destroy(dm_vp9 *decoder);
 // Validate the first keyframe before creating a format description.

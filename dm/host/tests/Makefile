@@ -4,6 +4,7 @@ DM_ROOT ?= $(HOME)/dm-work
 PY ?= $(DM_ROOT)/build/cache/dm/venv/bin/python
 EXEFS ?= $(DM_ROOT)/data/switch/3.3.94012/Update/ExeFS
 B = build
+VPX_ROOT ?= /tmp/dm-p5r-vpx-macos
 # 依赖一行一个、按字母序（同 ../Makefile 的 SRC：免得加一个测试就整行冲突）；下面各条命令的先后不变
 # Dependencies one per line in alphabetical order (same as SRC in ../Makefile: so that adding one test does not conflict on the whole line); the order of the commands below is unchanged
 run: \
@@ -198,8 +199,11 @@ $(B)/t_movie_codecs: t_movie_codecs.c ../hle_movie_codecs.c ../hle.h ../dm.h ../
 $(B)/t_p5r_movie: t_p5r_movie.c ../hle_movie_vp9.c ../movie_vp9.h ../hle.h ../dm.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
 	clang -O1 -Wall -Wextra -Werror -Wno-unused-function -I.. -o $@ t_p5r_movie.c ../guest_bootstrap.c
 
-$(B)/t_vp9_decode: t_vp9_decode.c ../hle_movie_vp9_backend.c ../movie_vp9.h fixtures/vp9-colours.ivf | $(B)
-	clang -O1 -Wall -Wextra -Werror -DDM_P5R_MOVIE_TEST=1 -I.. -o $@ t_vp9_decode.c ../hle_movie_vp9_backend.c -framework CoreMedia -framework CoreVideo -framework VideoToolbox -framework CoreFoundation
+$(VPX_ROOT)/lib/libvpx.a:
+	python3 ../../ios/p5r/build_vp9.py "$(VPX_ROOT)" --target macos
+
+$(B)/t_vp9_decode: t_vp9_decode.c ../hle_movie_vp9_backend.c ../movie_vp9.h fixtures/vp9-colours.ivf $(VPX_ROOT)/lib/libvpx.a | $(B)
+	clang -O1 -Wall -Wextra -Werror -DDM_P5R_MOVIE_TEST=1 -I.. -I"$(VPX_ROOT)/include" -o $@ t_vp9_decode.c ../hle_movie_vp9_backend.c "$(VPX_ROOT)/lib/libvpx.a" -framework CoreMedia -framework CoreVideo -framework VideoToolbox -framework CoreFoundation
 
 $(B)/t_hid_receipt: t_hid_receipt.c t_touch_tick_stub.c ../hle_hid.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../hle.h ../dm.h ../dm_input.h ../front.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -I../../ios/Sources -o $@ t_hid_receipt.c t_touch_tick_stub.c ../dm_cursor.c ../dm_hud.c ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../guest_bootstrap.c -lm

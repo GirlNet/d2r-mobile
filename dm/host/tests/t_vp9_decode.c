@@ -10,9 +10,9 @@ static int output(void *user,dm_vp9_frame *frame) {
     (void)user;int i=frames++;total_frames++;
     CHECK(i<3,"no unexpected decoded frame");
     if(i>=3) { free(frame->data);return 1; }
-    CHECK(frame->width==34 && frame->height==26 && frame->size==1326,"decoded I420 shape and padded-row removal");
+    CHECK(frame->width==320 && frame->height==192 && frame->size==92160,"decoded I420 shape and padded-row removal");
     CHECK(frame->pts_us==1000000+(superframe?0:(int64_t)i*33333),"presentation time survives decoding");
-    size_t lengths[3]={884,221,221},offset=0;
+    size_t lengths[3]={61440,15360,15360},offset=0;
     for(int plane=0;plane<3;plane++) {
         int bad=0;
         for(size_t j=0;j<lengths[plane];j++) {
@@ -36,22 +36,22 @@ int main(int argc,char **argv) {
         memcpy(combined+combined_size,packet,size);combined_size+=size;lengths[i]=size;
         if(i==0) {
             int w=0,h=0,range=-1;
-            CHECK(dm_vp9_keyframe(packet,size,&w,&h,&range)==0 && w==34 && h==26 && range==0,"VP9 keyframe config parsed");
+            CHECK(dm_vp9_keyframe(packet,size,&w,&h,&range)==0 && w==320 && h==192 && range==0,"VP9 keyframe config parsed");
             CHECK(dm_vp9_keyframe(packet,2,&w,&h,&range)!=0,"truncated keyframe rejected");
         }
         error=dm_vp9_decode(decoder,packet,size,1000000+(int64_t)i*33333);
         CHECK(error==0,"VideoToolbox accepted compressed packet");
         if(error) { printf("VideoToolbox decode error: %d\n",error);break; }
     }
-    fclose(file);dm_vp9_destroy(decoder);
+    fclose(file);printf("VP9 selected backend: %s\n",dm_vp9_backend(decoder));dm_vp9_destroy(decoder);
     CHECK(frames==3,"keyframe and interframe references yielded three actual frames");
     if(!error) {
         frames=0;superframe=1;combined[combined_size++]=0xc2;
         for(int i=0;i<3;i++) { if(lengths[i]>255) return 2;combined[combined_size++]=(unsigned char)lengths[i]; }
         combined[combined_size++]=0xc2;
-        decoder=dm_vp9_create(output,NULL);
+        decoder=dm_vp9_create_software(output,NULL);
         CHECK(dm_vp9_decode(decoder,combined,combined_size,1000000)==0,"VP9 superframe index splits into native frames");
-        CHECK(frames==3,"superframe produced all three real images");
+        CHECK(frames==3,"software superframe produced all three real images");
         combined[combined_size-4]=0;
         CHECK(dm_vp9_decode(decoder,combined,combined_size,2000000)!=0 && frames==3,"malformed superframe rejected before partial decode");
         dm_vp9_destroy(decoder);
