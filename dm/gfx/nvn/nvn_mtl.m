@@ -1458,7 +1458,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
         serial_put(t->serial, pk);
         return pk->tex;
     }
-    if (have) return have;
+    if (have && ![have isKindOfClass:[NvBc class]]) return have;
     if (t->d.target == 10) {   // 缓冲贴图（TARGET_BUFFER）：直接在内存池缓冲上建贴图缓冲视图（零拷贝，GPU 执行时读池里的当前内容，同 NVN 语义） | Buffer texture (TARGET_BUFFER): create the texture-buffer view directly on the memory pool buffer (zero copy; the GPU reads the pool's current content at execution time, same as NVN semantics)
         uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
         void *mb; uint64_t mo;
