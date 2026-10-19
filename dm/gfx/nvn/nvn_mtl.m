@@ -1010,6 +1010,10 @@ static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get
 @implementation NvPkg
 - (void)dealloc { res_remove(tex); }
 @end
+@interface NvBc : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen; } @end
+@implementation NvBc
+- (void)dealloc { res_remove(tex); }
+@end
 static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss;
 static uint64_t g_pfv_upgrades;
 // DM_NVN_DIRTYCHECK=1（诊断，对照真值）：每次使用都全量哈希池内容，变了却没被脏页跟踪检出 = 漏检
@@ -1077,6 +1081,7 @@ static id<MTLTexture> tex_upgrade_pfv(const tex_t *t, id<MTLTexture> base, MTLPi
     }
     id holder = serial_get(t->serial);
     if ([holder isKindOfClass:[NvPkg class]]) { id<MTLTexture> old = ((NvPkg *)holder)->tex; ((NvPkg *)holder)->tex = upgraded; defer_obj_release(old); g_ser_gen++; }
+    else if ([holder isKindOfClass:[NvBc class]]) { id<MTLTexture> old = ((NvBc *)holder)->tex; ((NvBc *)holder)->tex = upgraded; defer_obj_release(old); g_ser_gen++; }
     else serial_put(t->serial, upgraded);
     MLOG("贴图升级为可换格式视图 ser=%llu 基格式 %lu → 视图格式 %lu（升级次数=%llu）", t->serial, (unsigned long)base.pixelFormat, (unsigned long)view_pf, ++g_pfv_upgrades);
     return upgraded;
@@ -1470,6 +1475,41 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
         res_add(mt);
         serial_put(t->serial, mt);
         return mt;
+    }
+    // Compressed atlases (font glyph pages, UI sheets) are written into
+    // guest memory, but Metal rejects linear views for compressed formats.
+    // Build a normal BC texture and upload it with a block-aligned blit.
+    if (t->mem && t->d.target == 1 && t->d.levels <= 1 && !t->has_layout
+        && t->d.format >= 0x41 && t->d.format <= 0x4E) {
+        int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+        if (bpb > 0 && t->d.width && t->d.height) {
+            size_t row = ((t->d.width + bw - 1) / bw) * (size_t)bpb;
+            size_t image = row * ((t->d.height + bh - 1) / bh);
+            uint64_t now = nvn_dirty_now();
+            NvBc *bc = serial_get(t->serial);
+            int tracked = nvn_dirty_tracked(t->mem, image);
+            int clean = bc && (bc->seen == now || (tracked && !nvn_dirty_since(t->mem, image, bc->stamp)));
+            if (clean) return bc->tex;
+            if (!bc) {
+                MTLTextureDescriptor *d = tex_desc(t, 0);
+                if (!d) return nil;
+                d.usage = MTLTextureUsageShaderRead;
+                id<MTLTexture> mt = [g_dev newTextureWithDescriptor:d];
+                if (!mt) return nil;
+                res_add(mt);
+                bc = [NvBc new]; bc->tex = mt; serial_put(t->serial, bc);
+            }
+            void *mb; uint64_t mo;
+            if (!mtl_addr((uint64_t)t->mem, image, &mb, &mo)) return bc->tex;
+            BENC b = blit();
+            enc_b_copy_buffer_texture(b, (__bridge id<MTLBuffer>)mb, mo, row, image,
+                                      MTLSizeMake(t->d.width, t->d.height, 1), bc->tex, 0, 0,
+                                      MTLOriginMake(0, 0, 0));
+            bc->stamp = now; bc->seen = nvn_dirty_now();
+            static int logged;
+            if (logged++ < 10) LOG("P5R bc atlas upload ser=%llu fmt=%#x %ux%u row=%zu", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, row);
+            return bc->tex;
+        }
     }
     // Linear 2D textures backed by guest memory (the movie Y/UV planes are
     // written by the guest every frame): view the pool buffer directly, so
@@ -6303,7 +6343,7 @@ static void td_dump(void) {
     // DM_NVN_TEXRAW=index,...: save raw bytes by texture index (including 3D; file: %d in the path is replaced with the index, suffix .raw, first-line text header: width height depth format bytes-per-row)
     for (const char *q = getenv("DM_NVN_TEXRAW"); q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) {
         uint64_t ser = (uint64_t)atoll(q); id o = serial_get(ser);
-        id<MTLTexture> t = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : o;
+        id<MTLTexture> t = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : [o isKindOfClass:[NvBc class]] ? ((NvBc *)o)->tex : o;
         if (!t) { MLOG("[texraw] ser=%llu 不在序号表", ser); continue; }
         int bw, bh; NSUInteger w = t.width, h = t.height, dz = t.depth;
         size_t bpp = t.pixelFormat == MTLPixelFormatRGBA16Float ? 8 : t.pixelFormat == MTLPixelFormatRGBA32Float ? 16 : 4; (void)bw; (void)bh;
