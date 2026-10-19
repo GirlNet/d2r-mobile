@@ -5414,21 +5414,20 @@ frz_plain:;
             MLOG("P5R text draw pass=%llu target=%lux%lu vp=%d sc=%d cull=%d count=%d",
                  (unsigned long long)(g_stat_pass + 1), (unsigned long)tw, (unsigned long)th, S.has_vp, R.has_sc,
                  (int)S.poly.cull, dw ? dw->count : di->count);
-            if (R.rt.color[0]) target_dump_request(tex_mtl(R.rt.color[0]));   // 下一批开头把这一趟的颜色目标读回 | Read this pass's colour target back at the next submit
             if (S.has_vp) MLOG("P5R text viewport %g,%g %gx%g near=%g far=%g", S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3], S.dr[0], S.dr[1]);
             else MLOG("P5R text viewport unset (default %lux%lu)", (unsigned long)tw, (unsigned long)th);
             if (R.has_sc) MLOG("P5R text scissor %d,%d %dx%d", R.sc.x, R.sc.y, R.sc.w, R.sc.h);
             // 着色器名 vp_c3 指 NVN 的 c3；我们按反射的 reg 取的是槽 0。两个都打出来对比。
             // The shader name vp_c3 means NVN c3, while we fetch slot 0 from the reflection's reg; dump both.
-            for (int sl = 0; sl < 16; sl++) {
+                for (int sl = 0; sl < 16; sl++) {
                 const p_bind_buf *u = &S.ubo[0][sl];
                 if (sl != 0 && sl != 3) continue;
                 if (!u->addr) { MLOG("P5R text ubo%d unbound", sl); continue; }
-                float v[8] = {0};
+                float v[12] = {0};
                 memcpy(v, (const void *)u->addr, sizeof v);
-                MLOG("P5R text ubo%d addr=%#llx size=%llu f=%g,%g,%g,%g,%g,%g,%g,%g", sl,
+                MLOG("P5R text ubo%d addr=%#llx size=%llu f=%g,%g,%g,%g,%g,%g,%g,%g,%g,%g,%g,%g", sl,
                      (unsigned long long)u->addr, (unsigned long long)u->size,
-                     v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+                     v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11]);
             }
             {   // 顶点位置与 UV：位置是 float3@0，UV 是 float2@16 | Vertex position float3@0 and UV float2@16
                 va_st a0 = S.attr[0], a1 = S.attr[1];
@@ -5446,6 +5445,36 @@ frz_plain:;
                     }
                 }
             }
+        }
+        // 每笔文字绘制算一次屏幕坐标：只有落在画面里的文字才需要抓目标，否则抓到的当然是空白。
+        // Per text draw, compute the screen rectangle: only on-screen text is worth capturing; otherwise the
+        // captured target is trivially empty.
+        static int drawn;
+        if (drawn < 24) {
+            va_st a0 = S.attr[0];
+            uint64_t n = dw ? dw->count : di->count;
+            const p_bind_buf *u = &S.ubo[0][0];
+            if (a0.stream < 16 && S.stream[a0.stream].stride && S.vbuf[a0.stream].address && u->addr && n >= 3) {
+                float f[12] = {0}; memcpy(f, (const void *)u->addr, sizeof f);
+                float m1x = f[4], m1z = f[6], m1w = f[7], m2x = f[8], m2y = f[9];
+                float kx = m1z ? m2x / m1z : 0, ky = m1w ? m2y / m1w : 0;
+                void *mb; uint64_t mo; uint32_t stride = S.stream[a0.stream].stride;
+                if (mtl_addr(S.vbuf[a0.stream].address, (size_t)n * stride, &mb, &mo)) {
+                    const uint8_t *p = (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo;
+                    float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+                    for (uint64_t k = 0; k < n && k < 4; k++) {
+                        float pos[3]; memcpy(pos, p + k * stride + a0.offset, sizeof pos);
+                        float w = m1x ? m1x : 1, x = (kx * pos[0] - m1x) / w, y = (-ky * pos[1] + m1x) / w;
+                        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+                    }
+                    drawn++;
+                    LOG("P5R text rect pass=%llu ndc=%g..%g , %g..%g (count=%llu)",
+                        (unsigned long long)(g_stat_pass + 1), x0, x1, y0, y1, (unsigned long long)n);
+                    if (!g_ad[12].want && !g_ad[12].sent && x1 > 0 && x0 < 1 && y1 > 0 && y0 < 1 && R.rt.color[0])
+                        target_dump_request(tex_mtl(R.rt.color[0]));   // 第一笔真的落在画面里的文字，抓它这一趟 | First text that really lands on screen: capture its pass
+                }
+            }
+        }
         }
     }
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
