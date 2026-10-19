@@ -1,5 +1,15 @@
 # P5R port preparation
 
+The zero-size-buffer fix now has a normal phone launch with source fingerprint
+`9070a417e7c3`; execution passed the previous null index-address failure. Drawing
+then rejected P5R's `[0, FLT_MAX]` depth bounds. The original SDK records this
+interval unchanged, while Metal accepts bounds only inside `[0,1]`. Finite
+intervals covering that entire domain now use Metal's equivalent `[0,1]` test,
+without changing the recorded NVN state. Other unsupported intervals still fail.
+GPU regressions add wide intervals, stored-depth endpoints 0/1, colour/depth
+readback and row guards. A temporary phone-state experiment passed 240 draw calls;
+it does not establish installation of the source fix or gameplay readiness.
+
 The next source-matched phone session passed the previous submission stop and
 aborted on a null index address. Live entry/return breakpoints identified the
 cause: P5R creates zero-size NVN buffers as address views into streaming pools;

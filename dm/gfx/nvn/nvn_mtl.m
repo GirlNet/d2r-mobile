@@ -2627,6 +2627,10 @@ static int depth_bounds_supported(void) {
 }
 static void apply_depth_bounds(RENC encoder) {
     float minimum=S.depth_bounds.enabled?S.depth_bounds.minimum:0,maximum=S.depth_bounds.enabled?S.depth_bounds.maximum:1;
+    // P5R uses [0, FLT_MAX] for an unrestricted stored-depth test. Metal's
+    // depth domain is [0,1]; a finite interval covering it has the same effect
+    // as Metal's [0,1] disabled test. Preserve the recorded NVN values in S.
+    if(isfinite(minimum)&&isfinite(maximum)&&minimum<=0&&maximum>=1){minimum=0;maximum=1;}
     if(!isfinite(minimum)||!isfinite(maximum)||minimum<0||maximum>1||minimum>maximum)MDIE("Unsupported depth bounds [%g,%g]",minimum,maximum);
     if(depth_bounds_supported()) {
         if(@available(macOS 26.0,iOS 26.0,*))[encoder setDepthTestMinBound:minimum maxBound:maximum];

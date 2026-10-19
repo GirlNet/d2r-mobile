@@ -4,6 +4,7 @@
 #include "../nvn/hle_nvn.c"
 #include "nvn_gpu_test_device.h"
 #include "../../host/guest_bootstrap.h"
+#include <float.h>
 uint64_t g_t0_ns;
 void *front_metal_layer(void){return NULL;}
 module_t *module_of(const void *p){(void)p;return NULL;}
@@ -34,12 +35,19 @@ int main(void){@autoreleasepool{
         "fragment float4 red(){return float4(1,0,0,1);}";
     id<MTLLibrary> library=[g_dev newLibraryWithSource:source options:nil error:&error];
     if(!library)fprintf(stderr,"%s\n",error.localizedDescription.UTF8String);CHECK(library);
-    const float stored[]={.125,.25,.5,.75,.875,.125,.875};
-    for(unsigned c=0;c<(supported?7u:2u);c++) {
-        // Two disabled/full-range draws run even without native bounds support.
-        unsigned scenario=supported?c:c+5;
-        uint32_t enabled=scenario==5?0:257;
-        float minimum=scenario<5?.25f:scenario==5?.75f:0,maximum=scenario<5?.75f:scenario==5?.25f:1;
+    const struct {float stored,minimum,maximum;uint32_t enabled;int visible;} cases[]={
+        {.125,.25,.75,257,0},{.25,.25,.75,257,1},{.5,.25,.75,257,1},
+        {.75,.25,.75,257,1},{.875,.25,.75,257,0},
+        {.125,.75,.25,0,1},{.875,0,1,257,1},
+        // P5R's unbounded upper value, including both stored-depth endpoints.
+        {0,0,FLT_MAX,257,1},{1,0,FLT_MAX,257,1},
+        {0,-FLT_MAX,FLT_MAX,257,1},{1,-FLT_MAX,FLT_MAX,257,1},
+        {.875,-FLT_MAX,1,257,1},
+    };
+    for(unsigned scenario=supported?0:5;scenario<sizeof cases/sizeof cases[0];scenario++) {
+        // Disabled and covering intervals also run without native bounds support.
+        uint32_t enabled=cases[scenario].enabled;
+        float minimum=cases[scenario].minimum,maximum=cases[scenario].maximum;
         uint64_t serial=997000+scenario*2;
         tex_t colour={.serial=serial},depth={.serial=serial+1};
         colour.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=8,.height=6,.depth=1,.levels=1,.samples=1};
@@ -52,7 +60,7 @@ int main(void){@autoreleasepool{
         CHECK(h_nvnCommandBufferInitialize(&cb,NULL));h_nvnCommandBufferAddCommandMemory(&cb,(const NVNmemoryPool *)&pool,0,65536);
         h_nvnCommandBufferBeginRecording(&cb);const NVNtexture *targets[]={(const NVNtexture *)&colour};
         h_nvnCommandBufferSetRenderTargets(&cb,1,targets,NULL,(const NVNtexture *)&depth,NULL);
-        const float black[]={0,0,0,1};h_nvnCommandBufferClearColor(&cb,0,black,15);h_nvnCommandBufferClearDepthStencil(&cb,stored[scenario],1,0,0);
+        const float black[]={0,0,0,1};h_nvnCommandBufferClearColor(&cb,0,black,15);h_nvnCommandBufferClearDepthStencil(&cb,cases[scenario].stored,1,0,0);
         NVNdepthStencilState ds;h_nvnDepthStencilStateSetDefaults(&ds);h_nvnDepthStencilStateSetDepthTestEnable(&ds,1);
         h_nvnDepthStencilStateSetDepthWriteEnable(&ds,1);h_nvnDepthStencilStateSetDepthFunc(&ds,NVN_DEPTH_FUNC_ALWAYS);h_nvnCommandBufferBindDepthStencilState(&cb,&ds);
         h_nvnCommandBufferSetDepthBounds(&cb,enabled,minimum,maximum);h_nvnCommandBufferBindProgram(&cb,(const NVNprogram *)&program,3);
@@ -60,10 +68,10 @@ int main(void){@autoreleasepool{
         state_reset();memset(&R,0,sizeof R);mtl_sub_begin();mtl_exec((const uint8_t *)handle);
         CHECK(mtl_wait(mtl_sub_commit(),5000000000ull));CHECK(!mtl_last_commit_error());
         CHECK(S.depth_bounds.enabled==(enabled!=0)&&S.depth_bounds.minimum==minimum&&S.depth_bounds.maximum==maximum);
-        int visible=scenario>=5||(stored[scenario]>=minimum&&stored[scenario]<=maximum);float expected=visible?.875f:stored[scenario];
+        int visible=cases[scenario].visible;float expected=visible?.875f:cases[scenario].stored;
         CHECK(!readback(tex_mtl(&colour),visible,0));CHECK(!readback(tex_mtl(&depth),-1,expected));
         mtl_pool_del(memory);free(memory);
     }
-    if(!supported){puts("DEPTH BOUNDS GPU PARTIAL: disabled/full-range colour/depth passed; active bounds unavailable on this runner");return 78;}
-    puts("DEPTH BOUNDS GPU OK: five stored-depth bounds cases, inclusive endpoints, disabled/full-range and row guards");return 0;
+    if(!supported){puts("DEPTH BOUNDS GPU PARTIAL: seven disabled/full-range/wide-range colour/depth cases passed; active bounds unavailable on this runner");return 78;}
+    puts("DEPTH BOUNDS GPU OK: twelve stored-depth cases, inclusive endpoints, disabled/full/wide ranges and row guards");return 0;
 }}
