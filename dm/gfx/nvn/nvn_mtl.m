@@ -5180,6 +5180,23 @@ static prepared_indices prepare_indices(const p_draw_idx *draw) {
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     int instances=dw?dw->instance_count_minus_one+1:(di->instances?di->instances:1);
     if((dw?dw->count:di->count)==0 || !instances)return;
+    // 诊断：设置菜单文字着色器首次绘制时，记下配对的顶点着色器与顶点布局。
+    // 文字 = 图集采样 × 顶点色；任一项取成 0 都会让字完全透明。
+    // Diagnostic: on the first draw of the settings text shader, record the paired vertex shader
+    // and vertex layout. Text = atlas sample * vertex colour; a zero in either makes it transparent.
+    if (!dm_guest_d2r()) {
+        __unsafe_unretained NvProg *tp = program_resources(programs_get(&S.programs),3);
+        if (tp && tp->sh[1] && !strncmp(tp->sh[1]->key, "720fc52850f3c28d", 16)) {
+            static int once;
+            if (!once++) {
+                MLOG("P5R text program vs=%s fs=%s nattr=%d count=%d stride0=%u", tp->sh[0] ? tp->sh[0]->key : "-",
+                     tp->sh[1]->key, S.nattr, dw ? dw->count : di->count, S.stream[0].stride);
+                for (int a = 0; a < S.nattr && a < 8; a++)
+                    MLOG("P5R text attr %d fmt=%d off=%d stream=%d stride=%u", a, S.attr[a].fmt, S.attr[a].offset,
+                         S.attr[a].stream, S.stream[S.attr[a].stream].stride);
+            }
+        }
+    }
     if(instances<0)MDIE("Invalid draw instance count");
     if(!render_allowed())return;
     int primitive=dw?dw->prim:di->prim;
