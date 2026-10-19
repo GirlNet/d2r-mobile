@@ -1053,21 +1053,26 @@ static int bc_recheck(const tex_t *t, uint64_t *stamp) {
 // 直接回答「字形页里到底有没有字」：全零 = 数据从没进来，有内容 = 问题在采样/绘制这一侧。
 // Compressed-atlas evidence: read back up to two large BC textures that received a b2t, writing them
 // into DM_TEMP. Answers directly whether the glyph page has any content.
-static struct { void *tex; uint64_t ser; int want, sent; } g_ad[12];   // [0] 512x1024 字形页，其余按出现顺序 | [0] the 512x1024 glyph page, the rest in order of appearance
+static struct { void *tex; uint64_t ser; int want, sent, block; } g_ad[13];   // [0] 512x1024 字形页，其余按出现顺序；block=1 表示 BC 块行 | [0] the 512x1024 glyph page, the rest in order; block=1 means BC block rows
+static void target_dump_request(id<MTLTexture> t) {   // 文字那一趟的颜色目标（序号记 0，文件名 p5r-atlas-0.bin） | colour target of the text pass (serial 0, file p5r-atlas-0.bin)
+    if (!t || g_ad[12].want || g_ad[12].sent) return;
+    g_ad[12].tex = (__bridge void *)t; g_ad[12].ser = 0; g_ad[12].want = 1; g_ad[12].block = 0;
+}
 static void atlas_dump_request(id<MTLTexture> t, uint64_t ser, uint32_t w, uint32_t h) {
     if (!t || w < 512 || h < 512) return;
     int slot = (w == 512 && h == 1024) ? 0 : -1;
     if (slot < 0) for (int i = 1; i < 12; i++) if (!g_ad[i].want && !g_ad[i].sent) { slot = i; break; }
     if (slot < 0 || g_ad[slot].want || g_ad[slot].sent) return;
-    g_ad[slot].tex = (__bridge void *)t; g_ad[slot].ser = ser; g_ad[slot].want = 1;
+    g_ad[slot].tex = (__bridge void *)t; g_ad[slot].ser = ser; g_ad[slot].want = 1; g_ad[slot].block = 1;
 }
 static void atlas_dump_begin(void) {
     if (!g_cb) return;
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 13; i++) {
         if (!g_ad[i].want || g_ad[i].sent || !g_ad[i].tex) continue;
         id<MTLTexture> t = (__bridge id<MTLTexture>)g_ad[i].tex; uint64_t ser = g_ad[i].ser; g_ad[i].want = 0; g_ad[i].sent = 1;
         NSUInteger W = t.width, H = t.height;
-        size_t bpr = (size_t)((W + 3) / 4) * 16, bytes = bpr * ((H + 3) / 4);   // BC 块行数为 H/4 | BC block rows are H/4
+        size_t bpr = g_ad[i].block ? (size_t)((W + 3) / 4) * 16 : (size_t)W * 4;
+        size_t bytes = g_ad[i].block ? bpr * ((H + 3) / 4) : bpr * H;
         if (!W || !H || bytes > (size_t)(32 << 20)) continue;
         id<MTLBuffer> b = [g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
         if (!b) continue;
@@ -5409,6 +5414,7 @@ frz_plain:;
             MLOG("P5R text draw pass=%llu target=%lux%lu vp=%d sc=%d cull=%d count=%d",
                  (unsigned long long)(g_stat_pass + 1), (unsigned long)tw, (unsigned long)th, S.has_vp, R.has_sc,
                  (int)S.poly.cull, dw ? dw->count : di->count);
+            if (R.rt.color[0]) target_dump_request(tex_mtl(R.rt.color[0]));   // 下一批开头把这一趟的颜色目标读回 | Read this pass's colour target back at the next submit
             if (S.has_vp) MLOG("P5R text viewport %g,%g %gx%g near=%g far=%g", S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3], S.dr[0], S.dr[1]);
             else MLOG("P5R text viewport unset (default %lux%lu)", (unsigned long)tw, (unsigned long)th);
             if (R.has_sc) MLOG("P5R text scissor %d,%d %dx%d", R.sc.x, R.sc.y, R.sc.w, R.sc.h);
