@@ -1470,7 +1470,8 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
     // the shader reads the current bytes instead of a one-time empty upload.
     if (t->mem && t->d.target == 1 && t->d.levels <= 1 && t->d.samples <= 1
         && nvn_tex_is_linear(&t->d) && !t->has_layout
-        && (t->d.flags & 0x4c) == 0x4c && (t->d.format == 0x1 || t->d.format == 0x0D)) {
+        && (t->d.format == 0x1 || t->d.format == 0x0D
+            || (t->d.format >= 0x49 && t->d.format <= 0x4c))) {
         uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
         if (bpb > 0 && nvn_fmt_to_mtl(t->d.format, &pf, swz) && pf) {
             size_t row = t->d.stride ? t->d.stride : (size_t)((t->d.width + bw - 1) / bw) * bpb;
@@ -1485,7 +1486,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
                 id<MTLTexture> mt = [(__bridge id<MTLBuffer>)mb newTextureWithDescriptor:d2 offset:mo bytesPerRow:row];
                 if (mt) {
                     static int logged;
-                    if (logged++ < 4) LOG("P5R linear view ser=%llu fmt=%#x %ux%u stride=%zu mem=%p flags=%#x", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, row, (void *)t->mem, t->d.flags);
+                    if (logged++ < 12) LOG("P5R linear view ser=%llu fmt=%#x %ux%u stride=%zu mem=%p flags=%#x", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, row, (void *)t->mem, t->d.flags);
                     res_add(mt); serial_put(t->serial, mt); return mt;
                 }
             }
