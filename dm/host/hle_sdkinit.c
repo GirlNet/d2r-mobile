@@ -11,7 +11,10 @@
 static void once(const char *what) { LOG("init 接管：%s（空操作）", what); }
 
 HLE_FORCE("nndiagStartup", "连 lm 日志服务；诊断日志改由宿主直接输出", void, h_nndiagStartup, void) { once("nndiagStartup"); }
-HLE_FORCE("_ZN2nn2oe10InitializeEv", "连 am/oe 运行环境服务；运行环境查询逐个接成宿主默认值", void, h_oe_Initialize, void) { once("oe::Initialize"); }
+HLE_FORCE("_ZN2nn2oe10InitializeEv", "宿主初始化运行环境时钟；不建立 Horizon 服务会话", void, h_oe_Initialize, void) {
+    dm_oe_initialize();
+    LOG("init 接管：oe::Initialize（宿主运行环境时钟）");
+}
 HLE_FORCE("_ZN2nn3aoc10InitializeEv", "追加内容(DLC)服务：不建会话（无服务进程）；已拥有清单由 hle_misc.c 的 aoc 接口给出（术士君临，非空）", void, h_aoc_Initialize, void) { once("aoc::Initialize"); }
 HLE_FORCE("_ZN2nn3err26InitializeContextWriterApiEv", "连 err 错误上下文服务；宿主不上报", void, h_err_InitCtx, void) { once("err::InitializeContextWriterApi"); }
 HLE_FORCE("_ZN2nn2fs24InitializeForApplicationEv", "连 fsp-srv 文件服务；文件接口接宿主文件系统 + RomFS", void, h_fs_InitApp, void) { once("fs::InitializeForApplication"); }

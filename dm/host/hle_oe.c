@@ -8,6 +8,35 @@
 #include "dm_uiscreen.h"
 HLE_FORCE_OPTIONAL("_ZN2nn2oe17FinishStartupLogoEv", "Host UIKit owns startup presentation; no Horizon applet/display service", void, h_oe_FinishStartupLogo, void) {}
 
+// TimeSpan is a signed 64-bit count of nanoseconds. The guest clock already
+// excludes background/keyboard suspension and follows deterministic replay.
+// OE initialization may run more than once; keep the original process epoch.
+static pthread_mutex_t g_active_time_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_active_time_initialized;
+static uint64_t g_active_time_origin, g_active_time_last;
+static void active_time_init_locked(void) {
+    if (!g_active_time_initialized) {
+        g_active_time_origin = guest_ns();
+        g_active_time_initialized = 1;
+    }
+}
+void dm_oe_initialize(void) {
+    pthread_mutex_lock(&g_active_time_lock);
+    active_time_init_locked();
+    pthread_mutex_unlock(&g_active_time_lock);
+}
+HLE_FORCE_OPTIONAL("_ZN2nn2oe25GetProgramTotalActiveTimeEv", "Host guest-clock elapsed time; no Horizon applet timer session", int64_t, h_oe_GetProgramTotalActiveTime, void) {
+    pthread_mutex_lock(&g_active_time_lock);
+    active_time_init_locked();
+    uint64_t now = guest_ns();
+    uint64_t elapsed = now >= g_active_time_origin ? now - g_active_time_origin : 0;
+    if (elapsed > INT64_MAX) elapsed = INT64_MAX;
+    if (elapsed > g_active_time_last) g_active_time_last = elapsed;
+    int64_t result = (int64_t)g_active_time_last;
+    pthread_mutex_unlock(&g_active_time_lock);
+    return result;
+}
+
 // 运行模式是运行时状态（前端可改：iOS 过热降级切掌机）：唯一来源在此，启动时从 DM_OPMODE 取一次，之后不再读环境变量
 // The operation mode is runtime state (the front end can change it: iOS overheat downgrade switches to handheld): the single source is here, taken once from DM_OPMODE at startup, the environment variable is not read again afterwards
 #include <stdatomic.h>

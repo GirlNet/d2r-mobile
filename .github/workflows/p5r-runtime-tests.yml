@@ -85,6 +85,11 @@ jobs:
           persist-credentials: false
       - name: Generate shader cache version from this checkout
         run: python3 dm/gfx/tools/dmsh_chain.py --header
+      - name: Check application active time, environment and exit-request sections
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_oe
+          dm/host/tests/build/t_oe
       - name: Audit registered startup API coverage
         run: python3 dm/tools/audit_p5r_api.py
       - name: Check changed host sources
@@ -412,11 +417,6 @@ jobs:
           make -C dm/host/tests build/t_fs build/t_fs_case
           TMPDIR="$RUNNER_TEMP" dm/host/tests/build/t_fs
           TMPDIR="$RUNNER_TEMP" dm/host/tests/build/t_fs_case
-      - name: Check application environment and exit-request sections
-        run: |
-          set -euo pipefail
-          make -C dm/host/tests build/t_oe
-          dm/host/tests/build/t_oe
       - name: Run synthetic compute on an available Metal device
         run: |
           set +e

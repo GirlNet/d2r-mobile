@@ -181,7 +181,7 @@ $(B)/t_romfs_validate: t_romfs_validate.c ../romfs_validate.c ../romfs_validate.
 $(B)/t_hid_script: t_hid_script.c t_touch_tick_stub.c ../hle_hid.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../hle.h ../dm.h ../dm_input.h ../front.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -I../../ios/Sources -o $@ t_hid_script.c t_touch_tick_stub.c ../dm_cursor.c ../dm_hud.c ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../guest_bootstrap.c -lm
 
-$(B)/t_oe: t_oe.c ../hle_oe.c ../hle.h ../dm.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
+$(B)/t_oe: t_oe.c ../hle_oe.c ../hle_sdkinit.c ../hle.h ../dm.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_oe.c ../guest_bootstrap.c
 
 $(B)/t_hid_receipt: t_hid_receipt.c t_touch_tick_stub.c ../hle_hid.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../hle.h ../dm.h ../dm_input.h ../front.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
