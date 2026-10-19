@@ -2290,6 +2290,14 @@ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
     return [g_dev newLibraryWithData:d error:err];
 }
 static NvShader *shader_load(NSString *pc, int stage) {
+    static NSMutableSet<NSString *> *logged;
+    if(!logged)logged=[NSMutableSet set];
+    @synchronized(logged) {
+        if(![logged containsObject:pc]) {
+            [logged addObject:pc];
+            MLOG("P5R shader load key=%s stage=%d",pc.UTF8String,stage);
+        }
+    }
     NSError *e = nil;
     NSString *lp = [NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, pc];
     id<MTLLibrary> lib = lib_from_file(lp, &e);

@@ -170,12 +170,19 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     else unsetenv("DM_P5R_RUNTIME_MODE");
     setenv("DM_SAVE", save.fileSystemRepresentation, 1); setenv("DM_TEMP", temporary.fileSystemRepresentation, 1);
     setenv("DM_NVN_SHMAP", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/shader_map.tsv"].fileSystemRepresentation, 1);
-    setenv("DM_MSL_DIR", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 1);
+    NSData *identityData=[NSData dataWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/p5r-shell.json"]];
+    NSDictionary *identity=identityData?[NSJSONSerialization JSONObjectWithData:identityData options:0 error:nil]:nil;
+    // Keep the large shader cache out of the signed bundle when it has been
+    // uploaded to Documents/p5r-shaders; the bundle copy remains the fallback.
+    NSString *msl=[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"msl"];
+    NSString *external=[documents stringByAppendingPathComponent:@"p5r-shaders"];
+    NSString *chain=identity[@"shader_chain"];
+    if(chain.length&&[NSFileManager.defaultManager fileExistsAtPath:[external stringByAppendingPathComponent:[@"b-" stringByAppendingString:chain]]])msl=external;
+    setenv("DM_MSL_DIR", msl.fileSystemRepresentation, 1);
     chdir(documents.fileSystemRepresentation);
     freopen([documents stringByAppendingPathComponent:@"p5r-runtime.log"].fileSystemRepresentation, "a", stderr);
     setvbuf(stderr, NULL, _IONBF, 0); // Preserve final diagnostics even when a guest abort uses _exit.
-    NSData *identityData=[NSData dataWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/p5r-shell.json"]];
-    NSDictionary *identity=identityData?[NSJSONSerialization JSONObjectWithData:identityData options:0 error:nil]:nil;
+    LOG("P5R shader directory=%s",msl.fileSystemRepresentation);
     LOG("P5R normal launch build=%s shader_chain=%s mode=%s",[identity[@"source_fingerprint"] UTF8String]?:"unknown",
         [identity[@"shader_chain"] UTF8String]?:"unknown",guardedCandidate(self.package)?"guarded":"ready");
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 8 << 20);
