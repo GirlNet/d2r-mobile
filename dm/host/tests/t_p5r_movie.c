@@ -10,7 +10,7 @@ typedef struct { void *data; size_t capacity; int offset,size,owned; } buffer_t;
 struct dm_vp9 { dm_vp9_output output; void *user; };
 module_t g_mod[MAX_MOD]; int g_nmod=1;
 static int checks,failures,original_calls,original_deletes,buffer_frees,backend_destroys;
-static int input_signals,output_signals;
+static int input_signals,output_signals,format_signals,error_signals;
 static void *legacy_vtable[21];
 static int original_method(void *self,...) { (void)self; original_calls++; return 0x778; }
 static void original_ctor(void *self,int type,int format,int mode,int priority) {
@@ -34,7 +34,7 @@ static void set_rect(void *m,const char *key,int x,int y,int right,int bottom) {
 static void buffer_dtor(void *b) { buffer_t *v=b;if(v->owned) { free(v->data);buffer_frees++; } memset(v,0,sizeof *v); }
 static void buffer_ctor(void *b,void *data,size_t size) { buffer_t *v=b;memset(v,0,sizeof *v);v->data=data;v->capacity=size; }
 static void buffer_range(void *b,int offset,int size) { buffer_t *v=b;v->offset=offset;v->size=size; }
-static void signal_event(void *event) { if(event==&input_signals) input_signals++;else if(event==&output_signals) output_signals++;else abort(); }
+static void signal_event(void *event) { if(event==&input_signals) input_signals++;else if(event==&output_signals) output_signals++;else if(event==&format_signals) format_signals++;else if(event==&error_signals) error_signals++;else abort(); }
 void *guest_sym(const char *name) { return !strcmp(name,"_ZN2nn2os11SignalEventEPNS0_9EventTypeE")?(void *)signal_event:NULL; }
 void *module_sym(module_t *module,const char *name) {
     (void)module;
@@ -76,18 +76,18 @@ int main(int argc,char **argv) {
         CHECK(h_p5r_vp9_start(&self)==MV_STATE,"unconfigured decoder cannot start");
         metadata_t metadata={0};set_int(&metadata,"width",4);set_int(&metadata,"height",2);
         CHECK(h_p5r_vp9_configure(&self,&metadata)==MV_OK,"original metadata configures host decoder");
-        void *events[]={&input_signals,&output_signals};CHECK(h_p5r_vp9_events(&self,events)==MV_OK,"original event objects are retained");
+        void *events[]={&input_signals,&output_signals,&format_signals,&error_signals};CHECK(h_p5r_vp9_events(&self,events)==MV_OK,"all original event objects are retained");
         CHECK(h_p5r_vp9_start(&self)==MV_OK && input_signals==1,"start signals input availability");
         int index=-1,remaining=-1,bytes=0,alignment=0;
         CHECK(h_p5r_vp9_size(&self,&bytes,&alignment)==MV_OK && bytes==12 && alignment==1,"I420 output capacity matches dimensions");
         CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_OK && index==0,"input lease acquired");
-        CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_AGAIN && index==-1,"duplicate input lease rejected");
+        CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_INPUT_EMPTY && index==-1,"duplicate input lease returns exact SDK empty-input status");
         buffer_t buffer={malloc(4),4,0,0,1};
         CHECK(h_p5r_vp9_input(&self,0,&buffer)==MV_OK && buffer_frees==1 && !buffer.owned,"borrowed input buffer replaces owned storage safely");
         *(unsigned char *)buffer.data=1;
         CHECK(h_p5r_vp9_send(&self,0,VP9_INPUT_CAP,1,123456,0)==MV_BAD,"input bounds checked without consuming lease");
-        CHECK(h_p5r_vp9_send(&self,0,0,1,123456,0)==MV_OK && output_signals==1,"real backend output signals guest output event");
-        CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_AGAIN,"unreleased output applies backpressure");
+        CHECK(h_p5r_vp9_send(&self,0,0,1,123456,0)==MV_OK && output_signals==1 && format_signals==1,"first decoded frame signals format and output events");
+        CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_INPUT_EMPTY,"unreleased output applies backpressure");
         int64_t pts=0;unsigned flags=99;
         CHECK(h_p5r_vp9_acquire_output(&self,&index,&pts,&flags,&remaining)==MV_OK && pts==123456 && flags==0,"output preserves timestamp and flags");
         int output_index=index;
@@ -107,14 +107,15 @@ int main(int argc,char **argv) {
             CHECK(pts==200000+(i==8?0:i),"queue preserves presentation timestamps");
             CHECK(h_p5r_vp9_release(&self,index)==MV_OK,"queued frame released");
         }
-        CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_AGAIN,"EOS cannot accept more input");
+        CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_INPUT_EMPTY,"EOS cannot accept more input");
+        CHECK(h_p5r_vp9_acquire_output(&self,&index,&pts,&flags,&remaining)==MV_OUTPUT_EMPTY && index==-1 && pts==0 && flags==0,"drained queue returns exact SDK empty-output status and clears outputs");
         CHECK(h_p5r_vp9_flush(&self)==MV_OK && backend_destroys==1,"flush resets references and backend");
         CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_OK,"flush reopens input while running");
         h_p5r_vp9_input(&self,0,&buffer);*(unsigned char *)buffer.data=0;
         int signals=input_signals;
         CHECK(h_p5r_vp9_send(&self,0,0,1,300000,0)==MV_OK && input_signals==signals+1,"invisible reference frame permits further input");
         h_p5r_vp9_acquire_input(&self,&index,&remaining);h_p5r_vp9_input(&self,0,&buffer);*(unsigned char *)buffer.data=255;
-        CHECK(h_p5r_vp9_send(&self,0,0,1,400000,0)==MV_ERROR && h_p5r_vp9_error(&self)==MV_ERROR,"decode error is never reported as successful playback");
+        CHECK(h_p5r_vp9_send(&self,0,0,1,400000,0)==MV_ERROR && h_p5r_vp9_error(&self)==MV_ERROR && error_signals==1,"decode error signals original error event and never reports successful playback");
         CHECK(h_p5r_vp9_stop(&self)==MV_OK,"stop releases decoder state");
         h_p5r_vp9_d0(&self);CHECK(original_deletes==1 && !vp9_state(&self),"guest deleting destructor retains allocation ownership");
         movie_self other={0};h_p5r_vp9_c2(&other,1,4,1,23);

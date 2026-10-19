@@ -106,8 +106,7 @@ static int prepare(dm_vp9 *d, const void *packet, size_t size) {
     if (!status) { d->width = w; d->height = h; }
     return (int)status;
 }
-int dm_vp9_decode(dm_vp9 *d, const void *packet, size_t size, int64_t pts_us) {
-    if (!d || !packet || !size || size > 16 * 1024 * 1024) return -8;
+static int decode_frame(dm_vp9 *d, const void *packet, size_t size, int64_t pts_us) {
     int error = prepare(d, packet, size);
     if (error) return error;
     CMBlockBufferRef block = NULL; CMSampleBufferRef sample = NULL;
@@ -121,6 +120,32 @@ int dm_vp9_decode(dm_vp9 *d, const void *packet, size_t size, int64_t pts_us) {
     if (sample) CFRelease(sample);
     if (block) CFRelease(block);
     return status ? (int)status : d->error;
+}
+int dm_vp9_decode(dm_vp9 *d, const void *packet, size_t size, int64_t pts_us) {
+    if (!d || !packet || !size || size > 16 * 1024 * 1024) return -8;
+    const uint8_t *data = packet;
+    unsigned marker = data[size - 1];
+    if ((marker & 0xe0) != 0xc0) return decode_frame(d, packet, size, pts_us);
+    // VP9 packets may contain up to eight reference/display frames. The
+    // appended index describes individual compressed frames, not image rows.
+    unsigned frames = (marker & 7) + 1, magnitude = ((marker >> 3) & 3) + 1;
+    size_t index_size = 2 + frames * magnitude;
+    if (size < index_size || data[size - index_size] != marker) return -9;
+    size_t lengths[8], cursor = size - index_size + 1, total = 0;
+    for (unsigned i = 0; i < frames; i++) {
+        size_t length = 0;
+        for (unsigned b = 0; b < magnitude; b++) length |= (size_t)data[cursor++] << (8 * b);
+        if (!length || length > size - index_size - total) return -9;
+        lengths[i] = length; total += length;
+    }
+    if (total != size - index_size) return -9;
+    size_t offset = 0;
+    for (unsigned i = 0; i < frames; i++) {
+        int error = decode_frame(d, data + offset, lengths[i], pts_us);
+        if (error) return error;
+        offset += lengths[i];
+    }
+    return 0;
 }
 void dm_vp9_destroy(dm_vp9 *d) {
     if (!d) return;

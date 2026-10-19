@@ -5,7 +5,8 @@
 #include "hle.h"
 #include "movie_vp9.h"
 
-enum { MV_OK=0, MV_ERROR=0x1000, MV_AGAIN=0x1008, MV_BAD=0x100b, MV_STATE=0x100c, MV_EOS=0x2000 };
+enum { MV_OK=0, MV_ERROR=0x1000, MV_BAD=0x100b, MV_STATE=0x100c,
+       MV_OUTPUT_EMPTY=0x100e, MV_INPUT_EMPTY=0x1011, MV_EOS=0x2000 };
 enum { VP9_SLOTS=9, VP9_INPUT_CAP=16*1024*1024 }; // eight-frame superframe plus EOS
 typedef struct {
     pthread_mutex_t lock;
@@ -15,9 +16,9 @@ typedef struct {
     unsigned flags[VP9_SLOTS];
     unsigned char occupied[VP9_SLOTS], acquired[VP9_SLOTS];
     int queue[VP9_SLOTS], head, count, width, height;
-    int configured, running, input_leased, eos, error;
+    int configured, running, input_leased, eos, error, format_seen, format_pending;
     uint64_t decoded_frames;
-    void *input_event, *output_event;
+    void *input_event, *output_event, *format_event, *error_event;
 } movie_vp9;
 typedef struct { void **vtable; movie_vp9 *state; } movie_self;
 static void *vp9_vtable[21], *vp9_original[19];
@@ -38,7 +39,7 @@ static void vp9_notify(void *event) { if(event) vp9_signal(event); }
 static void vp9_clear(movie_vp9 *s) {
     dm_vp9_destroy(s->decoder); s->decoder=NULL;
     for(int i=0;i<VP9_SLOTS;i++) { free(s->frames[i].data); memset(&s->frames[i],0,sizeof s->frames[i]); s->occupied[i]=s->acquired[i]=0; s->flags[i]=0; }
-    s->head=s->count=s->input_leased=s->eos=s->error=0;
+    s->head=s->count=s->input_leased=s->eos=s->error=s->format_seen=s->format_pending=0;
 }
 // Decode is synchronous with respect to the guest producer; VT's callback
 // finishes before dm_vp9_decode returns. Other guest calls wait on s->lock.
@@ -47,7 +48,8 @@ static int vp9_output(void *user, dm_vp9_frame *frame) {
     for(int i=0;i<VP9_SLOTS;i++) if(!s->occupied[i]) {
         s->frames[i]=*frame; s->occupied[i]=1; s->flags[i]=0;
         s->queue[(s->head+s->count)%VP9_SLOTS]=i; s->count++;
-        s->width=frame->width; s->height=frame->height;
+        if(!s->format_seen || s->width!=frame->width || s->height!=frame->height) s->format_pending=1;
+        s->format_seen=1; s->width=frame->width; s->height=frame->height;
         if(++s->decoded_frames<=3) LOG("P5R VP9 decoded frame %llu: %dx%d, %zu I420 bytes, pts=%lld us",(unsigned long long)s->decoded_frames,frame->width,frame->height,frame->size,(long long)frame->pts_us);
         return 1;
     }
@@ -91,7 +93,7 @@ static int vp9_configure(void *self,void *metadata) {
 static int vp9_events(void *self,void **events) {
     movie_vp9 *s=vp9_state(self); if(!s) return ((int (*)(void *,void **))vp9_original[3])(self,events);
     if(!events) return MV_BAD;
-    pthread_mutex_lock(&s->lock); s->input_event=events[0]; s->output_event=events[1]; pthread_mutex_unlock(&s->lock); return MV_OK;
+    pthread_mutex_lock(&s->lock); s->input_event=events[0]; s->output_event=events[1]; s->format_event=events[2]; s->error_event=events[3]; pthread_mutex_unlock(&s->lock); return MV_OK;
 }
 static int vp9_metadata(movie_vp9 *s,void *metadata,const dm_vp9_frame *frame) {
     if(!metadata) return MV_BAD;
@@ -125,7 +127,7 @@ static int vp9_acquire_input(void *self,int *index,int *remaining) {
     movie_vp9 *s=vp9_state(self); if(!s) return ((int (*)(void *,int *,int *))vp9_original[9])(self,index,remaining);
     if(!index || !remaining) return MV_BAD;
     pthread_mutex_lock(&s->lock); *index=-1; *remaining=0;
-    int result=MV_AGAIN;
+    int result=MV_INPUT_EMPTY;
     if(s->running && !s->eos && !s->input_leased && vp9_empty(s) && !s->error) { s->input_leased=1; *index=0; result=MV_OK; }
     pthread_mutex_unlock(&s->lock); return result;
 }
@@ -158,15 +160,18 @@ static int vp9_send(void *self,int index,int offset,int size,int64_t pts,unsigne
         else { s->eos=1; s->occupied[i]=1; s->flags[i]=4; s->frames[i].pts_us=pts; s->queue[(s->head+s->count)%VP9_SLOTS]=i; s->count++; }
     }
     void *out=s->count?s->output_event:NULL, *in=(!s->eos && !error && vp9_empty(s))?s->input_event:NULL;
-    pthread_mutex_unlock(&s->lock); vp9_notify(out); vp9_notify(in); return error?MV_ERROR:MV_OK;
+    void *format=s->format_pending?s->format_event:NULL, *failure=error?s->error_event:NULL;
+    s->format_pending=0;
+    pthread_mutex_unlock(&s->lock); vp9_notify(format); vp9_notify(out); vp9_notify(in); vp9_notify(failure); return error?MV_ERROR:MV_OK;
 }
 static int vp9_acquire_output(void *self,int *index,int64_t *pts,unsigned *flags,int *remaining) {
     movie_vp9 *s=vp9_state(self); if(!s) return ((int (*)(void *,int *,int64_t *,unsigned *,int *))vp9_original[12])(self,index,pts,flags,remaining);
     if(!index || !pts || !flags || !remaining) return MV_BAD;
-    pthread_mutex_lock(&s->lock); int result=MV_AGAIN; *index=-1; *remaining=0;
+    pthread_mutex_lock(&s->lock); int result=MV_OUTPUT_EMPTY; *index=-1; *remaining=0; *pts=0; *flags=0;
     if(s->count) { int i=s->queue[s->head]; s->head=(s->head+1)%VP9_SLOTS; s->count--; s->acquired[i]=1; *index=i; *pts=s->frames[i].pts_us; *flags=s->flags[i]; *remaining=s->count; result=MV_OK; }
     else if(s->error) result=MV_ERROR;
-    pthread_mutex_unlock(&s->lock); return result;
+    void *out=s->count?s->output_event:NULL;
+    pthread_mutex_unlock(&s->lock); vp9_notify(out); return result;
 }
 static int vp9_output_buffer(void *self,int index,void *buffer) {
     movie_vp9 *s=vp9_state(self); if(!s) return ((int (*)(void *,int,void *))vp9_original[13])(self,index,buffer);
