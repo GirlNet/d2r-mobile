@@ -5424,6 +5424,22 @@ frz_plain:;
                      (unsigned long long)u->addr, (unsigned long long)u->size,
                      v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
             }
+            {   // 顶点位置与 UV：位置是 float3@0，UV 是 float2@16 | Vertex position float3@0 and UV float2@16
+                va_st a0 = S.attr[0], a1 = S.attr[1];
+                uint64_t n = dw ? dw->count : di->count;
+                if (a0.stream == a1.stream && S.stream[a0.stream].stride && S.vbuf[a0.stream].address) {
+                    void *mb; uint64_t mo; uint32_t stride = S.stream[a0.stream].stride;
+                    if (mtl_addr(S.vbuf[a0.stream].address, (size_t)n * stride, &mb, &mo)) {
+                        const uint8_t *p = (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo;
+                        for (uint64_t k = 0; k < n && k < 6; k++) {
+                            float pos[3], uv[2];
+                            memcpy(pos, p + k * stride + a0.offset, sizeof pos);
+                            memcpy(uv, p + k * stride + a1.offset, sizeof uv);
+                            MLOG("P5R text vert %llu pos=%g,%g,%g uv=%g,%g", (unsigned long long)k, pos[0], pos[1], pos[2], uv[0], uv[1]);
+                        }
+                    }
+                }
+            }
         }
     }
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
