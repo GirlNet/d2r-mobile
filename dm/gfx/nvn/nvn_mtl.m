@@ -3099,13 +3099,6 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         // a >= S.nattr 时 k.attr[a] 保持 memset 的 0，vfmt(0) 为 Invalid，走同一回退分支且 fmt 非 0 的 RED_ONCE 条件不成立。
         // When a >= S.nattr, k.attr[a] keeps the 0 from memset, vfmt(0) is Invalid, the same fallback branch is taken and the RED_ONCE condition of fmt being non-0 does not hold.
         if (a < 16 && k->attr[a].fmt && vf == MTLVertexFormatInvalid) RED_ONCE(15, "顶点属性格式 %#x 未映射", k->attr[a].fmt);
-        // 实验：属性 15（文字顶点色）固定读 (1,1,1,1)。黑底黑字 = 这一项取成了 0。
-        // Experiment: force attribute 15 (text vertex colour) to read (1,1,1,1); black-on-black means it reads 0.
-        if (a == 15 && getenv("DM_P5R_WHITEATTR") && fs && !strncmp(fs->key, "720fc52850f3c28d", 16)) {
-            vd.attributes[loc].format = MTLVertexFormatFloat4; vd.attributes[loc].offset = 0; vd.attributes[loc].bufferIndex = 29;   // Metal 顶点缓冲下标必须 < 31 | Metal vertex buffer index must be < 31
-            vd.layouts[29].stride = 16; vd.layouts[29].stepFunction = MTLVertexStepFunctionConstant; vd.layouts[29].stepRate = 0;
-            continue;
-        }
         if (vf == MTLVertexFormatInvalid) {
             int ct = rf->v[v].ct;
             vd.attributes[loc].format = ct == NVN_CT_UINT ? MTLVertexFormatUInt4 : ct == NVN_CT_INT ? MTLVertexFormatInt4 : MTLVertexFormatFloat4;
@@ -5437,11 +5430,6 @@ frz_plain:;
     static id<MTLBuffer> zero; if (!zero) { zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(zero); }
     static uint64_t zero_gpu; if (!zero_gpu) zero_gpu = zero.gpuAddress;
     enc_r_vbuf(en, 30, zero_gpu);
-    if (getenv("DM_P5R_WHITEATTR") && pr->sh[1] && !strncmp(pr->sh[1]->key, "720fc52850f3c28d", 16)) {   // 只给文字着色器 | Text shader only
-        static id<MTLBuffer> white; static uint64_t white_gpu;
-        if (!white) { white = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared]; float w4[4] = {1, 1, 1, 1}; memcpy(white.contents, w4, 16); res_add(white); white_gpu = white.gpuAddress; }
-        enc_r_vbuf(en, 29, white_gpu);
-    }
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1,dm_guest_d2r()?NULL:vertex_textures);
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0,dm_guest_d2r()?NULL:fragment_textures);
     // 参数绑定在登记表锁内捕获实际资源；资格判断到绑定期间有版本变化，则在任何GPU draw前切开重试。
