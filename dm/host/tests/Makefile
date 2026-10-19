@@ -34,6 +34,8 @@ run: \
 	$(B)/t_modetx \
 	$(B)/t_movie \
 	$(B)/t_movie_codecs \
+	$(B)/t_p5r_movie \
+	$(B)/t_vp9_decode \
 	$(B)/t_namegen \
 	$(B)/t_oe \
 	$(B)/t_padmap \
@@ -67,6 +69,9 @@ run: \
 	$(B)/t_oe 2>/dev/null
 	$(B)/t_movie_codecs p5r
 	$(B)/t_movie_codecs d2r
+	$(B)/t_p5r_movie p5r
+	$(B)/t_p5r_movie d2r
+	$(B)/t_vp9_decode fixtures/vp9-colours.ivf
 	$(B)/t_fs 2>/dev/null
 	TMPDIR="$(abspath $(B))" $(B)/t_fs_case 2>/dev/null
 	DM_ROMFS="$(DM_ROOT)/data/switch/3.3.94012/Update/RomFS" $(B)/t_romfs_validate
@@ -189,6 +194,12 @@ $(B)/t_oe: t_oe.c ../hle_oe.c ../hle_sdkinit.c ../hle.h ../dm.h ../guest_bootstr
 
 $(B)/t_movie_codecs: t_movie_codecs.c ../hle_movie_codecs.c ../hle.h ../dm.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
 	clang -O1 -Wall -Wextra -Werror -Wno-unused-function -I.. -o $@ t_movie_codecs.c ../guest_bootstrap.c
+
+$(B)/t_p5r_movie: t_p5r_movie.c ../hle_movie_vp9.c ../movie_vp9.h ../hle.h ../dm.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
+	clang -O1 -Wall -Wextra -Werror -Wno-unused-function -I.. -o $@ t_p5r_movie.c ../guest_bootstrap.c
+
+$(B)/t_vp9_decode: t_vp9_decode.c ../hle_movie_vp9_backend.c ../movie_vp9.h fixtures/vp9-colours.ivf | $(B)
+	clang -O1 -Wall -Wextra -Werror -DDM_P5R_MOVIE_TEST=1 -I.. -o $@ t_vp9_decode.c ../hle_movie_vp9_backend.c -framework CoreMedia -framework CoreVideo -framework VideoToolbox -framework CoreFoundation
 
 $(B)/t_hid_receipt: t_hid_receipt.c t_touch_tick_stub.c ../hle_hid.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../hle.h ../dm.h ../dm_input.h ../front.h ../guest_bootstrap.c ../guest_bootstrap.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -I../../ios/Sources -o $@ t_hid_receipt.c t_touch_tick_stub.c ../dm_cursor.c ../dm_hud.c ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../guest_bootstrap.c -lm

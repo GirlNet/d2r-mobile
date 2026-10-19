@@ -71,6 +71,13 @@ jobs:
           make -C dm/host/tests build/t_movie_codecs
           dm/host/tests/build/t_movie_codecs p5r
           dm/host/tests/build/t_movie_codecs d2r
+      - name: Decode real synthetic VP9 packets and check movie buffer protocol
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_p5r_movie build/t_vp9_decode
+          dm/host/tests/build/t_p5r_movie p5r
+          dm/host/tests/build/t_p5r_movie d2r
+          dm/host/tests/build/t_vp9_decode dm/host/tests/fixtures/vp9-colours.ivf
       - name: Link and package the complete game-free P5R host
         run: |
           set -euo pipefail
@@ -109,6 +116,13 @@ jobs:
           make -C dm/host/tests build/t_movie_codecs
           dm/host/tests/build/t_movie_codecs p5r
           dm/host/tests/build/t_movie_codecs d2r
+      - name: Decode VP9 key and inter frames through public Apple APIs
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_p5r_movie build/t_vp9_decode
+          dm/host/tests/build/t_p5r_movie p5r
+          dm/host/tests/build/t_p5r_movie d2r
+          dm/host/tests/build/t_vp9_decode dm/host/tests/fixtures/vp9-colours.ivf
       - name: Audit registered startup API coverage
         run: python3 dm/tools/audit_p5r_api.py
       - name: Check changed host sources
