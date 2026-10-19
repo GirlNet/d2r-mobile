@@ -2626,6 +2626,24 @@ static struct {
 static unsigned g_guest_origin,g_guest_depth;
 void mtl_guest_coordinates(unsigned origin,unsigned depth) { g_guest_origin=origin;g_guest_depth=depth; }
 static void check_candidate_draw(NvProg *program,int primitive) {
+    static int movie_logged;
+    if(!movie_logged&&program&&program->sh[1]&&!strcmp(program->sh[1]->key,"372fb3bf90397b4e_b")) {
+        movie_logged=1;
+        NvShader *sh=program->sh[1];
+        pthread_mutex_lock(&g_rmu);
+        for(int i=0;i<sh->rf.nb;i++) {
+            const nvn_rbind *b=&sh->rf.b[i];
+            if(b->kind!=NVN_RB_TEX&&b->kind!=NVN_RB_TBUF&&b->kind!=NVN_RB_IMG)continue;
+            uint64_t h=nvn_rbind_handle(b,S.tex[1],S.samp[1],S.img[1]);
+            int tid=(int)nvn_handle_texture_id(h);
+            if(tid>=0&&tid<g_ntreg&&g_treg[tid].ok)
+                LOG("P5R movie binding kind=%d reg=%d aid=%d h=%#llx tid=%d fmt=%#x %ux%u serial=%llu",
+                    b->kind,b->reg,b->aid,(unsigned long long)h,tid,g_treg[tid].t.d.format,g_treg[tid].t.d.width,g_treg[tid].t.d.height,(unsigned long long)g_treg[tid].t.serial);
+            else
+                LOG("P5R movie binding kind=%d reg=%d aid=%d h=%#llx tid=%d unbound",b->kind,b->reg,b->aid,(unsigned long long)h,tid);
+        }
+        pthread_mutex_unlock(&g_rmu);
+    }
     if(!program)return;
     int guarded=0;for(unsigned i=0;i<6;i++)if(program->sh[i] && program->sh[i]->rf.guarded_candidate)guarded=1;
     if(!guarded)return;
@@ -5407,6 +5425,13 @@ static void copy_b2t(const p_copy_b2t *c) {
     if (c->tex) zskip_del(c->tex->serial);
     id<MTLTexture> t = tex_mtl(c->tex);
     PD("C ser=%llu", c->tex->serial);
+    if(c->tex && (c->tex->d.width==1920 || (c->tex->d.width==960 && c->tex->d.height==540))) {
+        static int logged;
+        if(logged++<8)
+            LOG("P5R movie upload b2t serial=%llu fmt=%#x %ux%u region=%d,%d %dx%d src=%#llx",
+                (unsigned long long)c->tex->serial,c->tex->d.format,c->tex->d.width,c->tex->d.height,
+                c->r.xoffset,c->r.yoffset,c->r.width,c->r.height,(unsigned long long)c->src);
+    }
     if (!t) return;
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
