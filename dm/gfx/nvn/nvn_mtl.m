@@ -5404,13 +5404,18 @@ frz_plain:;
             if (S.has_vp) MLOG("P5R text viewport %g,%g %gx%g near=%g far=%g", S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3], S.dr[0], S.dr[1]);
             else MLOG("P5R text viewport unset (default %lux%lu)", (unsigned long)tw, (unsigned long)th);
             if (R.has_sc) MLOG("P5R text scissor %d,%d %dx%d", R.sc.x, R.sc.y, R.sc.w, R.sc.h);
-            const p_bind_buf *u = &S.ubo[0][3];
-            if (u->addr) {
+            // 着色器名 vp_c3 指 NVN 的 c3；我们按反射的 reg 取的是槽 0。两个都打出来对比。
+            // The shader name vp_c3 means NVN c3, while we fetch slot 0 from the reflection's reg; dump both.
+            for (int sl = 0; sl < 16; sl++) {
+                const p_bind_buf *u = &S.ubo[0][sl];
+                if (sl != 0 && sl != 3) continue;
+                if (!u->addr) { MLOG("P5R text ubo%d unbound", sl); continue; }
                 float v[8] = {0};
                 memcpy(v, (const void *)u->addr, sizeof v);
-                MLOG("P5R text ubo3 addr=%#llx size=%llu f=%g,%g,%g,%g,%g,%g,%g,%g", (unsigned long long)u->addr,
-                     (unsigned long long)u->size, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
-            } else MLOG("P5R text ubo3 unbound");
+                MLOG("P5R text ubo%d addr=%#llx size=%llu f=%g,%g,%g,%g,%g,%g,%g,%g", sl,
+                     (unsigned long long)u->addr, (unsigned long long)u->size,
+                     v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+            }
         }
     }
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
