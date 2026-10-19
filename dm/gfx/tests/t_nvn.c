@@ -141,6 +141,23 @@ static void test_fast_clear_registry(const NVNdeviceBuilder *db) {
 
 // 池用合成共享字节，不创建 Metal；验证真实跳板、边界、别名写入与生命周期。
 // Use synthetic shared pool bytes without Metal; verify real thunks, bounds, alias writes and lifecycle.
+static void test_program_bindings(void) {
+    prog_t a={0},b={0};
+    for(unsigned mask=0;mask<64;mask++) {
+        program_bindings bindings={0};
+        EXPECT("bind all shader stages",1,nvn_program_bind(&bindings,&a,63));
+        EXPECT("masked shader binding change",mask!=0,nvn_program_bind(&bindings,&b,mask));
+        for(unsigned stage=0;stage<6;stage++)
+            EXPECT("preserve unselected shader stage",(uintptr_t)(mask&(1u<<stage)?&b:&a),(uintptr_t)bindings.stage[stage]);
+        program_bindings saved=bindings;
+        EXPECT("repeated stage binding is unchanged",0,nvn_program_bind(&bindings,&b,mask));
+        EXPECT("masked shader unbind change",mask!=0,nvn_program_bind(&bindings,NULL,mask));
+        for(unsigned stage=0;stage<6;stage++) {
+            EXPECT("null unbind preserves other stages",(uintptr_t)(mask&(1u<<stage)?NULL:&a),(uintptr_t)bindings.stage[stage]);
+            EXPECT("shader binding snapshot is independent",(uintptr_t)(mask&(1u<<stage)?&b:&a),(uintptr_t)saved.stage[stage]);
+        }
+    }
+}
 static void test_buffers(void) {
     uint8_t storage[256]; memset(storage,0x5a,sizeof storage);
     NVNmemoryPool pool={0}; pool_t *p=(pool_t *)&pool;
@@ -367,6 +384,7 @@ int main(int argc, char **argv) {
     EXPECT("深度原始位 / depth bits", 0x3f000000, f->depths[0]);
     test_fast_clear_registry(&db);
     test_buffers();
+    test_program_bindings();
     test_pool_accessors();
     test_startup_batch();
     test_sampler_state();

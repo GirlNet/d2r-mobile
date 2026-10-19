@@ -1,5 +1,20 @@
 # P5R port preparation
 
+The depth-bounds fix (`d9350a1d7360`) now presents over 600 frames on the phone
+without the null-index or depth-bounds abort, but the game picture is black.
+The log reports a missing vertex shader. Live breakpoints and control hashes
+confirm P5R binds separate single-stage vertex/fragment programs with masks 1/2;
+the host ignored the mask and replaced the entire program. Bindings now retain
+one source per stage, update only selected stages, and apply null unbinds only
+to selected stages. Queue snapshots, resource lookahead and pass optimizations
+use that same value state. Resolved compositions are retained and cached by
+their actual shaders, including source-program updates; lookahead cannot release
+the current draw's combination. Missing P5R vertex stages now fail explicitly.
+All 64 masks pass 1408 local state checks. New GPU cases cover separate binding,
+replacement, selective unbind and graphics/compute interleaving with pixel/buffer
+readback; dual-queue inheritance now uses single-stage programs. Apple regression
+and installation of this source fix on the phone remain pending.
+
 The zero-size-buffer fix now has a normal phone launch with source fingerprint
 `9070a417e7c3`; execution passed the previous null index-address failure. Drawing
 then rejected P5R's `[0, FLT_MAX]` depth bounds. The original SDK records this

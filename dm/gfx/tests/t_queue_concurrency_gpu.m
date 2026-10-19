@@ -99,17 +99,19 @@ static int queue_state_pixels(void) {
     id<MTLLibrary> lib=[g_dev newLibraryWithSource:source options:nil error:&error];CHECK(lib);
     uint8_t *memory=NULL;CHECK(!posix_memalign((void **)&memory,getpagesize(),262144));memset(memory,0xa7,262144);
     pool_t pool={.magic=MAGIC('P','O','O','L'),.flags=0x22,.mem=memory,.size=262144};mtl_pool_add(memory,262144);
-    NVNqueueBuilder qb={0};NVNqueue queues[2];NVNcommandBuffer cb[2];prog_t programs[2]={{.serial=1900001},{.serial=1900002}};tex_t textures[2]={0};
+    NVNqueueBuilder qb={0};NVNqueue queues[2];NVNcommandBuffer cb[2];prog_t programs[2]={{.serial=1900001},{.serial=1900002}},vertex={.serial=1900003};tex_t textures[2]={0};
+    NvProg *vertexNative=[NvProg new];vertexNative->sh[0]=[NvShader new];vertexNative->sh[0]->fn=[lib newFunctionWithName:@"v"];serial_put(vertex.serial,vertexNative);
     P(nvnQueueBuilderSetDefaults)(&qb);
     for(int i=0;i<2;i++) {
-        NvProg *native=[NvProg new];native->sh[0]=[NvShader new];native->sh[0]->fn=[lib newFunctionWithName:@"v"];
+        NvProg *native=[NvProg new];
         native->sh[1]=[NvShader new];native->sh[1]->fn=[lib newFunctionWithName:i?@"green":@"red"];native->sh[1]->stage=1;serial_put(programs[i].serial,native);
         textures[i].serial=1900010+i;textures[i].d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=8,.height=4,.depth=1,.levels=1,.samples=1};
         CHECK(P(nvnQueueInitialize)(&queues[i],&qb));CHECK(P(nvnCommandBufferInitialize)(&cb[i],NULL));P(nvnCommandBufferAddCommandMemory)(&cb[i],(const NVNmemoryPool *)&pool,65536+i*65536,65536);
         P(nvnCommandBufferBeginRecording)(&cb[i]);P(nvnCommandBufferPushDebugGroupStatic)(&cb[i],7,i?"queue.green":"queue.red");
         const NVNtexture *targets[]={(const NVNtexture *)&textures[i]};P(nvnCommandBufferSetRenderTargets)(&cb[i],1,targets,NULL,NULL,NULL);
         P(nvnCommandBufferClearColor)(&cb[i],0,(float[]){0,0,0,1},15);P(nvnCommandBufferSetViewport)(&cb[i],0,0,8,4);
-        P(nvnCommandBufferSetScissor)(&cb[i],i*4,0,4,4);P(nvnCommandBufferBindProgram)(&cb[i],(const NVNprogram *)&programs[i],3);
+        P(nvnCommandBufferSetScissor)(&cb[i],i*4,0,4,4);P(nvnCommandBufferBindProgram)(&cb[i],(const NVNprogram *)&vertex,1);
+        P(nvnCommandBufferBindProgram)(&cb[i],(const NVNprogram *)&programs[i],2);
         P(nvnCommandBufferResetCounter)(&cb[i],NVN_COUNTER_TYPE_SAMPLES_PASSED);
         P(nvnCommandBufferDrawArrays)(&cb[i],NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);
         P(nvnCommandBufferReportCounter)(&cb[i],NVN_COUNTER_TYPE_SAMPLES_PASSED,(uintptr_t)(memory+i*64));
@@ -132,7 +134,7 @@ static int queue_state_pixels(void) {
         for(int y=0;y<4;y++)for(int x=0;x<256;x++){int lit=x<32 && ((x/4>=4)==i);uint8_t expected=x>=32?0xa7:x%4==3 || (lit && x%4==i)?255:0;CHECK(((uint8_t *)output.contents)[y*256+x]==expected);}
         P(nvnQueueFinalize)(&queues[i]);P(nvnCommandBufferFinalize)(&cb[i]);mtl_tex_release(&textures[i]);mtl_prog_release(&programs[i]);
     }
-    mtl_pool_del(memory);free(memory);return 0;
+    mtl_prog_release(&vertex);mtl_pool_del(memory);free(memory);return 0;
 }
 int main(int argc,char **argv){@autoreleasepool{
     if(argc==2 && !strcmp(argv[1],"--recursive-api")){queue_api_enter();queue_api_enter();return 1;}

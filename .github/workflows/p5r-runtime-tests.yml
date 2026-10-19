@@ -210,6 +210,36 @@ jobs:
           set -euo pipefail
           make -C dm/gfx/tex/tests t_linear_layout
           dm/gfx/tex/tests/t_linear_layout
+      - name: Verify masked program stages with graphics and compute readback
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_program_stages_gpu
+          python3 - <<'PY'
+          import os,subprocess
+          env=dict(os.environ,MTL_DEBUG_LAYER='1')
+          result=subprocess.run(['dm/gfx/tests/t_program_stages_gpu'],capture_output=True,text=True,env=env)
+          print(result.stdout,result.stderr)
+          if result.returncode==77:
+              print('::warning::Program-stage GPU execution needs a supported Metal device.')
+              raise SystemExit(0)
+          if result.returncode or 'PROGRAM STAGES GPU OK:' not in result.stdout:
+              raise SystemExit('Masked program-stage GPU regression failed')
+          bad=subprocess.run(['dm/gfx/tests/t_program_stages_gpu','--missing-vertex'],capture_output=True,text=True,env=env)
+          if bad.returncode>=0 or 'Draw has no vertex shader bound' not in bad.stderr:
+              raise SystemExit('Missing vertex shader was not rejected: '+bad.stdout+bad.stderr)
+          print('PROGRAM STAGES REJECTION OK: explicit missing-vertex failure')
+          PY
+      - name: Verify render lookahead after masked program bindings
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_reorder_chain t_defer_chain t_rt_range t_fuse_check CFLAGS='-O1 -g -Wall -Wno-unused-function -I../nvn/include -DDM_NVN_M3=1'
+          MTL_DEBUG_LAYER=1 dm/gfx/tests/t_reorder_chain
+          MTL_DEBUG_LAYER=1 dm/gfx/tests/t_defer_chain
+          MTL_DEBUG_LAYER=1 dm/gfx/tests/t_fuse_check
+          MTL_DEBUG_LAYER=1 dm/gfx/tests/t_rt_range
+          DM_NVN_UNWRITTEN_DC=0 MTL_DEBUG_LAYER=1 dm/gfx/tests/t_rt_range --disabled
+          DM_NVN_UNWRITTEN_DC=0 MTL_DEBUG_LAYER=1 dm/gfx/tests/t_rt_range --small-depth
+          DM_NVN_UNWRITTEN_DC=0 MTL_DEBUG_LAYER=1 dm/gfx/tests/t_rt_range --sample-attachment --both-flags
       - name: Check depth bounds on supported hardware
         run: |
           set -euo pipefail
@@ -225,8 +255,8 @@ jobs:
       - name: Check production draw paths on Metal 4
         run: |
           set -euo pipefail
-          make -C dm/gfx/tests t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4 t_shader_scratch_gpu_m4 t_conditional_render_gpu_m4
-          for test in t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4 t_shader_scratch_gpu_m4 t_conditional_render_gpu_m4; do
+          make -C dm/gfx/tests t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4 t_shader_scratch_gpu_m4 t_conditional_render_gpu_m4 t_program_stages_gpu_m4
+          for test in t_depth_clamp_gpu_m4 t_primitive_restart_gpu_m4 t_vertex_fetch_gpu_m4 t_fragment_export_gpu_m4 t_raster_discard_gpu_m4 t_depth_bounds_gpu_m4 t_downsample_gpu_m4 t_copy_draw_gpu_m4 t_shader_scratch_gpu_m4 t_conditional_render_gpu_m4 t_program_stages_gpu_m4; do
             set +e
             "dm/gfx/tests/$test"
             result=$?
