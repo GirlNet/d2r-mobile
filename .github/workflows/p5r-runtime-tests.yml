@@ -50,7 +50,9 @@ permissions:
   contents: read
 jobs:
   ios-shell:
-    runs-on: macos-26
+    # The iPhone executable is explicitly cross-compiled with -arch arm64.
+    # Keep packaging available when the hosted Apple Silicon pool is full.
+    runs-on: macos-26-intel
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +60,11 @@ jobs:
           persist-credentials: false
       - name: Generate shader cache version from this checkout
         run: python3 dm/gfx/tools/dmsh_chain.py --header
+      - name: Check application active time on the packaging host
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_oe
+          dm/host/tests/build/t_oe
       - name: Link and package the complete game-free P5R host
         run: |
           set -euo pipefail
