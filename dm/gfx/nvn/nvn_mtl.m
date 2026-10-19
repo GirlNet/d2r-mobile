@@ -3563,6 +3563,14 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         if (b->kind == NVN_RB_CBUF) {
             const p_bind_buf *u = reg < 16 ? &S.ubo[nvn_stage][reg] : NULL;
             void *mb; uint64_t mo, gpu;
+            // 文字顶点着色器（e0b2c674be75c256）的 uniform 在 c0 没绑时回退到 c3：
+            // 它的 gl_Position.w 取自该块的 _m0[1].x，拿不到就是 w=0、顶点全退化（文字整层消失）。
+            // When the text vertex shader's c0 uniform is unbound, fall back to c3: its gl_Position.w comes
+            // from _m0[1].x in that block; without it w=0 and every vertex degenerates (the whole text layer vanishes).
+            if ((!u || !u->addr) && nvn_stage == 0 && !strncmp(sh->key, "e0b2c674be75c256", 16) && S.ubo[0][3].addr) {
+                u = &S.ubo[0][3];
+                static int once; if (!once++) LOG("P5R text ubo c0 unbound -> using c3");
+            }
             if(sh->rf.guarded_candidate && (!u || !u->addr || !u->size || (u->addr&15) || !mtl_gpu_addr(u->addr,u->size,&mb,&mo,&gpu)))
                 MDIE("P5R candidate uniform buffer range/alignment invalid: stage=%d slot=%d",nvn_stage,reg);
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "阶段 %d cb%d 没有绑定 uniform 缓冲", nvn_stage, reg); continue; }
