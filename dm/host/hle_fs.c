@@ -532,6 +532,9 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
     if (fd >= (int)sizeof g_fmode) die("fd 超出表");
     g_fmode[fd] = (uint8_t)mode; *out = (uint64_t)fd;
     if (strstr(path,"FONT")||strstr(path,".FNT")||strstr(path,".GBF")) { g_fontfd[fd] = 1; LOG("P5R font open %s fd=%d",path,fd); }
+    // P5R：头 160 次打开全部记一行（含 CPK / 配置 / 存档），用于确认字体与资源到底从哪来
+    // P5R: log the first 160 opens (CPK / config / save included) to see where fonts and resources come from
+    if (!dm_guest_d2r()) { static _Atomic int nopen; if (atomic_fetch_add(&nopen, 1) < 160) LOG("P5R open %s mode=%d fd=%d", path, mode, fd); }
     g_hm[fd] = NULL; if (!(mode & (MODE_WRITE | MODE_APPEND))) dm_data_note_fd(fd, hp);
     { const char *c = strchr(path, ':'); size_t ln = c ? (size_t)(c - path) : 0; g_fsave[fd] = 0;
       for (int i = 0; c && i < g_nmnt; i++) if (strlen(g_mnt[i].name) == ln && !strncmp(g_mnt[i].name, path, ln)) g_fsave[fd] = g_mnt[i].commit[0] != 0; }

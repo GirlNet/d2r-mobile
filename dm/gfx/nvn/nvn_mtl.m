@@ -1552,7 +1552,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
             static int logged;
             static int relogged;
             if (refresh) { if (relogged++ < 40) LOG("P5R bc atlas refresh ser=%llu fmt=%#x %ux%u tracked=%d", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, tracked); }
-            else if (logged++ < 20) {   // 首传记内容哈希与非零字节数：全零 = 页面确实还没写，非零 = 图集已有内容 | First upload logs content hash and non-zero bytes: all zero = the page really is unwritten, non-zero = the atlas has content
+            else if (logged++ < 64) {   // 首传记内容哈希与非零字节数：全零 = 页面确实还没写，非零 = 图集已有内容 | First upload logs content hash and non-zero bytes: all zero = the page really is unwritten, non-zero = the atlas has content
                 uint64_t h = 1469598103934665603ull; size_t nz = 0, lim = image < (size_t)(2 << 20) ? image : (size_t)(2 << 20);
                 for (size_t k = 0; k < lim; k++) { h = (h ^ src[k]) * 1099511628211ull; nz += src[k] != 0; }
                 LOG("P5R bc atlas upload ser=%llu fmt=%#x %ux%u row=%zu tracked=%d nz=%zu/%zu hash=%016llx", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, row, tracked, nz, lim, (unsigned long long)h);
@@ -3550,6 +3550,9 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             check_guest_texture(sh, b, tid, t);
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
+            { static int n; int bcf = t && tid > 0 && tid < g_ntreg && g_treg[tid].t.d.format >= 0x41 && g_treg[tid].t.d.format <= 0x4E;
+              if (bcf && n++ < 40) LOG("P5R img bind key=%s st=%d ser=%llu fmt=%#x %ux%u rw=%d", sh->key, nvn_stage,
+                  (unsigned long long)g_treg[tid].t.serial, g_treg[tid].t.d.format, g_treg[tid].t.d.width, g_treg[tid].t.d.height, b->rw); }
             if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "图像槽绑的贴图没有可写用途（贴图号 %d）", tid); t = nil; }
             if (!t) { t = dummy_img(b->dtt, b->dpf); trid = g_dummy_img_rid[b->dtt & 7][b->dpf & 3]; }   // 未绑：D3D 语义写入丢弃——写进专用哑贴图，不污染读出 0 的那套 | Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
             slots[aid] = trid;
@@ -5608,6 +5611,16 @@ static void copy_b2t(const p_copy_b2t *c) {
     size_t row, img, span;
     if (!nvn_copy_layout(c->r.width, c->r.height, c->r.depth, bw, bh, bpb,
                          S.copy_stride, S.copy_image_stride, &row, &img, &span)) copy_layout_failure(c, "buffer-to-texture", bw, bh, bpb);
+    // 诊断：压缩图集 / 大块上传的目的地与来源。字幕字形页（BC1/BC3，512x1024 等）如果出现在这里，
+    // 说明数据确实由 CPK → 缓冲 → 贴图送进来了，问题在采样侧；一条都没有就说明图集从没被填过。
+    // Diagnostic: destination and source of compressed-atlas / large uploads. If the glyph page (BC1/BC3,
+    // 512x1024 etc.) shows up here, the data does arrive via CPK -> buffer -> texture and the sampling side is at fault;
+    // if none appears, the atlas was never filled.
+    { static int n; int bcf = c->tex->d.format >= 0x41 && c->tex->d.format <= 0x4E;
+      if ((bcf || (c->r.width >= 256 && c->r.height >= 128)) && n++ < 160)
+          LOG("P5R b2t dest ser=%llu fmt=%#x %ux%u lv=%u region=%d,%d %dx%d row=%zu img=%zu src=%#llx",
+              (unsigned long long)c->tex->serial, c->tex->d.format, c->tex->d.width, c->tex->d.height, level,
+              c->r.xoffset, c->r.yoffset, c->r.width, c->r.height, row, img, (unsigned long long)c->src); }
     int is3d = c->tex->d.target == 2, nz = c->r.depth ? c->r.depth : 1;
     void *mb; uint64_t mo;
     if (!mtl_addr(c->src, span, &mb, &mo)) { RED_ONCE(23, "缓冲→贴图拷贝的源不在内存池里"); return; }
@@ -5689,6 +5702,13 @@ static void copy_t2t(const p_copy_t2t *c) {
     }
     id<MTLTexture> s = tex_mtl(c->src), d = tex_mtl(c->dst);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
+    { static int n; int bcf = c->dst && c->dst->d.format >= 0x41 && c->dst->d.format <= 0x4E;
+      if ((bcf || (c->dr.width >= 256 && c->dr.height >= 128)) && n++ < 120)
+          LOG("P5R t2t dest ser=%llu fmt=%#x %ux%u region=%d,%d %dx%d src=%llu sfmt=%#x",
+              (unsigned long long)(c->dst ? c->dst->serial : 0), c->dst ? c->dst->d.format : 0,
+              c->dst ? c->dst->d.width : 0, c->dst ? c->dst->d.height : 0,
+              c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height,
+              (unsigned long long)(c->src ? c->src->serial : 0), c->src ? c->src->d.format : 0); }
     if (!s || !d) return;
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
