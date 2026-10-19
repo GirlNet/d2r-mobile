@@ -1039,9 +1039,13 @@ static void bc_sample(const uint8_t *p, size_t n, uint8_t out[BC_SAMP][16]) {
 // 无脏页跟踪的压缩图集：每次取样比对都要走一次慢路（tex_mtl 只在内容变了时才重传）。
 // Compressed atlas without dirty-page tracking: every bind revalidates through the slow path
 // (tex_mtl re-uploads only when the content changed).
-static int bc_recheck(const tex_t *t) {
-    return t && !dm_guest_d2r() && t->mem && t->d.target == 1 && t->d.levels <= 1 && !t->has_layout
-           && t->d.format >= 0x41 && t->d.format <= 0x4E;
+static int bc_recheck(const tex_t *t, uint64_t *stamp) {
+    if (!(t && !dm_guest_d2r() && t->mem && t->d.target == 1 && t->d.levels <= 1 && !t->has_layout
+          && t->d.format >= 0x41 && t->d.format <= 0x4E)) return 0;
+    uint64_t f = atomic_load(&g_cur_frame);
+    if (f && *stamp == f) return 0;   // 本帧已比过：一帧最多一次，避免每笔绑定都走慢路 | Already compared this frame: at most once per frame so bindings stay cheap
+    *stamp = f;
+    return 1;
 }
 static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss;
 static uint64_t g_pfv_upgrades;
@@ -2572,7 +2576,7 @@ static __unsafe_unretained NvProg *programs_get(const program_bindings *bindings
 // 登记时快照整个贴图对象（NVN 语义：描述符已写进池）；view：该号对应的 MTLTexture（视图或基贴图，CFBridgingRetain 持有）及取得时的序号表 / 客体写代号
 // ---------- Descriptor pool: texture ID / sampler ID → object ----------
 // At registration the whole texture object is snapshotted (NVN semantics: the descriptor has been written into the pool); view: the MTLTexture for that ID (a view or the base texture, held via CFBridgingRetain) and the serial-table / guest-write generations at the time it was obtained
-typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view_id, view_rid, view_ser, view_dirty; } treg_t;
+typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view_id, view_rid, view_ser, view_dirty, bc_frame; } treg_t;   // bc_frame：无脏页跟踪的压缩图集本帧已取样比对的帧号 | bc_frame: frame in which a tracking-less compressed atlas was last sample-checked
 static treg_t *g_treg; static int g_ntreg;
 // 贴图号 → 序号的无锁副本（回放热路径只要序号：写回前瞻索引、纯清除前提的绑定集合）：贴图号 20 位，固定 1M 项（BSS，只占碰过的页），
 // 登记时 release 写、读端 relaxed 原子读，不进 g_rmu（原 h_ser 每次查表加解锁，营地每帧数千次）
@@ -2617,7 +2621,7 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "贴图号 %d 未登记", tid); return nil; }
     treg_t *rp = &g_treg[tid];
     uint64_t sg = g_ser_gen, dg = nvn_dirty_now();   // 先取代号再查：期间若有变更，下次必走慢路 | Take the generations first and then look up: if a change happens in between, the next time must take the slow path
-    if (rp->view && rp->view_ser == sg && rp->view_dirty == dg && !bc_recheck(&rp->t)) return (__bridge id<MTLTexture>)rp->view;
+    if (rp->view && rp->view_ser == sg && rp->view_dirty == dg && !bc_recheck(&rp->t, &rp->bc_frame)) return (__bridge id<MTLTexture>)rp->view;
     id<MTLTexture> v = (__bridge id<MTLTexture>)rp->view;
     if (v) {   // 序号表或客体内存有过变动：核基贴图是否被重传换新，换了则视图作废 | The serial table or guest memory has changed: check whether the base texture was re-uploaded and replaced; if so the view is invalidated
         id<MTLTexture> cur = tex_mtl(&rp->t);
@@ -2663,11 +2667,11 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
 // 热路径取对象：表里有效就直接返回表持有的指针（不经 ARC 的 retain / autorelease），否则走慢路建 / 校验。调用方持 g_rmu。
 // Hot-path object fetch: if the table entry is valid, return the table-held pointer directly (without ARC retain / autorelease), otherwise take the slow path to build / validate. Caller holds g_rmu.
 static inline __attribute__((always_inline)) void *tex_fast(int tid) {
-    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && g_treg[tid].view_dirty == nvn_dirty_now() && !bc_recheck(&g_treg[tid].t)) return g_treg[tid].view;
+    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && g_treg[tid].view_dirty == nvn_dirty_now() && !bc_recheck(&g_treg[tid].t, &g_treg[tid].bc_frame)) return g_treg[tid].view;
     return (__bridge void *)tex_by_id(tid);
 }
 static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
-    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && g_treg[tid].view_dirty == nvn_dirty_now() && !bc_recheck(&g_treg[tid].t)) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
+    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && g_treg[tid].view_dirty == nvn_dirty_now() && !bc_recheck(&g_treg[tid].t, &g_treg[tid].bc_frame)) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
     id<MTLTexture> t = tex_by_id(tid); if (out) *out = (__bridge void *)t; return t ? t.gpuResourceID._impl : 0;
 }
 static MTLSamplerAddressMode wrapm(int w) {
