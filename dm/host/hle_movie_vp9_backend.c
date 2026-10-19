@@ -43,10 +43,7 @@ int dm_vp9_keyframe(const void *packet, size_t size, int *width, int *height, in
     return 0;
 }
 static pthread_once_t register_once = PTHREAD_ONCE_INIT;
-static void register_vp9(void) {
-    VTRegisterSupplementalVideoDecoderIfAvailable(kCMVideoCodecType_VP9);
-    fprintf(stderr,"P5R VP9 VideoToolbox hardware available: %d\n",(int)VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9));
-}
+static void register_vp9(void) { VTRegisterSupplementalVideoDecoderIfAvailable(kCMVideoCodecType_VP9); }
 static void decoded(void *user, void *source, OSStatus status, VTDecodeInfoFlags flags,
                     CVImageBufferRef image, CMTime pts, CMTime duration) {
     (void)source; (void)duration;
