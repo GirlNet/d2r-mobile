@@ -173,6 +173,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     setenv("DM_MSL_DIR", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 1);
     chdir(documents.fileSystemRepresentation);
     freopen([documents stringByAppendingPathComponent:@"p5r-runtime.log"].fileSystemRepresentation, "a", stderr);
+    setvbuf(stderr, NULL, _IONBF, 0); // Preserve final diagnostics even when a guest abort uses _exit.
     NSData *identityData=[NSData dataWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/p5r-shell.json"]];
     NSDictionary *identity=identityData?[NSJSONSerialization JSONObjectWithData:identityData options:0 error:nil]:nil;
     LOG("P5R normal launch build=%s shader_chain=%s mode=%s",[identity[@"source_fingerprint"] UTF8String]?:"unknown",

@@ -65,6 +65,12 @@ jobs:
           set -euo pipefail
           make -C dm/host/tests build/t_oe
           dm/host/tests/build/t_oe
+      - name: Check movie codec registration on the packaging host
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_movie_codecs
+          dm/host/tests/build/t_movie_codecs p5r
+          dm/host/tests/build/t_movie_codecs d2r
       - name: Link and package the complete game-free P5R host
         run: |
           set -euo pipefail
@@ -97,6 +103,12 @@ jobs:
           set -euo pipefail
           make -C dm/host/tests build/t_oe
           dm/host/tests/build/t_oe
+      - name: Check movie codec registration and ownership
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_movie_codecs
+          dm/host/tests/build/t_movie_codecs p5r
+          dm/host/tests/build/t_movie_codecs d2r
       - name: Audit registered startup API coverage
         run: python3 dm/tools/audit_p5r_api.py
       - name: Check changed host sources
