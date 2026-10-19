@@ -4,6 +4,7 @@
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
 #include <VideoToolbox/VideoToolbox.h>
+#include <TargetConditionals.h>
 #include <vpx/vp8dx.h>
 #include <vpx/vpx_decoder.h>
 #include <pthread.h>
@@ -80,9 +81,18 @@ static void decoded(void *user, void *source, OSStatus status, VTDecodeInfoFlags
 }
 dm_vp9 *dm_vp9_create(dm_vp9_output output, void *user) {
     if (!output) return NULL;
+#if !TARGET_OS_IPHONE
     pthread_once(&register_once, register_vp9);
+#endif
     dm_vp9 *d = calloc(1, sizeof *d);
-    if (d) { d->output = output; d->user = user; }
+    if (d) {
+        d->output = output; d->user = user;
+#if TARGET_OS_IPHONE
+        // The target iOS runtime faults inside VideoToolbox's VP9 capability
+        // probes. Use the pinned, locally verified decoder path there.
+        d->software = 1;
+#endif
+    }
     return d;
 }
 dm_vp9 *dm_vp9_create_software(dm_vp9_output output, void *user) {
