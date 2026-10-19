@@ -1017,10 +1017,32 @@ static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get
 @implementation NvPkg
 - (void)dealloc { res_remove(tex); }
 @end
-@interface NvBc : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen; } @end
+// samp：压缩图集的内容抽样（上传时刻）。P5R 的贴图池没有写保护跟踪，g_now 不推进，
+// 所以「上次检查后没有脏页」不能证明内容没变；无跟踪时改用抽样比对决定是否重传。
+// samp: content samples of a compressed atlas taken at upload. P5R's texture pools have no
+// write-protect tracking, so g_now never advances and "no dirty page since the last check"
+// does not prove the content is unchanged; without tracking, sample comparison decides.
+#define BC_SAMP 32
+@interface NvBc : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen; uint32_t samp_ok; uint8_t samp[BC_SAMP][16]; } @end
 @implementation NvBc
 - (void)dealloc { res_remove(tex); }
 @end
+static void bc_sample(const uint8_t *p, size_t n, uint8_t out[BC_SAMP][16]) {
+    memset(out, 0, BC_SAMP * 16);
+    if (!p || n < 16) return;
+    for (int k = 0; k < BC_SAMP; k++) {
+        size_t at = n * (size_t)k / BC_SAMP;
+        if (at + 16 > n) at = n - 16;
+        memcpy(out[k], p + at, 16);
+    }
+}
+// 无脏页跟踪的压缩图集：每次取样比对都要走一次慢路（tex_mtl 只在内容变了时才重传）。
+// Compressed atlas without dirty-page tracking: every bind revalidates through the slow path
+// (tex_mtl re-uploads only when the content changed).
+static int bc_recheck(const tex_t *t) {
+    return t && !dm_guest_d2r() && t->mem && t->d.target == 1 && t->d.levels <= 1 && !t->has_layout
+           && t->d.format >= 0x41 && t->d.format <= 0x4E;
+}
 static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss;
 static uint64_t g_pfv_upgrades;
 // DM_NVN_DIRTYCHECK=1（诊断，对照真值）：每次使用都全量哈希池内容，变了却没被脏页跟踪检出 = 漏检
@@ -1495,7 +1517,17 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
             uint64_t now = nvn_dirty_now();
             NvBc *bc = serial_get(t->serial);
             int tracked = nvn_dirty_tracked(t->mem, image);
-            int clean = bc && (bc->seen == now || (tracked && !nvn_dirty_since(t->mem, image, bc->stamp)));
+            void *mb; uint64_t mo;
+            if (!mtl_addr((uint64_t)t->mem, image, &mb, &mo)) return bc ? bc->tex : nil;
+            const uint8_t *src = (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo;
+            int clean = 0;
+            if (bc) {
+                if (tracked) clean = bc->seen == now || !nvn_dirty_since(t->mem, image, bc->stamp);
+                else if (bc->samp_ok) {   // 无脏页跟踪：抽样比内容，变了就重传（抽样只读 32 行缓存，不改变画面） | No dirty tracking: compare samples and re-upload on change (reads 32 cache lines only)
+                    uint8_t cur[BC_SAMP][16]; bc_sample(src, image, cur);
+                    clean = !memcmp(cur, bc->samp, sizeof cur);
+                }
+            }
             if (clean) return bc->tex;
             if (!bc) {
                 MTLTextureDescriptor *d = tex_desc(t, 0);
@@ -1506,15 +1538,21 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
                 res_add(mt);
                 bc = [NvBc new]; bc->tex = mt; serial_put(t->serial, bc);
             }
-            void *mb; uint64_t mo;
-            if (!mtl_addr((uint64_t)t->mem, image, &mb, &mo)) return bc->tex;
+            int refresh = bc->samp_ok;
             BENC b = blit();
             enc_b_copy_buffer_texture(b, (__bridge id<MTLBuffer>)mb, mo, row, image,
                                       MTLSizeMake(t->d.width, t->d.height, 1), bc->tex, 0, 0,
                                       MTLOriginMake(0, 0, 0));
+            bc_sample(src, image, bc->samp); bc->samp_ok = 1;
             bc->stamp = now; bc->seen = nvn_dirty_now();
             static int logged;
-            if (logged++ < 10) LOG("P5R bc atlas upload ser=%llu fmt=%#x %ux%u row=%zu", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, row);
+            static int relogged;
+            if (refresh) { if (relogged++ < 40) LOG("P5R bc atlas refresh ser=%llu fmt=%#x %ux%u tracked=%d", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, tracked); }
+            else if (logged++ < 20) {   // 首传记内容哈希与非零字节数：全零 = 页面确实还没写，非零 = 图集已有内容 | First upload logs content hash and non-zero bytes: all zero = the page really is unwritten, non-zero = the atlas has content
+                uint64_t h = 1469598103934665603ull; size_t nz = 0, lim = image < (size_t)(2 << 20) ? image : (size_t)(2 << 20);
+                for (size_t k = 0; k < lim; k++) { h = (h ^ src[k]) * 1099511628211ull; nz += src[k] != 0; }
+                LOG("P5R bc atlas upload ser=%llu fmt=%#x %ux%u row=%zu tracked=%d nz=%zu/%zu hash=%016llx", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, row, tracked, nz, lim, (unsigned long long)h);
+            }
             return bc->tex;
         }
     }
@@ -2579,7 +2617,7 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "贴图号 %d 未登记", tid); return nil; }
     treg_t *rp = &g_treg[tid];
     uint64_t sg = g_ser_gen, dg = nvn_dirty_now();   // 先取代号再查：期间若有变更，下次必走慢路 | Take the generations first and then look up: if a change happens in between, the next time must take the slow path
-    if (rp->view && rp->view_ser == sg && rp->view_dirty == dg) return (__bridge id<MTLTexture>)rp->view;
+    if (rp->view && rp->view_ser == sg && rp->view_dirty == dg && !bc_recheck(&rp->t)) return (__bridge id<MTLTexture>)rp->view;
     id<MTLTexture> v = (__bridge id<MTLTexture>)rp->view;
     if (v) {   // 序号表或客体内存有过变动：核基贴图是否被重传换新，换了则视图作废 | The serial table or guest memory has changed: check whether the base texture was re-uploaded and replaced; if so the view is invalidated
         id<MTLTexture> cur = tex_mtl(&rp->t);
@@ -2625,11 +2663,11 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
 // 热路径取对象：表里有效就直接返回表持有的指针（不经 ARC 的 retain / autorelease），否则走慢路建 / 校验。调用方持 g_rmu。
 // Hot-path object fetch: if the table entry is valid, return the table-held pointer directly (without ARC retain / autorelease), otherwise take the slow path to build / validate. Caller holds g_rmu.
 static inline __attribute__((always_inline)) void *tex_fast(int tid) {
-    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && g_treg[tid].view_dirty == nvn_dirty_now()) return g_treg[tid].view;
+    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && g_treg[tid].view_dirty == nvn_dirty_now() && !bc_recheck(&g_treg[tid].t)) return g_treg[tid].view;
     return (__bridge void *)tex_by_id(tid);
 }
 static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
-    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && g_treg[tid].view_dirty == nvn_dirty_now()) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
+    if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && g_treg[tid].view_dirty == nvn_dirty_now() && !bc_recheck(&g_treg[tid].t)) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
     id<MTLTexture> t = tex_by_id(tid); if (out) *out = (__bridge void *)t; return t ? t.gpuResourceID._impl : 0;
 }
 static MTLSamplerAddressMode wrapm(int w) {

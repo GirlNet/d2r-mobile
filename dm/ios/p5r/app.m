@@ -179,6 +179,28 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     NSString *chain=identity[@"shader_chain"];
     if(chain.length&&[NSFileManager.defaultManager fileExistsAtPath:[external stringByAppendingPathComponent:[@"b-" stringByAppendingString:chain]]])msl=external;
     setenv("DM_MSL_DIR", msl.fileSystemRepresentation, 1);
+    // Documents/p5r-config.txt：一行一个 KEY=VALUE，给宿主诊断开关用，改完重启游戏即可生效。
+    // 只接受 DM_ 前缀，且不允许改写路径 / 归档 / 配置档这些由壳自己决定的键。
+    // Documents/p5r-config.txt: one KEY=VALUE per line for host diagnostics; restart the game to apply.
+    // Only DM_ keys are accepted, and the ones the shell owns (paths, profile) cannot be overridden.
+    { NSString *text = [NSString stringWithContentsOfFile:[documents stringByAppendingPathComponent:@"p5r-config.txt"]
+                                                 encoding:NSUTF8StringEncoding error:nil];
+      if (text.length) {
+        NSMutableArray *applied = [NSMutableArray array];
+        for (NSString *raw in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+            NSString *line = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            if (!line.length || [line hasPrefix:@"#"]) continue;
+            NSRange eq = [line rangeOfString:@"="];
+            if (eq.location == NSNotFound) continue;
+            NSString *key = [[line substringToIndex:eq.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            NSString *value = [[line substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            if (![key hasPrefix:@"DM_"] || ![key length] || ![value length]) continue;
+            if ([@[@"DM_ROMFS",@"DM_SAVE",@"DM_TEMP",@"DM_GUEST_PROFILE",@"DM_MSL_DIR"] containsObject:key]) continue;
+            setenv(key.UTF8String, value.UTF8String, 1);
+            if (applied.count < 16) [applied addObject:[NSString stringWithFormat:@"%@=%@", key, value]];
+        }
+        if (applied.count) LOG("P5R config: %s", ([applied componentsJoinedByString:@" "]).UTF8String);
+      } }
     chdir(documents.fileSystemRepresentation);
     freopen([documents stringByAppendingPathComponent:@"p5r-runtime.log"].fileSystemRepresentation, "a", stderr);
     setvbuf(stderr, NULL, _IONBF, 0); // Preserve final diagnostics even when a guest abort uses _exit.
