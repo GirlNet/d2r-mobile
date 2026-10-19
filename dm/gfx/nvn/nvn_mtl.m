@@ -3244,7 +3244,32 @@ static void check_guest_texture(NvShader *shader, const nvn_rbind *binding, int 
         reason, shader->key, shader->stage, binding->reg, tid, binding->dtt, binding->dpf,
         (unsigned long)texture.textureType, (unsigned long)texture.pixelFormat);
 }
-static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) {
+// Resolving a view can upload or replace its base texture through blit(), which
+// ends the current render encoder. Capture the actual textures before opening
+// the encoder used by this draw/dispatch, and retain them through argument use.
+// Descriptor registration may subsequently replace the table entry; this draw
+// continues to use its captured objects rather than resolving it a second time.
+static void prepare_shader_textures(NvShader *shader,int stage,id<MTLTexture> __strong textures[NVN_REFL_MAXB]) {
+    if(!shader)return;
+    pthread_mutex_lock(&g_rmu);
+    for(int i=0;i<shader->rf.nb;i++) {
+        const nvn_rbind *b=&shader->rf.b[i];
+        if(b->kind!=NVN_RB_TEX&&b->kind!=NVN_RB_IMG&&b->kind!=NVN_RB_TBUF)continue;
+        int tid=(int)nvn_handle_texture_id(nvn_rbind_handle(b,S.tex[stage],S.samp[stage],S.img[stage]));
+        textures[i]=tid?(__bridge id<MTLTexture>)tex_fast(tid):nil;
+        check_guest_texture(shader,b,tid,textures[i]);
+        // A null binding can also lazily allocate/clear its dummy. Do that
+        // before the encoder opens, while retaining null descriptor semantics.
+        if(!textures[i]) {
+            if(b->kind==NVN_RB_IMG)(void)dummy_img(b->dtt,b->dpf);
+            else if(b->kind==NVN_RB_TBUF)(void)dummy_tbuf(b->dpf);
+            else (void)dummy_tex(b->dtt,b->dpf);
+        }
+    }
+    pthread_mutex_unlock(&g_rmu);
+}
+static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex,
+                       id<MTLTexture> __strong const prepared[NVN_REFL_MAXB]) {
     if (!sh->ae) return 1;
     uint64_t slots[NVN_REFL_MAXB] = {0};
     args_sync_dirty();
@@ -3306,7 +3331,9 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d（0 最近点 / 1 双线性；2–5 带 mip）", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf); }
         } else if (b->kind == NVN_RB_TEX) {
             int tid = (int)nvn_handle_texture_id(resource_handle);
-            void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            void *tv = prepared?(__bridge void *)prepared[i]:NULL;
+            uint64_t trid = prepared?prepared[i].gpuResourceID._impl:tid?tex_fast_rid(tid,&tv):0;
+            __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             check_guest_texture(sh, b, tid, t);
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);
             if (t && passdump() && tid < g_ntreg) PD("R %llu st%d ser=%llu", g_stat_pass, nvn_stage, g_treg[tid].t.serial);
@@ -3319,7 +3346,9 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             USE(t, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_IMG) {   // 可写贴图：NVN 图像槽 r（BindImages）↔ D3D u_r | Writable texture: NVN image slot r (BindImages) ↔ D3D u_r
             int tid = (int)nvn_handle_texture_id(resource_handle);
-            void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            void *tv = prepared?(__bridge void *)prepared[i]:NULL;
+            uint64_t trid = prepared?prepared[i].gpuResourceID._impl:tid?tex_fast_rid(tid,&tv):0;
+            __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             check_guest_texture(sh, b, tid, t);
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
             if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "图像槽绑的贴图没有可写用途（贴图号 %d）", tid); t = nil; }
@@ -3328,7 +3357,9 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             USE(t, MTLResourceUsageRead | MTLResourceUsageWrite);
         } else if (b->kind == NVN_RB_TBUF) {   // 类型化缓冲：贴图槽 r 里的缓冲贴图（目标 BUFFER） | Typed buffer: the buffer texture (target BUFFER) in texture slot r
             int tid = (int)nvn_handle_texture_id(resource_handle);
-            void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            void *tv = prepared?(__bridge void *)prepared[i]:NULL;
+            uint64_t trid = prepared?prepared[i].gpuResourceID._impl:tid?tex_fast_rid(tid,&tv):0;
+            __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             check_guest_texture(sh, b, tid, t);
             if (t && t.textureType != MTLTextureTypeTextureBuffer) { RED_ONCE(40, "类型化缓冲槽绑的不是缓冲贴图（贴图号 %d 类型 %lu）", tid, (unsigned long)t.textureType); t = nil; }
             if (bl) PD("B %llu st%d tbuf reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
@@ -4994,6 +5025,11 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         if (x1 > (long)tw0) x1 = tw0; if (y1 > (long)th0) y1 = th0;
         if (x1 <= x0 || y1 <= y0) return;
     }
+    id<MTLTexture> vertex_textures[NVN_REFL_MAXB]={nil},fragment_textures[NVN_REFL_MAXB]={nil};
+    if(!dm_guest_d2r()) {
+        prepare_shader_textures(pr->sh[0],0,vertex_textures);
+        prepare_shader_textures(pr->sh[1],1,fragment_textures);
+    }
 #ifdef NVN_RT_RANGE_TEST
     if (!g_enc) rr_begin();
 #endif
@@ -5072,8 +5108,8 @@ frz_plain:;
     static id<MTLBuffer> zero; if (!zero) { zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(zero); }
     static uint64_t zero_gpu; if (!zero_gpu) zero_gpu = zero.gpuAddress;
     enc_r_vbuf(en, 30, zero_gpu);
-    if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
-    if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0);
+    if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1,dm_guest_d2r()?NULL:vertex_textures);
+    if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0,dm_guest_d2r()?NULL:fragment_textures);
     // 参数绑定在登记表锁内捕获实际资源；资格判断到绑定期间有版本变化，则在任何GPU draw前切开重试。
     // Parameter binding captures the actual resources under the registry lock; if the version changed between the eligibility check and the binding, split and retry before any GPU draw.
     if (g_rt_range_active && (g_pass.reg_gen != g_reg_gen || g_pass.ser_gen != g_ser_gen || g_pass.range_dirty != nvn_dirty_now())) { rp_end(); draw(dw, di); return; }
@@ -5275,10 +5311,12 @@ static void dispatch(const p_dispatch *dp) {
     }
     const uint16_t *tg = cs->rf.tg;
     if (!tg[0]) { RED_ONCE(29, "计算着色器缺线程组大小反射"); return; }
+    id<MTLTexture> textures[NVN_REFL_MAXB]={nil};
+    if(!dm_guest_d2r())prepare_shader_textures(cs,5,textures);
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     id<MTLComputeCommandEncoder> ce = pg_compute();
     enc_c_pso(ce, ps);
-    encode_args(ce, cs, 5, 0);
+    encode_args(ce, cs, 5, 0,dm_guest_d2r()?NULL:textures);
     enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
     enc_c_end(ce);
     bright_lut(cs);   // 3D 画面加亮：游戏算完调色表之后重写 | 3D picture brightening: rewrite after the game finishes computing the color lookup table

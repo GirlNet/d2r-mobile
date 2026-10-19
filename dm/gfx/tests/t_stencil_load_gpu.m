@@ -26,9 +26,10 @@ int main(int argc,char **argv){@autoreleasepool{
     NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
       "struct Args{texture2d<float> t[[id(0)]];device uint4 *out[[id(1)]];};\n"
       "vertex float4 v(uint n[[vertex_id]]){float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return float4(p[n],.5,1);}\n"
-      "fragment float4 f(constant Args &a[[buffer(0)]],float4 pos[[position]]){if(all(uint2(pos.xy)==uint2(0))){"
+      "fragment float4 f(constant Args &a[[buffer(0)]],float4 pos[[position]]){if(all(uint2(pos.xy)==uint2(1,0))){"
       "uint2 size=uint2(a.t.get_width(),a.t.get_height());a.out[0]=as_type<uint4>(a.t.read(size-uint2(1),0));}return float4(1,0,0,1);}\n"
-      "kernel void k(constant Args &a[[buffer(0)]]){a.out[0]=as_type<uint4>(a.t.read(uint2(0),0));}";
+      "kernel void k(constant Args &a[[buffer(0)]]){a.out[0]=as_type<uint4>(a.t.read(uint2(0),0));}\n"
+      "fragment float4 blue(){return float4(0,0,1,1);}";
     if(!strcmp(failure,"--sample"))source=[source stringByReplacingOccurrencesOfString:@"a.t.read(uint2(0),0)" withString:@"a.t.sample(sampler(coord::normalized),float2(.5))"];
     MTLCompileOptions *options=[MTLCompileOptions new];options.fastMathEnabled=NO;
     id<MTLLibrary> library=[g_dev newLibraryWithSource:source options:options error:&error];
@@ -47,17 +48,21 @@ int main(int argc,char **argv){@autoreleasepool{
         if(i==1){shader->fragment_source=source;shader->fragment_entry=entries[i];}
     }
     serial_put(program.serial,native);
+    prog_t warm={.serial=1970003};NvProg *warm_native=[NvProg new];warm_native->sh[0]=native->sh[0];
+    warm_native->sh[1]=[NvShader new];warm_native->sh[1]->stage=1;warm_native->sh[1]->fn=[library newFunctionWithName:@"blue"];CHECK(warm_native->sh[1]->fn);serial_put(warm.serial,warm_native);
     MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8 width:2 height:2 mipmapped:NO];
-    d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageShaderRead|MTLTextureUsageRenderTarget|MTLTextureUsagePixelFormatView;
-    id<MTLTexture> ds=[g_dev newTextureWithDescriptor:d];CHECK(ds);
-    tex_t depth={.serial=1970001};depth.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_DEPTH32F_STENCIL8,.width=2,.height=2,.depth=1,.levels=1,.samples=1};serial_put(depth.serial,ds);
+    // The phone creates these without PixelFormatView. First sampling must
+    // preserve their pixels through an on-demand GPU copy, before encoding use.
+    d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageShaderRead|MTLTextureUsageRenderTarget;
+    tex_t depth={.serial=1970001};depth.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_DEPTH32F_STENCIL8,.width=2,.height=2,.depth=1,.levels=1,.samples=1};
     tex_t target={.serial=1970002};target.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=2,.height=2,.depth=1,.levels=1,.samples=1};
     void *memory=NULL;CHECK(!posix_memalign(&memory,getpagesize(),131072));mtl_pool_add(memory,131072);memset(memory,0xa7,131072);
     pool_t pool={.magic=MAGIC('P','O','O','L'),.mem=memory,.size=131072};NVNcommandBuffer cb;
     CHECK(h_nvnCommandBufferInitialize(&cb,NULL));h_nvnCommandBufferAddCommandMemory(&cb,(const NVNmemoryPool *)&pool,65536,65536);
     state_reset();memset(&R,0,sizeof R);const unsigned values[]={0,1,93,255};unsigned cases=0;
     for(unsigned mode=0;mode<2;mode++)for(unsigned n=0;n<8;n++) {
-        unsigned stencil=values[n/2];int aspect=(n%2)==0;CHECK(clear_aspects(ds,stencil));
+        if(!n){id<MTLTexture> fresh=[g_dev newTextureWithDescriptor:d];CHECK(fresh);res_add(fresh);serial_put(depth.serial,fresh);}
+        unsigned stencil=values[n/2];int aspect=(n%2)==0;CHECK(clear_aspects(tex_mtl(&depth),stencil));
         // RRR1 matches the real guest descriptor; its alpha must contain uint
         // bits 1, not the floating-point representation of numeric 1.0.
         view_t view={.set_depth_mode=1,.depth_mode=aspect,.set_swizzle=1,.swizzle={2,2,2,1}};
@@ -69,7 +74,15 @@ int main(int argc,char **argv){@autoreleasepool{
         if(mode)h_nvnCommandBufferDispatchCompute(&cb,1,1,1);
         else {
             const NVNtexture *targets[]={(const NVNtexture *)&target};h_nvnCommandBufferSetRenderTargets(&cb,1,targets,NULL,NULL,NULL);
-            h_nvnCommandBufferSetViewport(&cb,0,0,2,2);h_nvnCommandBufferSetScissor(&cb,0,0,2,2);
+            h_nvnCommandBufferSetViewport(&cb,0,0,2,2);
+            if(!cases) {
+                // Leave a live render encoder before first sampling upgrades
+                // the source. Its left column must survive the encoder split.
+                h_nvnCommandBufferBindProgram(&cb,(const NVNprogram *)&warm,NVN_SHADER_STAGE_VERTEX_BIT|NVN_SHADER_STAGE_FRAGMENT_BIT);
+                h_nvnCommandBufferSetScissor(&cb,0,0,1,2);h_nvnCommandBufferDrawArrays(&cb,NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);
+                h_nvnCommandBufferBindProgram(&cb,(const NVNprogram *)&program,NVN_SHADER_STAGE_VERTEX_BIT|NVN_SHADER_STAGE_FRAGMENT_BIT);
+            }
+            h_nvnCommandBufferSetScissor(&cb,!cases?1:0,0,!cases?1:2,2);
             h_nvnCommandBufferDrawArrays(&cb,NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);
         }
         NVNcommandHandle handle=h_nvnCommandBufferEndRecording(&cb);mtl_sub_begin();mtl_exec((const uint8_t *)handle);
@@ -78,10 +91,21 @@ int main(int argc,char **argv){@autoreleasepool{
         if(aspect)CHECK(out[0]==stencil&&out[1]==stencil&&out[2]==stencil&&out[3]==1);
         else CHECK(out[0]==0x3ec00000); // 0.375 depth bits, with no stale stencil variant
         for(unsigned i=4;i<8;i++)CHECK(out[i]==0xa7a7a7a7);cases++;
+        if(cases==1) {
+            id<MTLBuffer> pixels=[g_dev newBufferWithLength:512 options:MTLResourceStorageModeShared];memset(pixels.contents,0xa7,512);
+            id<MTLCommandBuffer> command=[g_q commandBuffer];id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];
+            [blit copyFromTexture:tex_mtl(&target) sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(2,2,1)
+                toBuffer:pixels destinationOffset:0 destinationBytesPerRow:256 destinationBytesPerImage:512];
+            [blit endEncoding];[command commit];[command waitUntilCompleted];CHECK(command.status==MTLCommandBufferStatusCompleted);
+            const uint8_t expected[8]={0,0,255,255,255,0,0,255};
+            for(unsigned y=0;y<2;y++){CHECK(!memcmp((uint8_t *)pixels.contents+y*256,expected,8));for(unsigned x=8;x<256;x++)CHECK(((uint8_t *)pixels.contents)[y*256+x]==0xa7);}
+        }
     }
     CHECK(native->sh[1]->rf.b[0].dpf==NVN_DPF_FLOAT&&native->sh[5]->rf.b[0].dpf==NVN_DPF_FLOAT);
     CHECK(native->sh[1]->resource_variants.count==1&&native->sh[5]->resource_variants.count==1);
+    CHECK(g_pfv_upgrades==2);
     for(unsigned i=cases*8;i<65536/4;i++)CHECK(((uint32_t *)memory)[i]==0xa7a7a7a7);
     mtl_pool_del(memory);free(memory);
-    printf("STENCIL LOAD GPU OK: %u public draw/dispatch cases, 0/1/93/255 exact bits, RRR1 swizzle, depth rebinding, variant cache and output guards\n",cases);return 0;
+    printf("STENCIL LOAD GPU OK: %u public draw/dispatch cases, 0/1/93/255 exact bits, RRR1 swizzle, depth rebinding, variant cache and output guards\n",cases);
+    puts("TEXTURE PREPARATION GPU OK: two on-demand view upgrades before draw/dispatch, active-pass split preserves pixels and row guards");return 0;
 }}

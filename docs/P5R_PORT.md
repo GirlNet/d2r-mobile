@@ -1,5 +1,16 @@
 # P5R port preparation
 
+The stencil fix (`fdd9517c90bf`) selects its uint variant on the phone and passes
+the previous numeric check, then hits SIGSEGV during its first format-view upgrade.
+Disassembly of the exact executable locates the return address at
+`useResource:usage:stages:`. The upgrade's blit ends the render encoder while
+argument binding continues to use that encoder. P5R now prepares texture views
+and null resources before opening draw/compute encoders, retaining the captured
+textures through binding. The GPU regression starts without PixelFormatView,
+exercises first-use upgrades in both graphics and compute, and checks that an
+existing render pass's pixels survive the split. Apple GPU and phone validation
+of this correction are still pending.
+
 The stage-binding fix (`1e7de7519249`) passed Apple CI and now displays the
 loading logo and Chinese network prompt on the phone, followed by an abort.
 The native report is SIGABRT. A live breakpoint confirms descriptor 315 selects
