@@ -5450,7 +5450,7 @@ frz_plain:;
         // Per text draw, compute the screen rectangle: only on-screen text is worth capturing; otherwise the
         // captured target is trivially empty.
         static int drawn;
-        if (drawn < 24) {
+        if (drawn < 200) {
             va_st a0 = S.attr[0];
             uint64_t n = dw ? dw->count : di->count;
             const p_bind_buf *u = &S.ubo[0][0];
@@ -5468,8 +5468,9 @@ frz_plain:;
                         if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
                     }
                     drawn++;
-                    LOG("P5R text rect pass=%llu ndc=%g..%g , %g..%g (count=%llu)",
-                        (unsigned long long)(g_stat_pass + 1), x0, x1, y0, y1, (unsigned long long)n);
+                    LOG("P5R text rect frame=%llu pass=%llu ser=%llu ndc=%g..%g , %g..%g (count=%llu)",
+                        (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(g_stat_pass + 1),
+                        (unsigned long long)(R.rt.color[0] ? R.rt.color[0]->serial : 0), x0, x1, y0, y1, (unsigned long long)n);
                     if (!g_ad[12].want && !g_ad[12].sent && x1 > 0 && x0 < 1 && y1 > 0 && y0 < 1 && R.rt.color[0])
                         target_dump_request(tex_mtl(R.rt.color[0]));   // 第一笔真的落在画面里的文字，抓它这一趟 | First text that really lands on screen: capture its pass
                 }
