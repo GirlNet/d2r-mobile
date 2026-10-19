@@ -111,6 +111,8 @@ def build(output,metal_backend=3):
                 CFBundleVersion='1', CFBundleShortVersionString='0.1', MinimumOSVersion='26.0',
                 CFBundleSupportedPlatforms=['iPhoneOS'], UIDeviceFamily=[1,2], LSRequiresIPhoneOS=True,
                 UIFileSharingEnabled=True, LSSupportsOpeningDocumentsInPlace=True, UILaunchScreen={},
+                LSSupportsGameMode=True, GCSupportsGameMode=True,
+                LSApplicationCategoryType='public.app-category.games',
                 UISupportedInterfaceOrientations=['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'])
     (app / 'Info.plist').write_bytes(plistlib.dumps(info))
     (app / 'dm/p5r-shell.json').write_text(json.dumps(dict(schema_version=1, profile='p5r', game_content_included=False,guarded_runtime_contract_version=1,

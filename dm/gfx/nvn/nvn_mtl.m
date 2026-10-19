@@ -2633,7 +2633,8 @@ static void check_candidate_draw(NvProg *program,int primitive) {
         MDIE("P5R candidate coordinate contract mismatch: origin=%u depth=%u",g_guest_origin,g_guest_depth);
     if(S.color.alpha_func!=NVN_ALPHA_FUNC_ALWAYS || S.color.logic_op!=NVN_LOGIC_OP_COPY)
         MDIE("P5R candidate alpha-test/logic-op contract mismatch");
-    if(primitive!=NVN_DRAW_PRIMITIVE_TRIANGLES && primitive!=NVN_DRAW_PRIMITIVE_TRIANGLE_STRIP && primitive!=NVN_DRAW_PRIMITIVE_QUADS)
+    if(primitive!=NVN_DRAW_PRIMITIVE_POINTS && primitive!=NVN_DRAW_PRIMITIVE_LINES && primitive!=NVN_DRAW_PRIMITIVE_LINE_STRIP &&
+       primitive!=NVN_DRAW_PRIMITIVE_TRIANGLES && primitive!=NVN_DRAW_PRIMITIVE_TRIANGLE_STRIP && primitive!=NVN_DRAW_PRIMITIVE_QUADS)
         MDIE("P5R candidate primitive contract unsupported: %d",primitive);
     if(S.has_vp && (S.vp[0][2]<0 || S.vp[0][3]<0))MDIE("P5R candidate viewport inversion unsupported");
     for(unsigned i=0;i<8;i++)if((S.color.blend_en>>i)&1) {
