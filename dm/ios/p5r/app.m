@@ -11,7 +11,9 @@
 #include "dm_i18n.h"
 #include "../../gfx/nvn/nvn_texture_selftest.h"
 #include "boot_probe.h"
-#import "touch_controls.h"
+// Virtual gamepad ported from seedds/nxnative (see dm_pad.m): 2D / 3D layouts, sticks, D-pad, L3 / R3.
+extern UIView *dm_gamepad_view(CGRect frame);
+extern void dm_gamepad_reset(void);
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -79,7 +81,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 @property double probePollTime;
 @property CADisplayLink *poll;
 @property NSDictionary *package;
-@property P5RTouchControls *touchControls;
+@property UIView *touchControls;
 @end
 @implementation P5RController
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
@@ -90,7 +92,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     metalLayer = (CAMetalLayer *)canvas.layer; metalLayer.device = MTLCreateSystemDefaultDevice();
     metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm; metalLayer.framebufferOnly = YES;
     [self.view addSubview:canvas];
-    self.touchControls=[[P5RTouchControls alloc] initWithFrame:self.view.bounds];
+    self.touchControls=dm_gamepad_view(self.view.bounds);
     self.touchControls.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
     self.touchControls.hidden=YES;[self.view addSubview:self.touchControls];
     self.status = [UILabel new]; self.status.textColor = UIColor.whiteColor; self.status.numberOfLines = 0;
@@ -141,7 +143,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     }
     GCExtendedGamepad *pad = GCController.controllers.firstObject.extendedGamepad;
     BOOL hideTouch=!started || self.probingBoot || pad!=nil;
-    if(hideTouch && !self.touchControls.hidden)[self.touchControls resetInput];
+    if(hideTouch && !self.touchControls.hidden) dm_gamepad_reset();
     self.touchControls.hidden=hideTouch;
     if (!pad || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) { dm_pad_set(0,0,0,0,0); return; }
     uint64_t buttons = 0;
@@ -297,7 +299,7 @@ static void *runHost(void *unused) {
     controller = [P5RController new]; self.window.rootViewController = controller; [self.window makeKeyAndVisible]; return YES;
 }
 - (void)applicationWillResignActive:(UIApplication *)application {
-    (void)application; [((P5RController *)controller).touchControls resetInput]; dm_input_release_all();
+    (void)application; (void)controller; dm_gamepad_reset(); dm_input_release_all();
     if (started && !dm_boot_probe_active()) { guest_clock_freeze_for(1, 1); dm_audio_suspend(1); dm_gfx_suspend(1); }
 }
 - (void)applicationDidBecomeActive:(UIApplication *)application {

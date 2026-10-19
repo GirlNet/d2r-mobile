@@ -17,7 +17,7 @@ import build_vp9
 REPO = Path(__file__).resolve().parents[3]
 CORE = ['crash.c', 'entry.S', 'guest_bootstrap.c', 'hle.c', 'loader.c', 'main.c', 'memstat.m', 'thread.c', 'dm_i18n.c']
 EXCLUDE = {'hle_tact.c', 'hle_private_aim.c', 'hle_target.c', 'hle_charname.c', 'hle_granny.c', 'hle_movie.c'}
-FRAMEWORKS = ['UIKit', 'Foundation', 'QuartzCore', 'CoreGraphics', 'Metal', 'AudioToolbox', 'ImageIO', 'UniformTypeIdentifiers',
+FRAMEWORKS = ['UIKit', 'Foundation', 'QuartzCore', 'CoreGraphics', 'CoreText', 'Metal', 'AudioToolbox', 'ImageIO', 'UniformTypeIdentifiers',
               'GameController', 'Network', 'AVFoundation', 'VideoToolbox', 'CoreMedia', 'CoreVideo', 'Security']
 
 
@@ -26,7 +26,7 @@ def sources():
     result = [host / f for f in CORE] + [p for p in sorted(host.glob('hle_*.c')) if p.name not in EXCLUDE]
     for directory in ('dm/gfx', 'dm/gfx/nvn', 'dm/gfx/tex'):
         result += sorted(p for p in (REPO / directory).iterdir() if p.suffix in ('.c', '.m', '.S'))
-    return result + [REPO / 'dm/ios/p5r/diagnostics.c', REPO / 'dm/ios/p5r/boot_probe.m', REPO / 'dm/ios/p5r/touch_controls.m', REPO / 'dm/ios/p5r/app.m']
+    return result + [REPO / 'dm/ios/p5r/diagnostics.c', REPO / 'dm/ios/p5r/boot_probe.m', REPO / 'dm/ios/p5r/dm_pad.m', REPO / 'dm/ios/p5r/app.m']
 
 
 def fingerprint_sources(plan):
