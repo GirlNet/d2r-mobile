@@ -1,4 +1,4 @@
-// The observed P5R decoder is VP9 / I420 / buffer mode (3,4,1).
+// The observed P5R decoder is VP9 / NV12 / buffer mode (3,4,1).
 // Keep the SDK extractor, MediaData, Buffer and event objects; replace only
 // this decoder, which otherwise selects Horizon's OMX.Nvidia.vp9.decode.
 #if defined(DM_P5R_ONLY) || defined(DM_P5R_MOVIE_TEST)
@@ -46,11 +46,22 @@ static void vp9_clear(movie_vp9 *s) {
 static int vp9_output(void *user, dm_vp9_frame *frame) {
     movie_vp9 *s=user;
     for(int i=0;i<VP9_SLOTS;i++) if(!s->occupied[i]) {
+        // dm_vp9 hands back planar I420. The observed SDK movie consumer
+        // reads an NV12 buffer: Y first, then interleaved U/V.
+        size_t w=frame->width,h=frame->height,cw=(w+1)/2,ch=(h+1)/2,size=w*h+2*cw*ch;
+        if(!w||!h||frame->size<size) return 0;
+        uint8_t *nv12=malloc(size);
+        if(!nv12) return 0;
+        memcpy(nv12,frame->data,w*h);
+        const uint8_t *u=frame->data+w*h,*v=u+cw*ch;
+        uint8_t *uv=nv12+w*h;
+        for(size_t n=0;n<cw*ch;n++) { uv[2*n]=u[n]; uv[2*n+1]=v[n]; }
+        free(frame->data); frame->data=nv12; frame->size=size;
         s->frames[i]=*frame; s->occupied[i]=1; s->flags[i]=0;
         s->queue[(s->head+s->count)%VP9_SLOTS]=i; s->count++;
         if(!s->format_seen || s->width!=frame->width || s->height!=frame->height) s->format_pending=1;
         s->format_seen=1; s->width=frame->width; s->height=frame->height;
-        if(++s->decoded_frames<=3) LOG("P5R VP9 decoded frame %llu: %dx%d, %zu I420 bytes, pts=%lld us",(unsigned long long)s->decoded_frames,frame->width,frame->height,frame->size,(long long)frame->pts_us);
+        if(++s->decoded_frames<=3) LOG("P5R VP9 decoded frame %llu: %dx%d, %zu NV12 bytes, pts=%lld us",(unsigned long long)s->decoded_frames,frame->width,frame->height,frame->size,(long long)frame->pts_us);
         return 1;
     }
     return 0;
@@ -69,7 +80,7 @@ static void vp9_construct(void *self,int type,int format,int mode,int priority) 
     s->input=malloc(VP9_INPUT_CAP);
     if(!s->input) die("P5R VP9: input buffer allocation failed");
     ((movie_self *)self)->vtable=vp9_vtable+2; ((movie_self *)self)->state=s;
-    LOG("P5R VP9: host decoder constructed, planar I420 buffer output");
+    LOG("P5R VP9: host decoder constructed, NV12 buffer output");
 }
 static void vp9_destruct(void *self,int deleting) {
     movie_vp9 *s=vp9_state(self);
@@ -98,9 +109,15 @@ static int vp9_events(void *self,void **events) {
 static int vp9_metadata(movie_vp9 *s,void *metadata,const dm_vp9_frame *frame) {
     if(!metadata) return MV_BAD;
     int w=frame?frame->width:s->width, h=frame?frame->height:s->height;
+    if(w<1||h<1) return MV_STATE;
+    int cw=(w+1)/2;
     vp9_set_int(metadata,"width",w); vp9_set_int(metadata,"height",h);
+    vp9_set_int(metadata,"nv12-y-offset",0);
+    vp9_set_int(metadata,"nv12-uv-offset",w*h);
+    vp9_set_int(metadata,"nv12-y-stride",w);
+    vp9_set_int(metadata,"nv12-uv-stride",2*cw);
     vp9_set_int(metadata,"stride",w); vp9_set_int(metadata,"slice-height",h);
-    vp9_set_int(metadata,"color-format",19); // OMX_COLOR_FormatYUV420Planar
+    vp9_set_int(metadata,"color-format",21); // OMX_COLOR_FormatYUV420SemiPlanar
     vp9_set_int(metadata,"crop-width",w); vp9_set_int(metadata,"crop-height",h);
     vp9_set_rect(metadata,"crop",0,0,w-1,h-1);
     return MV_OK;

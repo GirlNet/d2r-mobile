@@ -2668,8 +2668,10 @@ static void apply_depth_bounds(RENC encoder) {
     // P5R uses [0, FLT_MAX] for an unrestricted stored-depth test. Metal's
     // depth domain is [0,1]; a finite interval covering it has the same effect
     // as Metal's [0,1] disabled test. Preserve the recorded NVN values in S.
-    if(isfinite(minimum)&&isfinite(maximum)&&minimum<=0&&maximum>=1){minimum=0;maximum=1;}
-    if(!isfinite(minimum)||!isfinite(maximum)||minimum<0||maximum>1||minimum>maximum)MDIE("Unsupported depth bounds [%g,%g]",minimum,maximum);
+    if(!isfinite(minimum)||!isfinite(maximum)||minimum>1||maximum<0)MDIE("Unsupported depth bounds [%g,%g]",minimum,maximum);
+    if(minimum<=0&&maximum>=1){minimum=0;maximum=1;}
+    else {minimum=fmaxf(0,minimum);maximum=fminf(1,maximum);}
+    if(minimum>maximum)MDIE("Unsupported depth bounds [%g,%g]",minimum,maximum);
     if(depth_bounds_supported()) {
         if(@available(macOS 26.0,iOS 26.0,*))[encoder setDepthTestMinBound:minimum maxBound:maximum];
     } else if(minimum!=0||maximum!=1)MDIE("Depth bounds testing requires Apple10 and OS 26 or newer");

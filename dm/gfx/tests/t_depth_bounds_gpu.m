@@ -43,8 +43,11 @@ int main(void){@autoreleasepool{
         {0,0,FLT_MAX,257,1},{1,0,FLT_MAX,257,1},
         {0,-FLT_MAX,FLT_MAX,257,1},{1,-FLT_MAX,FLT_MAX,257,1},
         {.875,-FLT_MAX,1,257,1},
+        // Partially overlapping intervals are clamped into Metal's [0,1] domain.
+        {.5,-.125f,.875f,257,1},{.125,-.5f,.25f,257,1},
+        {.875,.75f,1.125f,257,1},{.125,.75f,1.125f,257,0},
     };
-    for(unsigned scenario=supported?0:5;scenario<sizeof cases/sizeof cases[0];scenario++) {
+    for(unsigned scenario=supported?0:5;scenario<(supported?(sizeof cases/sizeof cases[0]):12u);scenario++) {
         // Disabled and covering intervals also run without native bounds support.
         uint32_t enabled=cases[scenario].enabled;
         float minimum=cases[scenario].minimum,maximum=cases[scenario].maximum;
@@ -73,5 +76,5 @@ int main(void){@autoreleasepool{
         mtl_pool_del(memory);free(memory);
     }
     if(!supported){puts("DEPTH BOUNDS GPU PARTIAL: seven disabled/full-range/wide-range colour/depth cases passed; active bounds unavailable on this runner");return 78;}
-    puts("DEPTH BOUNDS GPU OK: twelve stored-depth cases, inclusive endpoints, disabled/full/wide ranges and row guards");return 0;
+    puts("DEPTH BOUNDS GPU OK: sixteen stored-depth cases, inclusive endpoints, disabled/full/wide/clamped ranges and row guards");return 0;
 }}

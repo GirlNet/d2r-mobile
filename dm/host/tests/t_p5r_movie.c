@@ -56,7 +56,8 @@ int dm_vp9_decode(dm_vp9 *d,const void *packet,size_t size,int64_t pts) {
     unsigned frames=*(const unsigned char *)packet;
     if(frames==255) return -99;
     for(unsigned i=0;i<frames;i++) {
-        dm_vp9_frame frame={malloc(12),12,4,2,pts+(int64_t)i}; memset(frame.data,(int)(10+i),12);
+        dm_vp9_frame frame={malloc(12),12,4,2,pts+(int64_t)i};
+        uint8_t *p=frame.data; memset(p,(int)(10+i),8); memset(p+8,(int)(20+i),2); memset(p+10,(int)(30+i),2);
         if(!d->output(d->user,&frame)) { free(frame.data);return -2; }
     }
     return 0;
@@ -79,7 +80,7 @@ int main(int argc,char **argv) {
         void *events[]={&input_signals,&output_signals,&format_signals,&error_signals};CHECK(h_p5r_vp9_events(&self,events)==MV_OK,"all original event objects are retained");
         CHECK(h_p5r_vp9_start(&self)==MV_OK && input_signals==1,"start signals input availability");
         int index=-1,remaining=-1,bytes=0,alignment=0;
-        CHECK(h_p5r_vp9_size(&self,&bytes,&alignment)==MV_OK && bytes==12 && alignment==1,"I420 output capacity matches dimensions");
+        CHECK(h_p5r_vp9_size(&self,&bytes,&alignment)==MV_OK && bytes==12 && alignment==1,"NV12 output capacity matches dimensions");
         CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_OK && index==0,"input lease acquired");
         CHECK(h_p5r_vp9_acquire_input(&self,&index,&remaining)==MV_INPUT_EMPTY && index==-1,"duplicate input lease returns exact SDK empty-input status");
         buffer_t buffer={malloc(4),4,0,0,1};
@@ -92,8 +93,14 @@ int main(int argc,char **argv) {
         CHECK(h_p5r_vp9_acquire_output(&self,&index,&pts,&flags,&remaining)==MV_OK && pts==123456 && flags==0,"output preserves timestamp and flags");
         int output_index=index;
         CHECK(h_p5r_vp9_output(&self,index,&buffer)==MV_OK && buffer.size==12 && *(unsigned char *)buffer.data==10,"decoded image bytes reach original Buffer API");
+        const uint8_t *gap=buffer.data;
+        CHECK(gap[8]==20 && gap[9]==30 && gap[10]==20 && gap[11]==30,"NV12 chroma interleaves the I420 U/V planes");
         metadata_t output={0};CHECK(h_p5r_vp9_frame_format(&self,index,&output)==MV_OK,"per-frame output metadata available");
-        int value=0;CHECK(find_int(&output,"color-format",&value) && value==19,"planar colour format is reported");
+        int value=0;CHECK(find_int(&output,"color-format",&value) && value==21,"semi-planar colour format is reported");
+        CHECK(find_int(&output,"nv12-y-offset",&value) && value==0,"NV12 Y offset starts the buffer");
+        CHECK(find_int(&output,"nv12-uv-offset",&value) && value==8,"NV12 UV offset follows the Y plane");
+        CHECK(find_int(&output,"nv12-y-stride",&value) && value==4,"NV12 Y stride matches the width");
+        CHECK(find_int(&output,"nv12-uv-stride",&value) && value==4,"NV12 UV stride matches the width");
         CHECK(find_int(&output,"right",&value) && value==3,"crop uses inclusive right coordinate");
         CHECK(h_p5r_vp9_release(&self,output_index)==MV_OK && input_signals==2,"release returns input capacity");
         CHECK(h_p5r_vp9_release(&self,output_index)==MV_STATE,"duplicate output release rejected");
