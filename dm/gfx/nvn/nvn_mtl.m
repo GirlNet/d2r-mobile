@@ -590,6 +590,7 @@ static int g_ruler_truth = -1, g_ruler_pending;
 static int tbdr_on(void);
 
 static uint64_t g_sub_serial;   // 第几次提交（并行预编「每次提交只预测一次」用） | Submission index (used by the parallel precompile's 'predict only once per submission')
+static void atlas_dump_begin(void);   // 压缩图集取证读回（定义见下） | Compressed-atlas readback (defined below)
 void mtl_sub_begin(void) {
     dm_boot_probe_block("guest_gpu_submission","mtl_sub_begin");
     mtl_init();
@@ -626,6 +627,7 @@ void mtl_sub_begin(void) {
     [g_alloc4[alloc_i] reset];
     [g_cb beginCommandBufferWithAllocator:g_alloc4[alloc_i]];
 #endif
+    atlas_dump_begin();   // 上一批已提交的图集内容现在可以读回（排在本提交最前面） | Read back atlases committed by earlier batches (placed first in this submit)
     g_commit_blocks = [NSMutableArray array];
     g_npost = 0; g_vis = nil; g_vis_n = 0; g_vis_cur = -1; g_npend = 0; g_pend_over = 0;
     zskip_clear(); g_zskip_count = 0;
@@ -1046,6 +1048,41 @@ static int bc_recheck(const tex_t *t, uint64_t *stamp) {
     if (f && *stamp == f) return 0;   // 本帧已比过：一帧最多一次，避免每笔绑定都走慢路 | Already compared this frame: at most once per frame so bindings stay cheap
     *stamp = f;
     return 1;
+}
+// 压缩图集取证：把收到过 b2t 的大 BC 贴图从 GPU 读回一份（最多 2 张），落盘到 DM_TEMP。
+// 直接回答「字形页里到底有没有字」：全零 = 数据从没进来，有内容 = 问题在采样/绘制这一侧。
+// Compressed-atlas evidence: read back up to two large BC textures that received a b2t, writing them
+// into DM_TEMP. Answers directly whether the glyph page has any content.
+static struct { void *tex; uint64_t ser; int want, sent; } g_ad[2];   // [0] 512x1024 字形页 | [1] 另一张高 ≥1024 的 BC 图集 | [0] the 512x1024 glyph page, [1] another BC atlas with height >= 1024
+static void atlas_dump_request(id<MTLTexture> t, uint64_t ser, uint32_t w, uint32_t h) {
+    int slot = (w == 512 && h == 1024) ? 0 : (h >= 1024 ? 1 : -1);
+    if (slot < 0 || g_ad[slot].want || g_ad[slot].sent || !t) return;
+    g_ad[slot].tex = (__bridge void *)t; g_ad[slot].ser = ser; g_ad[slot].want = 1;
+}
+static void atlas_dump_begin(void) {
+    if (!g_cb) return;
+    for (int i = 0; i < 2; i++) {
+        if (!g_ad[i].want || g_ad[i].sent || !g_ad[i].tex) continue;
+        id<MTLTexture> t = (__bridge id<MTLTexture>)g_ad[i].tex; uint64_t ser = g_ad[i].ser; g_ad[i].want = 0; g_ad[i].sent = 1;
+        NSUInteger W = t.width, H = t.height;
+        size_t bpr = (size_t)((W + 3) / 4) * 16, bytes = bpr * H;
+        if (!W || !H || bytes > (size_t)(32 << 20)) continue;
+        id<MTLBuffer> b = [g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+        if (!b) continue;
+        id<MTLBlitCommandEncoder> e = [g_cb blitCommandEncoder];
+        [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                  sourceSize:MTLSizeMake(W, H, 1) toBuffer:b destinationOffset:0
+          destinationBytesPerRow:bpr destinationBytesPerImage:bytes];
+        enc_b_end(e);
+        [g_cb addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c;
+            const char *dir = getenv("DM_TEMP"); if (!dir || !*dir) dir = ".";
+            char p[512]; snprintf(p, sizeof p, "%s/p5r-atlas-%llu.bin", dir, (unsigned long long)ser);
+            FILE *f = fopen(p, "wb");
+            size_t nz = 0, n = 0;
+            if (f) { const uint8_t *q = b.contents; for (size_t k = 0; k < bytes; k++) nz += q[k] != 0; fwrite(q, 1, bytes, f); fclose(f); n = bytes; }
+            LOG("P5R atlas dump ser=%llu %lux%lu %zu bytes nz=%zu", (unsigned long long)ser, (unsigned long)W, (unsigned long)H, n, nz);
+        }];
+    }
 }
 static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss;
 static uint64_t g_pfv_upgrades;
@@ -5597,6 +5634,9 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
 static void copy_b2t(const p_copy_b2t *c) {
     if (c->tex) zskip_del(c->tex->serial);
     id<MTLTexture> t = tex_mtl(c->tex);
+    if (t && c->tex && !dm_guest_d2r() && c->tex->d.format >= 0x41 && c->tex->d.format <= 0x4E
+        && c->tex->d.width >= 512 && c->tex->d.height >= 1024)
+        atlas_dump_request(t, c->tex->serial, c->tex->d.width, c->tex->d.height);
     PD("C ser=%llu", c->tex->serial);
     if(c->tex && (c->tex->d.width==1920 || (c->tex->d.width==960 && c->tex->d.height==540))) {
         static int logged;

@@ -5,6 +5,7 @@
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include <dlfcn.h>
+#include <stdatomic.h>
 #include <time.h>
 
 typedef struct { const char *name; void *fn; } hle_ent;
@@ -39,7 +40,11 @@ uint64_t resolve_import(module_t *m, const char *name, int weak) {
         }
     // ELF gABI：缺定义的弱符号取零；不能创建非零桩，让 SDK 误以为可选回调存在。
     // ELF gABI: undefined weak symbols resolve to zero; a nonzero stub would falsely advertise an optional SDK callback.
-    if (weak) return 0;
+    // P5R：把前 80 个「弱符号 + 没人实现」的名字记下来（零风险，不改解析结果）。
+    // 字体走 nn::pl::GetSharedFont 的话，这里能看到它，从而确认字形数据是不是根本没拿到。
+    // P5R: record the first 80 names that are weak and unimplemented (zero risk, resolution is unchanged).
+    // If the font goes through nn::pl::GetSharedFont it shows up here, confirming the glyph data was never obtained.
+    if (weak) { static _Atomic int nweak; if (!dm_guest_d2r() && atomic_fetch_add(&nweak, 1) < 80) LOG("P5R weak unresolved %s", name); return 0; }
     // 已为同名分过桩就复用
     // Reuse the stub if one was already allocated for the same name
     void *hlecount_wrap(const char *, const char *, void *);
