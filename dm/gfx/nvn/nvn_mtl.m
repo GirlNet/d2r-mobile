@@ -5475,7 +5475,6 @@ frz_plain:;
                 }
             }
         }
-        }
     }
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
     enc_r_cull(en, S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone);
