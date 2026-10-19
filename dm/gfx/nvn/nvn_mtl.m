@@ -69,6 +69,13 @@
 #import <CommonCrypto/CommonDigest.h>
 #include <stdarg.h>
 #include <mach-o/dyld.h>
+
+// Host tests link this replay layer without the movie adapter. The shell
+// links the real implementation, which overrides this weak fallback.
+__attribute__((weak)) int dm_p5r_movie_frame_copy(uint8_t *dst, size_t capacity, int *width, int *height, unsigned *sequence) {
+    (void)dst; (void)capacity; (void)width; (void)height; (void)sequence;
+    return 0;
+}
 #include <libgen.h>
 #include <pthread.h>
 #include <stdio.h>
