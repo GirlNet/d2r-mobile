@@ -3293,14 +3293,18 @@ static void warm_start(void) {
 }
 static int g_rt_ovr;   // 运行时外推的模板覆盖：0 不覆盖；1 只在单位 / 特效 / 外推洞位（0xD0）上通过、不写模板；3 照常深度测试，通过处写特效位 0x40 | Stencil override for runtime extrapolation: 0 no override; 1 pass only on the unit / effect / extrapolation-hole bits (0xD0), no stencil write; 3 depth test as usual, write the effect bit 0x40 where it passes
 static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
-    struct { ds_st ds; uint32_t vm[2], wm[2]; int hd, hs, ovr; } k;
+    // 实验开关：整局关掉模板测试（面板内文字被模板裁掉时会立刻显形）。
+    // Experiment: disable stencil testing entirely (text clipped by a stencil mask shows up immediately).
+    static int nostencil = -1; if (nostencil < 0) nostencil = getenv("DM_P5R_NOSTENCIL") != NULL;
+    struct { ds_st ds; uint32_t vm[2], wm[2]; int hd, hs, ovr, ns; } k;
     memset(&k, 0, sizeof k); k.ds = S.ds; memcpy(k.vm, S.st_vmask, 8); memcpy(k.wm, S.st_wmask, 8); k.hd = has_depth; k.hs = has_stencil; k.ovr = has_stencil ? g_rt_ovr : 0;
+    k.ns = nostencil;
     if (!g_dss.klen) g_dss.klen = sizeof k;
     id<MTLDepthStencilState> s = hm_get_id(&g_dss, &k);
     if (s) return s;
     MTLDepthStencilDescriptor *d = [MTLDepthStencilDescriptor new];
     if (has_depth && S.ds.dt) { d.depthCompareFunction = (MTLCompareFunction)(S.ds.df - 1); d.depthWriteEnabled = S.ds.dw; }
-    if (has_stencil && S.ds.st) {
+    if (!k.ns && has_stencil && S.ds.st) {
         MTLStencilDescriptor *f = [MTLStencilDescriptor new], *b = [MTLStencilDescriptor new];
         f.stencilCompareFunction = (MTLCompareFunction)(S.ds.sf_f - 1); f.stencilFailureOperation = (MTLStencilOperation)(S.ds.fail_f - 1);
         f.depthFailureOperation = (MTLStencilOperation)(S.ds.zfail_f - 1); f.depthStencilPassOperation = (MTLStencilOperation)(S.ds.zpass_f - 1);
@@ -3310,7 +3314,7 @@ static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
         b.readMask = S.st_vmask[1]; b.writeMask = S.st_wmask[1];
         d.frontFaceStencil = f; d.backFaceStencil = b;
     }
-    if (has_stencil && k.ovr) {
+    if (!k.ns && has_stencil && k.ovr) {
         MTLStencilDescriptor *f = [MTLStencilDescriptor new];
         if (k.ovr == 1) { f.stencilCompareFunction = MTLCompareFunctionNotEqual; f.readMask = 0xD0; f.writeMask = 0; }   // 参考值 0：(s & 0xD0) != 0 才通过（单位 0x10、特效 0x40、外推洞 / 屏边 0x80） | Reference value 0: passes only if (s & 0xD0) != 0 (unit 0x10, effect 0x40, extrapolation hole / screen edge 0x80)
         else { f.stencilCompareFunction = MTLCompareFunctionAlways; f.depthStencilPassOperation = MTLStencilOperationReplace; f.readMask = 0; f.writeMask = 0x40; }   // 参考值 0x40 | Reference value 0x40
@@ -3501,6 +3505,15 @@ static void prepare_shader_textures(NvShader *shader,int stage,id<MTLTexture> __
         }
         textures[i]=tid?(__bridge id<MTLTexture>)tex_fast(tid):nil;
         check_guest_texture(shader,b,tid,textures[i]);
+        // 诊断：哪一次绘制绑到了设置菜单那张文字图集（高 1240 / 序号 1938）。
+        // Diagnostic: which draw binds the settings-menu text atlas (height 1240 / serial 1938).
+        if(!dm_guest_d2r()&&tid>0&&tid<g_ntreg&&g_treg[tid].ok&&(g_treg[tid].t.d.height==1240||g_treg[tid].t.serial==1938)) {
+            static char seen[32][24]; static int ns;
+            int dup=0; for(int k=0;k<ns;k++) if(!strcmp(seen[k],shader->key)){dup=1;break;}
+            if(!dup&&ns<32){strncpy(seen[ns++],shader->key,23);
+                LOG("P5R text atlas bound key=%s stage=%d reg=%d ser=%llu %ux%u",shader->key,stage,b->reg,
+                    (unsigned long long)g_treg[tid].t.serial,g_treg[tid].t.d.width,g_treg[tid].t.d.height);}
+        }
         // A null binding can also lazily allocate/clear its dummy. Do that
         // before the encoder opens, while retaining null descriptor semantics.
         if(!textures[i]) {
@@ -5330,7 +5343,10 @@ frz_plain:;
     if (S.has_vp) enc_r_viewport(en, (MTLViewport){S.vp[0][0], S.vp[0][1] + vo, S.vp[0][2], S.vp[0][3] * vs, S.dr[0], S.dr[1]});
     else enc_r_viewport(en, (MTLViewport){0, vo, tw, th * vs, 0, 1});
     MTLScissorRect sc = {0, 0, tw, th};
-    if (R.has_sc) {
+    // 实验开关：忽略游戏设的裁剪矩形（面板内容被裁剪吃掉时会立刻显形）。
+    // Experiment: ignore the guest's scissor rect (content clipped by a scissor appears immediately).
+    static int noscissor = -1; if (noscissor < 0) noscissor = getenv("DM_P5R_NOSCISSOR") != NULL;
+    if (R.has_sc && !noscissor) {
         long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = R.sc.y <= 0 ? 0 : R.sc.y + so, x1 = (long)R.sc.x + R.sc.w, y1 = vs != 1 ? (long)th : (long)R.sc.y + R.sc.h + so;
         if (x1 > (long)tw) x1 = tw; if (y1 > (long)th) y1 = th;
         if (x1 <= x0 || y1 <= y0) return;
