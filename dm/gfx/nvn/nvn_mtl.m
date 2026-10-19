@@ -1053,19 +1053,21 @@ static int bc_recheck(const tex_t *t, uint64_t *stamp) {
 // 直接回答「字形页里到底有没有字」：全零 = 数据从没进来，有内容 = 问题在采样/绘制这一侧。
 // Compressed-atlas evidence: read back up to two large BC textures that received a b2t, writing them
 // into DM_TEMP. Answers directly whether the glyph page has any content.
-static struct { void *tex; uint64_t ser; int want, sent; } g_ad[2];   // [0] 512x1024 字形页 | [1] 另一张高 ≥1024 的 BC 图集 | [0] the 512x1024 glyph page, [1] another BC atlas with height >= 1024
+static struct { void *tex; uint64_t ser; int want, sent; } g_ad[12];   // [0] 512x1024 字形页，其余按出现顺序 | [0] the 512x1024 glyph page, the rest in order of appearance
 static void atlas_dump_request(id<MTLTexture> t, uint64_t ser, uint32_t w, uint32_t h) {
-    int slot = (w == 512 && h == 1024) ? 0 : (h >= 1024 ? 1 : -1);
-    if (slot < 0 || g_ad[slot].want || g_ad[slot].sent || !t) return;
+    if (!t || w < 512 || h < 512) return;
+    int slot = (w == 512 && h == 1024) ? 0 : -1;
+    if (slot < 0) for (int i = 1; i < 12; i++) if (!g_ad[i].want && !g_ad[i].sent) { slot = i; break; }
+    if (slot < 0 || g_ad[slot].want || g_ad[slot].sent) return;
     g_ad[slot].tex = (__bridge void *)t; g_ad[slot].ser = ser; g_ad[slot].want = 1;
 }
 static void atlas_dump_begin(void) {
     if (!g_cb) return;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 12; i++) {
         if (!g_ad[i].want || g_ad[i].sent || !g_ad[i].tex) continue;
         id<MTLTexture> t = (__bridge id<MTLTexture>)g_ad[i].tex; uint64_t ser = g_ad[i].ser; g_ad[i].want = 0; g_ad[i].sent = 1;
         NSUInteger W = t.width, H = t.height;
-        size_t bpr = (size_t)((W + 3) / 4) * 16, bytes = bpr * H;
+        size_t bpr = (size_t)((W + 3) / 4) * 16, bytes = bpr * ((H + 3) / 4);   // BC 块行数为 H/4 | BC block rows are H/4
         if (!W || !H || bytes > (size_t)(32 << 20)) continue;
         id<MTLBuffer> b = [g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
         if (!b) continue;
@@ -2727,6 +2729,11 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Calle
     d.mipFilter = p.minf <= 1 ? MTLSamplerMipFilterNotMipmapped : (p.minf == 2 || p.minf == 3) ? MTLSamplerMipFilterNearest : MTLSamplerMipFilterLinear;
     d.sAddressMode = wrapm(p.ws); d.tAddressMode = wrapm(p.wt); d.rAddressMode = wrapm(p.wr);
     d.lodMinClamp = p.lod_min < 0 ? 0 : p.lod_min; d.lodMaxClamp = p.lod_max;
+    // 实验开关：强制只采样 0 级。用来判断「小字号文字消失」是不是因为图集只有 0 级有内容、
+    // 而更高级 mip 是空的（大字号读 0 级所以正常）。
+    // Experiment: force mip 0 only, to test whether small text vanishes because only level 0 of
+    // the atlas has content while higher mips are empty (large text reads level 0 and looks fine).
+    if (getenv("DM_P5R_LOD0")) { d.lodMinClamp = 0; d.lodMaxClamp = 0; d.mipFilter = MTLSamplerMipFilterNotMipmapped; }
     d.maxAnisotropy = p.aniso < 1 ? 1 : p.aniso > 16 ? 16 : (NSUInteger)p.aniso;
     if (p.cmp_mode) d.compareFunction = (MTLCompareFunction)(p.cmp_func - 1);
     d.borderColor = p.border[3] > 0.5f ? (p.border[0] > 0.5f ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack) : MTLSamplerBorderColorTransparentBlack;
