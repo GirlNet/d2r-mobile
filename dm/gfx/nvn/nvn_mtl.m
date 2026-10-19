@@ -3102,8 +3102,8 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         // 实验：属性 15（文字顶点色）固定读 (1,1,1,1)。黑底黑字 = 这一项取成了 0。
         // Experiment: force attribute 15 (text vertex colour) to read (1,1,1,1); black-on-black means it reads 0.
         if (a == 15 && getenv("DM_P5R_WHITEATTR")) {
-            vd.attributes[loc].format = MTLVertexFormatFloat4; vd.attributes[loc].offset = 0; vd.attributes[loc].bufferIndex = 31;
-            vd.layouts[31].stride = 16; vd.layouts[31].stepFunction = MTLVertexStepFunctionConstant; vd.layouts[31].stepRate = 0;
+            vd.attributes[loc].format = MTLVertexFormatFloat4; vd.attributes[loc].offset = 0; vd.attributes[loc].bufferIndex = 29;   // Metal 顶点缓冲下标必须 < 31 | Metal vertex buffer index must be < 31
+            vd.layouts[29].stride = 16; vd.layouts[29].stepFunction = MTLVertexStepFunctionConstant; vd.layouts[29].stepRate = 0;
             continue;
         }
         if (vf == MTLVertexFormatInvalid) {
@@ -5211,9 +5211,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
                         if (mtl_addr(S.vbuf[at.stream].address + at.offset, (size_t)n * S.stream[at.stream].stride, &mb, &mo)) {
                             const uint8_t *p = (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo;
                             for (uint64_t k = 0; k < n && k < 6; k++) {
-                                float v[4] = {0, 0, 0, 0};
-                                memcpy(v, p + k * S.stream[at.stream].stride, 16);
-                                MLOG("P5R text colour %llu = %g,%g,%g,%g", (unsigned long long)k, v[0], v[1], v[2], v[3]);
+                                const uint8_t *c = p + k * S.stream[at.stream].stride;   // 属性 15 是 RGBA8，4 字节 | attribute 15 is RGBA8, 4 bytes
+                                MLOG("P5R text colour %llu = %u,%u,%u,%u", (unsigned long long)k, c[0], c[1], c[2], c[3]);
                             }
                         }
                     } else MLOG("P5R text colour attribute unbound (stream=%d stride=%u addr=%#llx)", at.stream,
@@ -5415,7 +5414,7 @@ frz_plain:;
     if (getenv("DM_P5R_WHITEATTR")) {   // 属性 15 的白常量（见 pso_desc 的同名实验） | White constant for attribute 15 (see the same experiment in pso_desc)
         static id<MTLBuffer> white; static uint64_t white_gpu;
         if (!white) { white = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared]; float w4[4] = {1, 1, 1, 1}; memcpy(white.contents, w4, 16); res_add(white); white_gpu = white.gpuAddress; }
-        enc_r_vbuf(en, 31, white_gpu);
+        enc_r_vbuf(en, 29, white_gpu);
     }
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1,dm_guest_d2r()?NULL:vertex_textures);
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0,dm_guest_d2r()?NULL:fragment_textures);
