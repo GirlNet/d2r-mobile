@@ -10,6 +10,10 @@ textures through binding. The GPU regression starts without PixelFormatView,
 exercises first-use upgrades in both graphics and compute, and checks that an
 existing render pass's pixels survive the split. Apple GPU and phone validation
 of this correction are still pending.
+The split-pass pixel check also exposed pipeline prediction leaking a future
+scissor into the current draw: state replay modifies R, but prediction restored
+only S. Prediction now restores its complete R snapshot as well; the left/right
+pixel readback covers this state leak.
 
 The stage-binding fix (`1e7de7519249`) passed Apple CI and now displays the
 loading logo and Chinese network prompt on the phone, followed by an abort.
