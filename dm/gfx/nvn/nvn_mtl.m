@@ -5578,6 +5578,41 @@ static void downsample(const p_downsample *c) {
     attachment.storeAction=MTLStoreActionStoreAndMultisampleResolve;
     ser_gate();enc_r_end(enc_r_begin(pass));
 }
+static id<MTLLibrary> g_partial_lib;
+static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *g_partial_pipes;
+static id<MTLRenderPipelineState> partial_clear_pipeline(MTLPixelFormat pf, MTLColorWriteMask mask) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *source =
+            "#include <metal_stdlib>\n"
+            "using namespace metal;\n"
+            "struct VOut { float4 pos [[position]]; };\n"
+            "vertex VOut clear_vs(uint vid [[vertex_id]]) {\n"
+            "  float2 p = float2((vid << 1) & 2, vid & 2);\n"
+            "  VOut o; o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); return o;\n"
+            "}\n"
+            "fragment float4 clear_fs(constant float4 &v [[buffer(0)]]) { return v; }\n";
+        NSError *error = nil;
+        g_partial_lib = [g_dev newLibraryWithSource:@(source) options:nil error:&error];
+        if (!g_partial_lib) MLOG("部分通道清屏着色器编译失败：%s", error.localizedDescription.UTF8String);
+        g_partial_pipes = [NSMutableDictionary dictionary];
+    });
+    if (!g_partial_lib) return nil;
+    NSNumber *key = @((uint64_t)pf | ((uint64_t)mask << 32));
+    id<MTLRenderPipelineState> pipe = g_partial_pipes[key];
+    if (!pipe) {
+        MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+        d.vertexFunction = [g_partial_lib newFunctionWithName:@"clear_vs"];
+        d.fragmentFunction = [g_partial_lib newFunctionWithName:@"clear_fs"];
+        d.colorAttachments[0].pixelFormat = pf;
+        d.colorAttachments[0].writeMask = mask;
+        NSError *error = nil;
+        pipe = [g_dev newRenderPipelineStateWithDescriptor:d error:&error];
+        if (!pipe) MLOG("部分通道清屏管线创建失败：%s", error.localizedDescription.UTF8String);
+        else g_partial_pipes[key] = pipe;
+    }
+    return pipe;
+}
 static void clear_tex(const p_clear_tex *c) {
     if (c->tex) zskip_del(c->tex->serial);
     id<MTLTexture> t = tex_mtl(c->tex);
@@ -5603,6 +5638,27 @@ static void clear_tex(const p_clear_tex *c) {
     }
     MTLPixelFormat pf = t.pixelFormat;
     int depth = pf == MTLPixelFormatDepth32Float || pf == MTLPixelFormatDepth16Unorm || pf == MTLPixelFormatDepth32Float_Stencil8, stencil = pf == MTLPixelFormatStencil8 || pf == MTLPixelFormatDepth32Float_Stencil8;
+    unsigned cmask = c->mask & 0xf;
+    if (!depth && !stencil && cmask && cmask != 0xf && c->value_type == 0 && c->tex->d.target == 1
+        && !c->r.xoffset && !c->r.yoffset && (NSUInteger)c->r.width == w && (NSUInteger)c->r.height == h
+        && (t.usage & MTLTextureUsageRenderTarget)) {
+        id<MTLRenderPipelineState> pipe = partial_clear_pipeline(pf, (MTLColorWriteMask)cmask);
+        if (pipe) {
+            rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+            RPD *rp = [RPD new];
+            MTLRenderPassColorAttachmentDescriptor *a = rp.colorAttachments[0];
+            a.texture = t; a.level = lv; a.slice = l0;
+            a.loadAction = MTLLoadActionLoad; a.storeAction = MTLStoreActionStore;
+            float value[4] = {c->c.f[0], c->c.f[1], c->c.f[2], c->c.f[3]};
+            ser_gate(); RENC e = enc_r_begin(rp);
+            [e setRenderPipelineState:pipe];
+            [e setViewport:(MTLViewport){0, 0, (double)w, (double)h, 0, 1}];
+            [e setFragmentBytes:value length:sizeof value atIndex:0];
+            [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            enc_r_end(e);
+            return;
+        }
+    }
     if (c->r.xoffset || c->r.yoffset || (NSUInteger)c->r.width != w || (NSUInteger)c->r.height != h || (c->mask & 0xf) != 0xf
         || !(t.usage & MTLTextureUsageRenderTarget)) {
         RED_ONCE(44, "清贴图未实现的形态：区域 %d,%d %dx%d（本级 %lux%lu）掩码 %#x 可作渲染目标 %d", c->r.xoffset, c->r.yoffset, c->r.width, c->r.height,
