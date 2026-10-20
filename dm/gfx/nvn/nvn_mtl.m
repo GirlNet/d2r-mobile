@@ -1791,7 +1791,10 @@ static _Atomic uint64_t g_subprof_tex_prep_n, g_subprof_args_n;
 static _Atomic uint64_t g_subprof_draw_state_n, g_subprof_draw_call_n;
 static _Atomic uint64_t g_subprof_pso_n, g_subprof_dss_n, g_subprof_fixed_n, g_subprof_vbuf_n;
 static inline int subprof_on(void) {
-    if (g_subprof < 0) g_subprof = getenv("DM_NVN_SUBPROF") != NULL;
+    if (g_subprof < 0) {
+        const char *value = getenv("DM_NVN_SUBPROF");
+        g_subprof = value && strcmp(value, "0");
+    }
     return g_subprof;
 }
 static inline uint64_t subprof_now(void) {
