@@ -1295,7 +1295,13 @@ static void tsummary(uint64_t frame) {
 #define SRN 16
 static struct { uint64_t f; int n; const char *k[64]; double v[64]; } g_sr[SRN];
 static int g_slow = -1;
-static int slow_on(void) { if (g_slow < 0) g_slow = getenv("DM_SLOWFRAME") != NULL; return g_slow; }
+static int slow_on(void) {
+    if (g_slow < 0) {
+        const char *value = getenv("DM_SLOWFRAME");
+        g_slow = value && strcmp(value, "0");
+    }
+    return g_slow;
+}
 static int frame_rec(void) { return g_tsv || slow_on(); }
 static void trow(uint64_t f, const char *name, double v) {
     if (g_tsv) fprintf(g_tsv, "%llu\t%s\t%.3f\n", f, name, v);
