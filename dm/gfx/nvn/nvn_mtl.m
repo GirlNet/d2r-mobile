@@ -5219,9 +5219,10 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     // vertex count and first texture, to identify the subtitle layer.
     { static int fdump = -1; if (fdump < 0) fdump = getenv("DM_P5R_FRAME_DUMP") != NULL;
       if (fdump) {
-          uint64_t f = atomic_load(&g_cur_frame); static uint64_t last, lines;
-          if (f != last && f % 300 == 0 && f > 3000 && lines < 1500) {
-              last = f; lines++;
+          uint64_t f = atomic_load(&g_cur_frame); static uint64_t dump_frame, lines;
+          if (f % 300 == 0 && f > 3000 && f != dump_frame) { dump_frame = f; lines = 0; }
+          if (f == dump_frame && lines < 1400) {
+              lines++;
               __unsafe_unretained NvProg *cp = program_resources(programs_get(&S.programs),3);
               uint64_t ser = 0, tw2 = 0, th2 = 0; int tid0 = 0;
               if (cp && cp->sh[1]) for (int i = 0; i < cp->sh[1]->rf.nb; i++) {
