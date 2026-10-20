@@ -118,6 +118,19 @@ jobs:
           elif result.returncode:
               raise SystemExit(result.returncode)
           PY
+      - name: Verify linear R32F render targets expose GPU depth writes to the CPU
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_linear_float_gpu t_linear_float_gpu_m4
+          MTL_DEBUG_LAYER=1 dm/gfx/tests/t_linear_float_gpu
+          python3 - <<'PY'
+          import os,subprocess
+          result=subprocess.run(['dm/gfx/tests/t_linear_float_gpu_m4'],env=dict(os.environ,MTL_DEBUG_LAYER='1'))
+          if result.returncode in (77,78):
+              print('::warning::Metal 4 linear float execution unavailable')
+          elif result.returncode:
+              raise SystemExit(result.returncode)
+          PY
       - name: Check application active time, environment and exit-request sections
         run: |
           set -euo pipefail
