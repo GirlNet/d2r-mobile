@@ -2860,6 +2860,12 @@ static int depth_bounds_supported(void) {
 }
 static void apply_depth_bounds(RENC encoder) {
     float minimum=S.depth_bounds.enabled?S.depth_bounds.minimum:0,maximum=S.depth_bounds.enabled?S.depth_bounds.maximum:1;
+    // 诊断开关：把深度边界测试整个关掉。P5R 用它做按物体的深度剔除时，
+    // 映射不对会表现成「物体时隐时现」，这个开关用来单独验证。
+    // Diagnostic: disable depth-bounds testing entirely. When P5R uses it for per-object
+    // depth culling, a wrong mapping shows up as objects blinking; this switch isolates it.
+    static int nobounds = -1; if (nobounds < 0) nobounds = getenv("DM_P5R_NO_DEPTHBOUNDS") != NULL;
+    if (nobounds) { minimum = 0; maximum = 1; }
     // P5R uses [0, FLT_MAX] for an unrestricted stored-depth test. Metal's
     // depth domain is [0,1]; a finite interval covering it has the same effect
     // as Metal's [0,1] disabled test. Preserve the recorded NVN values in S.
