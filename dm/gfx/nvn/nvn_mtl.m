@@ -3009,6 +3009,15 @@ static int p5r_no_cull(void) {
     }
     return enabled;
 }
+static int force_visible(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("DM_P5R_FORCE_VISIBLE");
+        enabled = value && strcmp(value, "0");
+        if (enabled) MLOG("P5R 遮挡查询：DM_P5R_FORCE_VISIBLE=1，报告一律视为可见（诊断）");
+    }
+    return enabled;
+}
 static void cond_invalidate(void) {
     for (unsigned i = 0; i < sizeof g_cond_cache / sizeof *g_cond_cache; i++)
         g_cond_cache[i].valid = 0;
@@ -6770,7 +6779,11 @@ void mtl_exec(const uint8_t *p) {
             case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, (const uint8_t *)a + 8, 8); g_cnt_report[t & 31]++;
                 cond_invalidate();
                 PD("Q report type=%llu cmd=%p dst=%#llx", (unsigned long long)t, p, (unsigned long long)ad);
-                if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) { post((post_op){3, NULL, 0, 0, ad, (uint32_t)t, vis_snapshot()}); g_vis_cur = -1; }
+                if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) {
+                    if (force_visible()) post((post_op){4, NULL, 0, 0xFFFFFFFFu, ad, (uint32_t)t, NULL});
+                    else post((post_op){3, NULL, 0, 0, ad, (uint32_t)t, vis_snapshot()});
+                    g_vis_cur = -1;
+                }
                 else mtl_sub_counter(ad, (uint32_t)t);
                 break; }
             case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); g_cnt_reset[t & 31]++; PD("Q reset type=%llu cmd=%p", (unsigned long long)t, p);
