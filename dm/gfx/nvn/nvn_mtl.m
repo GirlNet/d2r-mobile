@@ -5491,23 +5491,24 @@ frz_plain:;
                         stat_frame = fr; stat_draws = 0; stat_on = 0;
                     }
                     stat_draws++; stat_on += on;
-                    if (on && drawn < 60 && fr > 2000) {
+                    // 只看绑定 768x1240 文字图集的那几笔；这条着色器同时画弧线、底色等，别的绘制会抢走取样。
+                    // Only the draws that bind the 768x1240 text atlas; the same shader also draws arcs and fills.
+                    uint64_t th = 0, ser = 0; int tid = 0;
+                    { uint64_t h = S.tex[1][128]; tid = h ? (int)nvn_handle_texture_id(h) : 0;
+                      if (tid > 0 && tid < g_ntreg && g_treg[tid].ok) { th = g_treg[tid].t.d.height; ser = g_treg[tid].t.serial; } }
+                    if (on && th == 1240 && drawn < 40 && fr > 2000) {
                         drawn++;
-                        LOG("P5R text rect frame=%llu pass=%llu ser=%llu ndc=%g..%g , %g..%g (count=%llu)",
+                        LOG("P5R text atlas rect frame=%llu pass=%llu target=%llu atlas=%llu ndc=%g..%g , %g..%g (count=%llu)",
                             (unsigned long long)fr, (unsigned long long)(g_stat_pass + 1),
-                            (unsigned long long)(R.rt.color[0] ? R.rt.color[0]->serial : 0), x0, x1, y0, y1, (unsigned long long)n);
+                            (unsigned long long)(R.rt.color[0] ? R.rt.color[0]->serial : 0), (unsigned long long)ser,
+                            x0, x1, y0, y1, (unsigned long long)n);
                         // 混合与写掩码：文字在屏幕内却看不见时，这两项是第一个怀疑对象。
                         // Blend and write mask: the first suspects when on-screen text produces no pixels.
                         MLOG("P5R text blend en=%#x chmask=%#x src=%d,%d dst=%d,%d eq=%d,%d", S.color.blend_en, S.chmask.mask,
                              S.blend[0].src_rgb, S.blend[0].dst_rgb, S.blend[0].src_a, S.blend[0].dst_a,
                              S.blend[0].eq_rgb, S.blend[0].eq_a);
-                        {   // 绘制当刻的图集内容：槽 128 绑的贴图 | The atlas bound at draw time: the texture in slot 128
-                            uint64_t h = S.tex[1][128]; int tid = h ? (int)nvn_handle_texture_id(h) : 0;
-                            if (tid > 0 && tid < g_ntreg && g_treg[tid].ok) {
-                                pthread_mutex_lock(&g_rmu); id<MTLTexture> at = tex_by_id(tid); pthread_mutex_unlock(&g_rmu);
-                                if (at) { atlas_dump_named(at, 999999); MLOG("P5R text atlas at draw tid=%d ser=%llu", tid, (unsigned long long)g_treg[tid].t.serial); }
-                            }
-                        }
+                        { pthread_mutex_lock(&g_rmu); id<MTLTexture> at = tex_by_id(tid); pthread_mutex_unlock(&g_rmu);
+                          if (at) { atlas_dump_named(at, 999999); MLOG("P5R text atlas at draw tid=%d ser=%llu", tid, (unsigned long long)ser); } }
                         if (!g_ad[12].want && !g_ad[12].sent && R.rt.color[0])
                             target_dump_request(tex_mtl(R.rt.color[0]));   // 第一笔真的落在画面里的文字，抓它这一趟 | First text that really lands on screen: capture its pass
                     }
