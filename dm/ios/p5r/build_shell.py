@@ -11,6 +11,7 @@ import subprocess
 import struct
 import sys
 import zipfile
+import shutil
 import build_vp9
 
 
@@ -108,12 +109,17 @@ def build(output,metal_backend=3):
     report['linked'] = True
     info = dict(CFBundleExecutable='P5RMobile', CFBundleIdentifier='org.p5r.experimental', CFBundleName='P5RMobile',
                 CFBundleDisplayName='P5R Mobile', CFBundlePackageType='APPL', CFBundleInfoDictionaryVersion='6.0',
-                CFBundleVersion='1', CFBundleShortVersionString='0.1', MinimumOSVersion='26.0',
+                CFBundleVersion='2', CFBundleShortVersionString='0.2', MinimumOSVersion='26.0',
                 CFBundleSupportedPlatforms=['iPhoneOS'], UIDeviceFamily=[1,2], LSRequiresIPhoneOS=True,
                 UIFileSharingEnabled=True, LSSupportsOpeningDocumentsInPlace=True, UILaunchScreen={},
                 LSSupportsGameMode=True, GCSupportsGameMode=True,
                 LSApplicationCategoryType='public.app-category.games',
+                CFBundleIconFiles=['AppIcon60x60', 'AppIcon'],
+                CFBundleIcons={'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60', 'AppIcon'],
+                                                       'CFBundleIconName': 'AppIcon'}},
                 UISupportedInterfaceOrientations=['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'])
+    for icon in sorted((REPO / 'dm/ios/p5r/icons').glob('*.png')):
+        shutil.copyfile(icon, app / icon.name)
     (app / 'Info.plist').write_bytes(plistlib.dumps(info))
     (app / 'dm/p5r-shell.json').write_text(json.dumps(dict(schema_version=1, profile='p5r', game_content_included=False,guarded_runtime_contract_version=1,
         source_fingerprint_schema=2,build_configuration=configuration,
