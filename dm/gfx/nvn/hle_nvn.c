@@ -83,6 +83,13 @@ static int g_log;
 uint64_t nvn_new_serial(void) { static _Atomic uint64_t n; return ++n; }
 static unsigned g_nsem;                          // 语义实现个数（nvn_init_slots 填） | Number of semantic implementations (filled by nvn_init_slots)
 static _Atomic uint64_t g_hle_draw_submits;      // 诊断：游戏提交的绘制条数（REC 层，含被宿主跳过的） | Diagnostic: draws submitted by the guest (at REC time, including those the host later skips)
+// 诊断：统计游戏里绘制调用点（返回地址）的出现次数，用于定位绘制函数、再反推它的剔除逻辑。
+// Diagnostic: histogram of the guest's draw call sites (return addresses) to locate the draw functions, then their cullers.
+static struct { uint64_t pc; uint32_t n; } g_draw_sites[64]; static int g_draw_sites_n;
+static void draw_site_note(uint64_t pc) {
+    for (int i = 0; i < g_draw_sites_n; i++) if (g_draw_sites[i].pc == pc) { g_draw_sites[i].n++; return; }
+    if (g_draw_sites_n < 64) { g_draw_sites[g_draw_sites_n++] = (typeof(g_draw_sites[0])){pc, 1}; }
+}
 #define OLOG(...) do { if (g_log) LOG("[nvn] " __VA_ARGS__); } while (0)
 
 static void nvn_init_slots(void) {
@@ -867,17 +874,17 @@ NVN(nvnCommandBufferSetStencilRef, void, NVNcommandBuffer *c, NVNface f, int v) 
 NVN(nvnCommandBufferSetPolygonOffsetClamp, void, NVNcommandBuffer *c, float fa, float un, float cl) {
     *REC(c, OP_POLY_OFFSET, p_poly_offset) = (p_poly_offset){fa, un, cl};
 }
-NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { atomic_fetch_add(&g_hle_draw_submits, 1); *REC(c, OP_DRAW, p_draw) = (p_draw){.prim=pr,.first=first,.count=n}; }
+NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { atomic_fetch_add(&g_hle_draw_submits, 1); draw_site_note((uint64_t)__builtin_return_address(0)); *REC(c, OP_DRAW, p_draw) = (p_draw){.prim=pr,.first=first,.count=n}; }
 NVN(nvnCommandBufferDrawArraysInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n, int base_instance, int instances) {
     if(first<0 || n<0 || base_instance<0 || instances<0)die("Invalid array instance parameters");
-    atomic_fetch_add(&g_hle_draw_submits, 1);
+    atomic_fetch_add(&g_hle_draw_submits, 1); draw_site_note((uint64_t)__builtin_return_address(0));
     *REC(c, OP_DRAW, p_draw)=(p_draw){pr,first,n,instances-1,base_instance};
 }
 NVN(nvnCommandBufferDrawElementsInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib,
     int bv, int bi, int inst) {
     if(n<0 || bi<0 || inst<0)die("Invalid indexed instance parameters");
     if(!inst)n=0;
-    atomic_fetch_add(&g_hle_draw_submits, 1);
+    atomic_fetch_add(&g_hle_draw_submits, 1); draw_site_note((uint64_t)__builtin_return_address(0));
     *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, n, bv, bi, inst, ib};
 }
 NVN(nvnCommandBufferDispatchCompute, void, NVNcommandBuffer *c, int x, int y, int z) {
@@ -1474,6 +1481,15 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
             (unsigned long long)(submits > dr ? submits - dr : 0),
             (unsigned long long)f, (unsigned long long)ps);
         last_submits = submits; last_dr = dr; } }
+    // 诊断：每 300 帧把游戏绘制调用点按次数排序打出来（定位绘制函数，进而反推剔除逻辑）。
+    // Diagnostic: every 300 frames print the guest draw call sites sorted by count (to locate draw functions, then their cullers).
+    { static uint64_t last_sites; if (f >= last_sites + 300) { last_sites = f;
+        for (int i = 0; i < g_draw_sites_n; i++)
+            for (int j = i + 1; j < g_draw_sites_n; j++)
+                if (g_draw_sites[j].n > g_draw_sites[i].n) { typeof(g_draw_sites[0]) t = g_draw_sites[i]; g_draw_sites[i] = g_draw_sites[j]; g_draw_sites[j] = t; }
+        for (int i = 0; i < g_draw_sites_n && i < 12; i++)
+            LOG("[nvn] 绘制调用点 %#llx x%u", (unsigned long long)g_draw_sites[i].pc, g_draw_sites[i].n);
+        g_draw_sites_n = 0; } }
     if ((g_frame + 1) % TWIN == 0) {
         extern void mtl_subprof_report(uint64_t frames);
         mtl_subprof_report(TWIN);
