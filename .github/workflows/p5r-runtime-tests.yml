@@ -109,7 +109,7 @@ jobs:
         run: |
           sdk=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' -type d | sort | tail -1)
           if [ -n "$sdk" ]; then echo "DEVELOPER_DIR=$sdk/Contents/Developer" >> "$GITHUB_ENV"; fi
-      - name: Verify glyph and R32F GPU CPU shared storage on Apple Silicon
+      - name: Verify glyph, BGRA8 UI and R32F GPU CPU shared storage on Apple Silicon
         run: |
           set -euo pipefail
           python3 dm/gfx/tools/dmsh_chain.py --header
@@ -125,7 +125,7 @@ jobs:
           persist-credentials: false
       - name: Generate shader cache version from this checkout
         run: python3 dm/gfx/tools/dmsh_chain.py --header
-      - name: Verify CPU-updated linear glyph textures share guest storage
+      - name: Verify CPU-updated glyph and BGRA8 UI textures share guest storage
         run: |
           set -euo pipefail
           make -C dm/gfx/tests t_linear_glyph_gpu t_linear_glyph_gpu_m4

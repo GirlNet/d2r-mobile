@@ -1645,12 +1645,13 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
             return bc->tex;
         }
     }
-    // 线性贴图共用客体池：CPU 更新影片/字形，GPU 写 R32F 遮挡深度，双方必须看到同一份字节。
-    // Linear textures share the guest pool: CPU movie/glyph updates and GPU R32F occlusion writes must expose the same bytes to both processors.
+    // 线性贴图共用客体池：CPU 更新影片/字形/BGRA8 界面，GPU 写 R32F 遮挡深度，双方必须看到同一份字节。
+    // Linear textures share the guest pool: CPU movie/glyph/BGRA8 UI updates and GPU R32F occlusion writes must expose the same bytes to both processors.
     if (t->mem && t->d.target == 1 && t->d.levels <= 1 && t->d.samples <= 1
         && nvn_tex_is_linear(&t->d) && !t->has_layout
         && (t->d.format == NVN_FORMAT_R8 || t->d.format == NVN_FORMAT_RG8
-            || t->d.format == NVN_FORMAT_RGBA8 || t->d.format == NVN_FORMAT_R32F)) {
+            || t->d.format == NVN_FORMAT_RGBA8 || t->d.format == NVN_FORMAT_BGRA8
+            || t->d.format == NVN_FORMAT_R32F)) {
         uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
         if (bpb > 0 && nvn_fmt_to_mtl(t->d.format, &pf, swz) && pf) {
             size_t row = t->d.stride ? t->d.stride : (size_t)((t->d.width + bw - 1) / bw) * bpb;
