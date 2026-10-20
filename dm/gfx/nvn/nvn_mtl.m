@@ -5407,17 +5407,17 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if((dw?dw->count:di->count)==0 || !instances)return;
     uint64_t prof_state0 = subprof_now();
     int skip_depth_mode = p5r_skip_depth_draws() && g_ruler_truth == 0;
-    int no_color_targets = 1;
-    if (skip_depth_mode) {
-        for (int i = 0; i < R.rt.n && i < 8; i++)
-            if (R.rt.color[i]) { no_color_targets = 0; break; }
-    }
-    if (skip_depth_mode && no_color_targets) {
+    if (skip_depth_mode && S.chmask.mask == 0) {
         if (g_p5r_skipped_depth_draws++ == 0)
-            MLOG("P5R 性能模式：跳过无颜色附件的深度/阴影绘制（DM_P5R_SKIP_DEPTH_DRAW=0 可关闭）");
+            MLOG("P5R 性能模式：跳过颜色写入掩码为 0 的深度/阴影绘制（DM_P5R_SKIP_DEPTH_DRAW=0 可关闭）");
         return;
     }
     __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3);
+    if (skip_depth_mode && pr && !pr->sh[1]) {
+        if (g_p5r_skipped_depth_draws++ == 0)
+            MLOG("P5R 性能模式：跳过无片元着色器的深度/阴影绘制（DM_P5R_SKIP_DEPTH_DRAW=0 可关闭）");
+        return;
+    }
     // 整帧清点（DM_P5R_FRAME_DUMP=1）：每 300 帧中的一帧，把每一笔绘制的着色器、顶点数与第一张贴图记下来，
     // 用来找出字幕那一层究竟走的哪个着色器/图集。
     // Whole-frame census (DM_P5R_FRAME_DUMP=1): for one frame out of every 300, record each draw's shaders,
