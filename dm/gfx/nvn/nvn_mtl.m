@@ -1082,10 +1082,9 @@ static void atlas_dump_begin(void) {
         if (!W || !H || bytes > (size_t)(32 << 20)) continue;
         id<MTLBuffer> b = [g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
         if (!b) continue;
-        id<MTLBlitCommandEncoder> e = [g_cb blitCommandEncoder];
-        [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
-                  sourceSize:MTLSizeMake(W, H, 1) toBuffer:b destinationOffset:0
-          destinationBytesPerRow:bpr destinationBytesPerImage:bytes];
+        // Metal 3 / Metal 4 共用：M4 的命令缓冲没有 blitCommandEncoder 方法 | Shared by M3/M4: an M4 command buffer has no blitCommandEncoder
+        BENC e = enc_b_begin(g_cb);
+        enc_b_copy_buffer_texture(e, b, 0, bpr, bytes, MTLSizeMake(W, H, 1), t, 0, 0, MTLOriginMake(0, 0, 0));
         enc_b_end(e);
         [g_cb addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c;
             const char *dir = getenv("DM_TEMP"); if (!dir || !*dir) dir = ".";
