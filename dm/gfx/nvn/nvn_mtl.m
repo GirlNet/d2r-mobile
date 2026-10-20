@@ -1748,6 +1748,66 @@ static struct { uint32_t cfmt[8], dfmt, sfmt, samples; int hd, hs; NSUInteger tw
 static id<MTLRenderPipelineState> g_enc_pso; static id<MTLDepthStencilState> g_enc_dss;   // 本编码器上已设的（相同不重设） | Already set on this encoder (not set again if identical)
 static int g_enc_vis, g_enc_has_vis;   // 本编码器当前的可见性计数模式（0 关 / 槽号 + 1）、是否挂了可见性缓冲 | This encoder's current visibility count mode (0 off / slot number + 1), and whether a visibility buffer is attached
 static int g_pso_dirty = 1, g_dss_dirty = 1;   // 回放中改了管线 / 深度模板相关状态 | Pipeline / depth-stencil related state was changed during replay
+// NVN sends complete state on most draws, but Metal already retains unchanged
+// encoder state. Cache the hot fixed-function values per render encoder.
+// NVN 多数绘制会重复提交完整状态；Metal 编码器本会保留未改动状态，这里避免重复调用。
+static struct {
+    int vp, sc, cull, winding, fill, clip, bias, ref, blend, bounds;
+    MTLViewport vp_v; MTLScissorRect sc_v;
+    MTLCullMode cull_v; MTLWinding winding_v; MTLTriangleFillMode fill_v;
+    BOOL clip_v; float bias_v[3]; uint32_t ref_v; float blend_v[4];
+    float bounds_v[2];
+    uint8_t vb_valid[16]; uint64_t vb_addr[16];
+} g_ers;
+static inline void enc_rs_viewport(RENC e, MTLViewport v) {
+    if (!g_ers.vp || memcmp(&g_ers.vp_v, &v, sizeof v)) { enc_r_viewport(e, v); g_ers.vp_v = v; g_ers.vp = 1; }
+}
+static inline void enc_rs_scissor(RENC e, MTLScissorRect v) {
+    if (!g_ers.sc || memcmp(&g_ers.sc_v, &v, sizeof v)) { enc_r_scissor(e, v); g_ers.sc_v = v; g_ers.sc = 1; }
+}
+static inline void enc_rs_cull(RENC e, MTLCullMode v) {
+    if (!g_ers.cull || g_ers.cull_v != v) { enc_r_cull(e, v); g_ers.cull_v = v; g_ers.cull = 1; }
+}
+static inline void enc_rs_winding(RENC e, MTLWinding v) {
+    if (!g_ers.winding || g_ers.winding_v != v) { enc_r_winding(e, v); g_ers.winding_v = v; g_ers.winding = 1; }
+}
+static inline void enc_rs_fill(RENC e, MTLTriangleFillMode v) {
+    if (!g_ers.fill || g_ers.fill_v != v) { enc_r_fill(e, v); g_ers.fill_v = v; g_ers.fill = 1; }
+}
+static inline void enc_rs_depth_clip(RENC e, BOOL v) {
+    if (!g_ers.clip || g_ers.clip_v != v) { enc_r_depth_clip(e, v); g_ers.clip_v = v; g_ers.clip = 1; }
+}
+static inline void enc_rs_depth_bias(RENC e, float units, float slope, float clamp) {
+    float v[3] = {units, slope, clamp};
+    if (!g_ers.bias || memcmp(g_ers.bias_v, v, sizeof v)) {
+        enc_r_depth_bias(e, units, slope, clamp);
+        memcpy(g_ers.bias_v, v, sizeof v); g_ers.bias = 1;
+    }
+}
+static inline void enc_rs_stencil_ref(RENC e, uint32_t v) {
+    if (!g_ers.ref || g_ers.ref_v != v) { enc_r_stencil_ref(e, v, v); g_ers.ref_v = v; g_ers.ref = 1; }
+}
+static inline void enc_rs_blend_color(RENC e, const float v[4]) {
+    if (!g_ers.blend || memcmp(g_ers.blend_v, v, sizeof g_ers.blend_v)) {
+        enc_r_blend_color(e, v[0], v[1], v[2], v[3]);
+        memcpy(g_ers.blend_v, v, sizeof g_ers.blend_v); g_ers.blend = 1;
+    }
+}
+static inline void enc_rs_depth_bounds(RENC e, float minimum, float maximum) {
+    float v[2] = {minimum, maximum};
+    if (!g_ers.bounds || memcmp(g_ers.bounds_v, v, sizeof v)) {
+        if (@available(macOS 26.0, iOS 26.0, *)) [e setDepthTestMinBound:minimum maxBound:maximum];
+        memcpy(g_ers.bounds_v, v, sizeof v); g_ers.bounds = 1;
+    }
+}
+static inline void enc_rs_vbuf(RENC e, int stream, uint64_t gpu) {
+    uint64_t previous = g_ers.vb_addr[stream];
+    if (!g_ers.vb_valid[stream] || previous != gpu) {
+        enc_r_vbuf(e, 16 + stream, gpu);
+        g_ers.vb_addr[stream] = gpu;
+        g_ers.vb_valid[stream] = 1;
+    }
+}
 static uint64_t g_stat_args_enc, g_stat_args_reuse;   // 参数缓冲：新编 / 复用次数 | Argument buffer: new-encode / reuse counts
 static uint64_t g_stat_draw, g_stat_pass, g_bw_load, g_bw_store, g_pass_full_rw, g_udc_saved_bytes;   // 带宽账：附件读入 / 写出字节、全量读写通道数 | Bandwidth ledger: attachment load / store bytes, number of full load-store passes
 // DM_NVN_PASSDUMP：逐条记通道附件 / 采样 / 出图（贴图按序号），供离线做数据流分析；P / D / R / S 行的通道号一致（= 开通道后的 g_stat_pass）
@@ -2262,6 +2322,7 @@ static RENC rp_begin_ex(int clear_only) {
       void ts_note(id pd, NSUInteger nc); ts_note(pd, (NSUInteger)R.rt.n); }
     ser_gate();
     g_enc = enc_r_begin(pd);
+    memset(&g_ers, 0, sizeof g_ers);
     args_dirty_all();
     g_stat_pass++;
     if (enc_label_on()) { id<MTLTexture> lt = pd.colorAttachments[0].texture ?: pd.depthAttachment.texture ?: pd.stencilAttachment.texture; g_el_w = (int)lt.width; g_el_h = (int)lt.height; g_el_draws = 0; g_el_key[0] = 0; }
@@ -2893,8 +2954,12 @@ static int render_allowed(void) {
     vis_fold_completed();mtl_sub_begin();return allowed;
 }
 static int depth_bounds_supported(void) {
-    if(@available(macOS 26.0,iOS 26.0,*))return [g_dev supportsFamily:MTLGPUFamilyApple10];
-    return 0;
+    static int supported = -1;
+    if (supported < 0) {
+        supported = 0;
+        if(@available(macOS 26.0,iOS 26.0,*)) supported = [g_dev supportsFamily:MTLGPUFamilyApple10];
+    }
+    return supported;
 }
 static void apply_depth_bounds(RENC encoder) {
     float minimum=S.depth_bounds.enabled?S.depth_bounds.minimum:0,maximum=S.depth_bounds.enabled?S.depth_bounds.maximum:1;
@@ -2911,9 +2976,8 @@ static void apply_depth_bounds(RENC encoder) {
     if(minimum<=0&&maximum>=1){minimum=0;maximum=1;}
     else {minimum=fmaxf(0,minimum);maximum=fminf(1,maximum);}
     if(minimum>maximum)MDIE("Unsupported depth bounds [%g,%g]",minimum,maximum);
-    if(depth_bounds_supported()) {
-        if(@available(macOS 26.0,iOS 26.0,*))[encoder setDepthTestMinBound:minimum maxBound:maximum];
-    } else if(minimum!=0||maximum!=1)MDIE("Depth bounds testing requires Apple10 and OS 26 or newer");
+    if(depth_bounds_supported()) enc_rs_depth_bounds(encoder, minimum, maximum);
+    else if(minimum!=0||maximum!=1)MDIE("Depth bounds testing requires Apple10 and OS 26 or newer");
 }
 static void udc_note_draw(NvProg *pr) {
     if (R.has_rt) for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i]) { zskip_del(R.rt.color[i]->serial); g_zskip_cand_ok[i] = 0; }   // 零源集合：真画了就不再是全零 | Zero-source set: once really drawn it is no longer all zeros
@@ -3438,6 +3502,11 @@ static inline void args_sync_dirty(void) {
         g_args_reg_seen = reg; g_args_dirty_seen = dirty; args_dirty_all();
     }
 }
+static inline int args_reusable(NvShader *sh, int nvn_stage) {
+    if (!sh || !sh->ae || passdump() || nvn_stage == 5) return 0;
+    args_sync_dirty();
+    return !g_args_dirty[nvn_stage] && sh->ab_buf && sh->ab_pass == g_pass.serial;
+}
 static void bind_args(id<MTLCommandEncoder> en, int nvn_stage, int metal_vertex, id<MTLBuffer> ab, uint64_t gpu, size_t off, NSUInteger ai) {
     if (nvn_stage == 5) enc_c_args((id<MTLComputeCommandEncoder>)en, gpu, ai);
     else enc_r_args((id<MTLRenderCommandEncoder>)en, metal_vertex ? MTLRenderStageVertex : MTLRenderStageFragment, gpu, ai);
@@ -3533,6 +3602,7 @@ static void movie_textures_update(void) {
         res_add(y); res_add(uv);
         g_movie_y_texture = y; g_movie_uv_texture = uv;
         g_movie_texture_w = w; g_movie_texture_h = h;
+        args_dirty_all();
     }
     size_t cw = (w + 1) / 2, ch = (h + 1) / 2;
     [g_movie_y_texture replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:g_movie_texture_frame bytesPerRow:w];
@@ -3592,8 +3662,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                        id<MTLTexture> __strong const prepared[NVN_REFL_MAXB]) {
     if (!sh->ae) return 1;
     uint64_t slots[NVN_REFL_MAXB] = {0};
-    args_sync_dirty();
-    if (!passdump() && !g_args_dirty[nvn_stage] && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5) {
+    if (args_reusable(sh, nvn_stage)) {
         bind_args(en, nvn_stage, metal_vertex, sh->ab_buf, sh->ab_gpu, sh->ab_off, sh->rf.abi);
         g_stat_args_reuse++;
         return 1;
@@ -5438,8 +5507,12 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     }
     id<MTLTexture> vertex_textures[NVN_REFL_MAXB]={nil},fragment_textures[NVN_REFL_MAXB]={nil};
     if(!dm_guest_d2r()) {
-        prepare_shader_textures(pr->sh[0],0,vertex_textures);
-        prepare_shader_textures(pr->sh[1],1,fragment_textures);
+        // Reusing an argument block already contains resolved resource IDs. Avoid
+        // resolving every reflection entry a second time on that path.
+        // 参数块复用时资源 ID 已在块内，省掉整份绑定的重复解析。
+        if (!args_reusable(pr->sh[0], 0)) prepare_shader_textures(pr->sh[0],0,vertex_textures);
+        int movie = pr->sh[1] && !strncmp(pr->sh[1]->key, "372fb3bf90397b4e", 16);
+        if (movie || !args_reusable(pr->sh[1], 1)) prepare_shader_textures(pr->sh[1],1,fragment_textures);
     }
 #ifdef NVN_RT_RANGE_TEST
     if (!g_enc) rr_begin();
@@ -5472,7 +5545,8 @@ frz_plain:;
     static id<MTLDepthStencilState> cur_ds; static uint64_t cur_ds_pass;
     if (g_dss_dirty || cur_ds_pass != g_pass.serial) { cur_ds = dss_get(g_pass.hd, g_pass.hs); cur_ds_pass = g_pass.serial; g_dss_dirty = 0; }
     if (cur_ds != g_enc_dss) { enc_r_dss(en, cur_ds); g_enc_dss = cur_ds; }
-    if (g_rt_ovr && g_pass.hs) enc_r_stencil_ref(en, g_rt_ovr == 3 ? 0x40 : 0, 0); else enc_r_stencil_ref(en, S.st_ref[0], S.st_ref[1]);
+    if (g_rt_ovr && g_pass.hs) enc_rs_stencil_ref(en, g_rt_ovr == 3 ? 0x40 : 0);
+    else enc_rs_stencil_ref(en, S.st_ref[0]);
     // 视口 / 剪裁（夹到目标尺寸内）
     // Viewport / scissor (clamped within the target size)
     NSUInteger tw = g_pass.tw, th = g_pass.th;
@@ -5492,8 +5566,8 @@ frz_plain:;
     if (g_ui_rect_fn && dw && dw->count == 4 && S.nattr == 2 && S.stream[0].stride == 20) { double uy = 0, uh = 1; g_ui_rect_fn(&uy, &uh);
         if (uh > 0 && uh < 1) { if (ui_cover_all(uh)) vs = 1 / uh; else if (uy > 0) { so = lround(uy * th); if (ui_mat_ok()) moff = 2 * uy; else { vo = so; static int n; if (n++ < 4) MLOG("界面下移：投影矩阵这次读不到，退回挪视口（通道 %llu）", g_stat_pass); } } } }
     if (moff != g_ui_moff) { g_ui_moff = moff; g_args_dirty[0] = 1; }
-    if (S.has_vp) enc_r_viewport(en, (MTLViewport){S.vp[0][0], S.vp[0][1] + vo, S.vp[0][2], S.vp[0][3] * vs, S.dr[0], S.dr[1]});
-    else enc_r_viewport(en, (MTLViewport){0, vo, tw, th * vs, 0, 1});
+    if (S.has_vp) enc_rs_viewport(en, (MTLViewport){S.vp[0][0], S.vp[0][1] + vo, S.vp[0][2], S.vp[0][3] * vs, S.dr[0], S.dr[1]});
+    else enc_rs_viewport(en, (MTLViewport){0, vo, tw, th * vs, 0, 1});
     MTLScissorRect sc = {0, 0, tw, th};
     // 实验开关：忽略游戏设的裁剪矩形（面板内容被裁剪吃掉时会立刻显形）。
     // Experiment: ignore the guest's scissor rect (content clipped by a scissor appears immediately).
@@ -5504,7 +5578,7 @@ frz_plain:;
         if (x1 <= x0 || y1 <= y0) return;
         sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
     }
-    enc_r_scissor(en, sc);
+    enc_rs_scissor(en, sc);
     // 文字着色器：第一次真正走到绘制时，记下视口 / 裁剪 / 剔除和它用的 uniform 块。
     // 位置由 vp_c3 里的屏幕尺寸换算；那块为 0 时顶点会落到屏幕外或变成 NaN。
     // Text shader: on the first real draw, record viewport / scissor / cull and its uniform block.
@@ -5602,18 +5676,18 @@ frz_plain:;
         }
     }
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
-    enc_r_cull(en, S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone);
-    enc_r_winding(en, S.poly.front == NVN_FRONT_FACE_CCW ? MTLWindingCounterClockwise : MTLWindingClockwise);
-    enc_r_fill(en, S.poly.mode == NVN_POLYGON_MODE_LINE ? MTLTriangleFillModeLines : MTLTriangleFillModeFill);
-    enc_r_depth_clip(en, !S.depth_clamp);
+    enc_rs_cull(en, S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone);
+    enc_rs_winding(en, S.poly.front == NVN_FRONT_FACE_CCW ? MTLWindingCounterClockwise : MTLWindingClockwise);
+    enc_rs_fill(en, S.poly.mode == NVN_POLYGON_MODE_LINE ? MTLTriangleFillModeLines : MTLTriangleFillModeFill);
+    enc_rs_depth_clip(en, !S.depth_clamp);
     apply_depth_bounds(en);
-    if (S.poly.offset_en & 4) enc_r_depth_bias(en, S.po.units, S.po.factor, S.po.clamp); else enc_r_depth_bias(en, 0, 0, 0);
-    enc_r_blend_color(en, S.blend_color[0], S.blend_color[1], S.blend_color[2], S.blend_color[3]);
+    if (S.poly.offset_en & 4) enc_rs_depth_bias(en, S.po.units, S.po.factor, S.po.clamp); else enc_rs_depth_bias(en, 0, 0, 0);
+    enc_rs_blend_color(en, S.blend_color);
     for (int s_ = 0; s_ < 16; s_++) {
         if (!S.vbuf[s_].address) continue;
         void *mb; uint64_t mo;
         uint64_t gpu;
-        if (mtl_gpu_addr(S.vbuf[s_].address, 1, &mb, &mo, &gpu)) { enc_r_vbuf(en, 16 + s_, gpu); use_rec("buf", S.vbuf[s_].address, S.vbuf[s_].size, 0, NULL); }
+        if (mtl_gpu_addr(S.vbuf[s_].address, 1, &mb, &mo, &gpu)) { enc_rs_vbuf(en, s_, gpu); use_rec("buf", S.vbuf[s_].address, S.vbuf[s_].size, 0, NULL); }
     }
     static id<MTLBuffer> zero; if (!zero) { zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(zero); }
     static uint64_t zero_gpu; if (!zero_gpu) zero_gpu = zero.gpuAddress;
