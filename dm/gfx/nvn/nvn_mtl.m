@@ -1072,6 +1072,9 @@ static void atlas_dump_request(id<MTLTexture> t, uint64_t ser, uint32_t w, uint3
     g_ad[slot].tex = (__bridge void *)t; g_ad[slot].ser = ser; g_ad[slot].want = 1; g_ad[slot].block = 1;
 }
 static void atlas_dump_begin(void) {
+#if !DM_NVN_M3
+    return;   // Metal 4 command buffers have neither blitCommandEncoder nor addCompletedHandler; the readback is an M3 diagnostic | M4 命令缓冲没有这两个方法，读回只在 M3 用
+#else
     if (!g_cb) return;
     for (int i = 0; i < 14; i++) {
         if (!g_ad[i].want || g_ad[i].sent || !g_ad[i].tex) continue;
@@ -1095,6 +1098,7 @@ static void atlas_dump_begin(void) {
             LOG("P5R atlas dump ser=%llu %lux%lu %zu bytes nz=%zu", (unsigned long long)ser, (unsigned long)W, (unsigned long)H, n, nz);
         }];
     }
+#endif
 }
 static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss;
 static uint64_t g_pfv_upgrades;
