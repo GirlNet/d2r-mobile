@@ -6,7 +6,10 @@
 // Host: real audio output = CoreAudio AudioUnit (Mac DefaultOutput / iOS RemoteIO); silent sink = consumes buffers in real time (no sound, pacing matches the real device).
 //       iOS defaults to real audio output (the product must have sound), tests that want silence set DM_AUDIO=0 explicitly; Mac defaults to the silent sink (replay / gate checks are silent), DM_AUDIO=1 for real audio output.
 // The contents of AudioOut / AudioOutBuffer / AudioOutParameter are read and written only through the interfaces below; the host defines its own internal layout and only writes the front part of the structs.
+// 六声道 PCM 在出声端明确合成立体声，保留中置人声；客体队列、缓冲释放及播放帧计数仍按原六声道字节推进。
+// Explicitly fold six-channel PCM into stereo at the output, preserving center dialogue; guest queues, buffer releases and played-frame counts still advance by the original six-channel bytes.
 #include "hle.h"
+#include "audio_mix.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <TargetConditionals.h>
 #include <dispatch/dispatch.h>
@@ -92,10 +95,22 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
 static _Atomic uint64_t g_render_calls;   // 声卡回调累计（生命周期验证：恢复后须继续增长） | Cumulative sound card callbacks (lifecycle verification: must keep growing after resume)
 uint64_t dm_audio_render_calls(void) { return atomic_load_explicit(&g_render_calls, memory_order_relaxed); }
 static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *bl) {
-    (void)f; (void)ts; (void)bus; (void)frames;
+    (void)f; (void)ts; (void)bus;
     aout *a = ctx;
     atomic_fetch_add_explicit(&g_render_calls, 1, memory_order_relaxed);
-    pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
+    if(a->ch==6) {
+        int16_t scratch[256*6];
+        int16_t *destination=bl->mBuffers[0].mData;
+        uint64_t capacity=bl->mBuffers[0].mDataByteSize/4u;
+        uint64_t remaining=frames<capacity?frames:capacity;
+        memset(destination,0,bl->mBuffers[0].mDataByteSize);
+        while(remaining) {
+            size_t count=remaining>256?256:(size_t)remaining;
+            pull(a,(uint8_t *)scratch,count*6u*sizeof *scratch);
+            dm_audio_51_stereo(destination,scratch,count);
+            destination+=count*2;remaining-=count;
+        }
+    } else pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
     return noErr;
 }
 static void au_open(aout *a) {
@@ -108,10 +123,11 @@ static void au_open(aout *a) {
                                    .componentManufacturer = kAudioUnitManufacturer_Apple};
     AudioComponent c = AudioComponentFindNext(NULL, &d);
     if (!c || AudioComponentInstanceNew(c, &a->au)) die("AudioUnit 建不出来");
+    unsigned output_channels=a->ch==6?2u:(unsigned)a->ch;
     AudioStreamBasicDescription f = {.mSampleRate = RATE, .mFormatID = kAudioFormatLinearPCM,
                                      .mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
-                                     .mBytesPerPacket = 2u * a->ch, .mFramesPerPacket = 1, .mBytesPerFrame = 2u * a->ch,
-                                     .mChannelsPerFrame = (UInt32)a->ch, .mBitsPerChannel = 16};
+                                     .mBytesPerPacket = 2u * output_channels, .mFramesPerPacket = 1, .mBytesPerFrame = 2u * output_channels,
+                                     .mChannelsPerFrame = output_channels, .mBitsPerChannel = 16};
     AURenderCallbackStruct cb = {au_render, a};
     if (AudioUnitSetProperty(a->au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f) ||
         AudioUnitSetProperty(a->au, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb) ||
@@ -162,6 +178,7 @@ HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKN
     pthread_mutex_unlock(&g_aos_lock);
     LOG("audio::OpenAudioOut %s 声道 %d %s", name ? name : "(默认)", ch, real_audio() ? "真出声" : "静音接收端");
     if (real_audio()) au_open(a);
+    if (real_audio() && ch==6) LOG("audio 5.1 -> stereo: center, LFE and surrounds mixed; guest PCM remains 6-channel/48kHz");
     return RES_OK;
 }
 // P5R SDK 同时使用带事件和不带事件的默认设备重载，必须落到同一个宿主输出对象。

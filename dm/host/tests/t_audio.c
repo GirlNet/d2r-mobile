@@ -14,6 +14,44 @@ static void *bound_event;
 static int bound_autoclear;
 void hle_signal_system_event(void *g) { (void)g; atomic_fetch_add_explicit(&g_sig, 1, memory_order_seq_cst); }
 void hle_bind_system_event(void *g, int autoclear) { bound_event = g; bound_autoclear = autoclear; }   // The real implementation binds SDK kernel events; this test records the ABI.
+// 直接调用真实回调，跨不完整帧的缓冲边界和 256 帧分块核验转换、释放顺序及六声道客体时钟。
+// Call the production callback across partial-frame buffer boundaries and 256-frame chunks, checking conversion, release order and the six-channel guest clock.
+static int test_render_mix(void) {
+    enum { FRAMES=600 };
+    int16_t source[FRAMES*6]={0},destination[FRAMES*2+4];
+    for(int frame=0;frame<FRAMES;frame++)source[frame*6+2]=frame%2?-10000:10000;
+    for(unsigned i=0;i<sizeof destination/sizeof destination[0];i++)destination[i]=12345;
+    char object[64];uint8_t parameter[16];h_au_InitParam(parameter);*(uint16_t *)(parameter+4)=6;
+    if(h_au_OpenDefault(object,parameter))return 1;
+    gbuf buffers[3];size_t cuts[]={0,5,419,sizeof source};
+    for(int i=0;i<3;i++) {
+        h_au_SetBuf(&buffers[i],(uint8_t *)source+cuts[i],cuts[i+1]-cuts[i],cuts[i+1]-cuts[i]);
+        if(!h_au_Append(object,&buffers[i]))return 1;
+    }
+    aout *output=ao(object);atomic_store(&output->state,STATE_STARTED);
+    AudioBufferList list={.mNumberBuffers=1,.mBuffers={{.mNumberChannels=2,.mDataByteSize=FRAMES*4,.mData=destination}}};
+    if(au_render(output,NULL,NULL,0,FRAMES,&list))return 1;
+    for(int frame=0;frame<FRAMES;frame++)if(destination[frame*2]!=(frame%2?-7071:7071) || destination[frame*2+1]!=destination[frame*2])return 1;
+    for(int i=0;i<4;i++)if(destination[FRAMES*2+i]!=12345)return 1;
+    if(h_au_Ch(object)!=6 || h_au_Played(object)!=FRAMES)return 1;
+    for(int i=0;i<3;i++)if(h_au_Released(object)!=&buffers[i])return 1;
+    if(au_render(output,NULL,NULL,0,FRAMES,&list) || h_au_Played(object)!=FRAMES)return 1;
+    for(int i=0;i<FRAMES*2;i++)if(destination[i])return 1;
+    atomic_store(&output->state,STATE_STOPPED);h_au_Close(object);
+    for(int channels=1;channels<=2;channels++) {
+        h_au_InitParam(parameter);*(uint16_t *)(parameter+4)=channels;
+        if(h_au_OpenDefault(object,parameter))return 1;
+        gbuf buffer;int16_t input[4]={1000,-2000,3000,-4000},result[6]={0,0,0,0,12345,-23456};
+        h_au_SetBuf(&buffer,input,sizeof input,sizeof input);if(!h_au_Append(object,&buffer))return 1;
+        output=ao(object);atomic_store(&output->state,STATE_STARTED);
+        list.mBuffers[0]=(AudioBuffer){.mNumberChannels=(UInt32)channels,.mDataByteSize=sizeof input,.mData=result};
+        if(au_render(output,NULL,NULL,0,4/channels,&list) || memcmp(input,result,sizeof input))return 1;
+        if(result[4]!=12345 || result[5]!=-23456 || h_au_Played(object)!=4u/(unsigned)channels || h_au_Released(object)!=&buffer)return 1;
+        atomic_store(&output->state,STATE_STOPPED);h_au_Close(object);
+    }
+    puts("AUDIO RENDER MIX OK: center-only stereo output, 600 frames across odd buffer boundaries/chunks, source frame clock, releases, underrun, mono/stereo passthrough and guards");
+    return 0;
+}
 // 精确核对 PCM 帧计数，不依赖时钟或声卡；停止/空队列的补零不计，半帧字节跨块保留。
 // Check exact PCM frame counts without a clock/audio device; stopped/empty-queue silence does not count, and partial frames carry across buffers.
 static int test_played_count(void) {
@@ -46,6 +84,7 @@ static int test_played_count(void) {
     return 0;
 }
 int main(void) {
+    if(test_render_mix())return 1;
     if (test_played_count()) return 1;
     char out[64], ev[64]; uint8_t prm[16]; gbuf b[3]; static int16_t pcm[3][4800 * 2];
     memset(ev, 0xa5, sizeof ev);
@@ -84,6 +123,14 @@ int main(void) {
     // Scenario 2: the real audio output sink (PCM all 0, inaudible) plays 6 blocks of 100 ms each, pausing at 150 ms (app to background / incoming call) and resuming at 350 ms.
     // Expected: during the pause the silent sink takes over and consumes in real time, all 6 blocks are released in order with 6 events; total duration ~ 600 ms (real time, neither stalled by the pause nor sped up).
     setenv("DM_AUDIO", "1", 1);
+    // 真 AudioUnit 的输入流为两声道，而客体仍查询到六声道。
+    // The real AudioUnit input stream is stereo while guest queries still report six channels.
+    char format_object[64];uint8_t surround_parameter[16];h_au_InitParam(surround_parameter);*(uint16_t *)(surround_parameter+4)=6;
+    if(h_au_OpenDefault(format_object,surround_parameter))return 1;
+    AudioStreamBasicDescription stream={0};UInt32 stream_size=sizeof stream;
+    if(AudioUnitGetProperty(ao(format_object)->au,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Input,0,&stream,&stream_size) ||
+       stream.mChannelsPerFrame!=2 || stream.mBytesPerFrame!=4 || stream.mSampleRate!=48000 || h_au_Ch(format_object)!=6)return 1;
+    h_au_Close(format_object);
     char out2[64]; gbuf b2[6]; static int16_t pcm2[6][4800 * 2]; g_sig = 0;
     if (h_au_Open(out2, ev, NULL, prm)) return 1;
     for (int i = 0; i < 6; i++) { h_au_SetBuf(&b2[i], pcm2[i], sizeof pcm2[i], sizeof pcm2[i]); h_au_Append(out2, &b2[i]); }

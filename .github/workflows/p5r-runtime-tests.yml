@@ -116,6 +116,13 @@ jobs:
           make -C dm/gfx/tests t_linear_glyph_gpu t_linear_float_gpu
           MTL_DEBUG_LAYER=1 dm/gfx/tests/t_linear_glyph_gpu
           MTL_DEBUG_LAYER=1 dm/gfx/tests/t_linear_float_gpu
+      - name: Verify center dialogue survives the stereo output callback
+        run: |
+          set -euo pipefail
+          make -C dm/host/tests build/t_audio_mix build/t_audio build/t_audio_spsc
+          dm/host/tests/build/t_audio_mix
+          dm/host/tests/build/t_audio
+          dm/host/tests/build/t_audio_spsc
   macos-components:
     runs-on: macos-26
     timeout-minutes: 15
@@ -183,10 +190,11 @@ jobs:
           DM_AUDIO: '0'
         run: |
           set -euo pipefail
-          make -C dm/host/tests build/t_guest_bootstrap build/t_audio build/t_audio_spsc build/t_shader_control build/t_nvn_handles build/t_nvn_buffers build/t_nvn_combined_refl build/t_nvn_compute_gpu build/t_nvn_texture_gpu
+          make -C dm/host/tests build/t_guest_bootstrap build/t_audio_mix build/t_audio build/t_audio_spsc build/t_shader_control build/t_nvn_handles build/t_nvn_buffers build/t_nvn_combined_refl build/t_nvn_compute_gpu build/t_nvn_texture_gpu
           dm/host/tests/build/t_guest_bootstrap d2r
           dm/host/tests/build/t_guest_bootstrap p5r
           dm/host/tests/build/t_audio
+          dm/host/tests/build/t_audio_mix
           dm/host/tests/build/t_audio_spsc
           dm/host/tests/build/t_shader_control
           dm/host/tests/build/t_nvn_handles
