@@ -1608,12 +1608,11 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
             return bc->tex;
         }
     }
-    // Linear 2D textures backed by guest memory (the movie Y/UV planes are
-    // written by the guest every frame): view the pool buffer directly, so
-    // the shader reads the current bytes instead of a one-time empty upload.
+    // 线性贴图直接共用客体池：影片 Y/UV 与 RGBA8 字形由 CPU 更新，拷贝和采样必须看到当前字节。
+    // Linear textures share the guest pool: CPU-updated movie Y/UV and RGBA8 glyphs must expose current bytes to copies and sampling.
     if (t->mem && t->d.target == 1 && t->d.levels <= 1 && t->d.samples <= 1
         && nvn_tex_is_linear(&t->d) && !t->has_layout
-        && (t->d.format == 0x1 || t->d.format == 0x0D)) {
+        && (t->d.format == 0x1 || t->d.format == 0x0D || t->d.format == NVN_FORMAT_RGBA8)) {
         uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
         if (bpb > 0 && nvn_fmt_to_mtl(t->d.format, &pf, swz) && pf) {
             size_t row = t->d.stride ? t->d.stride : (size_t)((t->d.width + bw - 1) / bw) * bpb;
@@ -1621,16 +1620,21 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
             void *mb; uint64_t mo;
             if (mtl_addr((uint64_t)t->mem, size, &mb, &mo)) {
                 NSUInteger al = [g_dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pf];
-                if (al && row % al) row = (row + al - 1) / al * al;
+                // 不能改写客体行距来满足 Metal；那会把字形每行的起点读错。
+                // Do not change the guest pitch to satisfy Metal; that would read every glyph row from the wrong location.
+                if (row < (size_t)t->d.width*bpb || (al && (row%al || mo%al)))
+                    MDIE("Linear texture alignment unsupported: serial=%llu pitch=%zu offset=%llu alignment=%lu",(unsigned long long)t->serial,row,(unsigned long long)mo,(unsigned long)al);
                 MTLTextureDescriptor *d2 = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pf width:t->d.width height:t->d.height mipmapped:NO];
-                d2.usage = MTLTextureUsageShaderRead | ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) ? MTLTextureUsageShaderWrite : 0);
-                d2.storageMode = MTLStorageModeShared;
+                d2.usage = MTLTextureUsageShaderRead | ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) ? MTLTextureUsageShaderWrite : 0)
+                    | ((t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) ? MTLTextureUsageRenderTarget : 0);
+                d2.storageMode = ((__bridge id<MTLBuffer>)mb).storageMode;
                 id<MTLTexture> mt = [(__bridge id<MTLBuffer>)mb newTextureWithDescriptor:d2 offset:mo bytesPerRow:row];
                 if (mt) {
                     static int logged;
                     if (logged++ < 12) LOG("P5R linear view ser=%llu fmt=%#x %ux%u stride=%zu mem=%p flags=%#x", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, row, (void *)t->mem, t->d.flags);
                     res_add(mt); serial_put(t->serial, mt); return mt;
                 }
+                MDIE("Cannot create guest-backed linear texture serial=%llu format=%#x",(unsigned long long)t->serial,t->d.format);
             }
         }
     }
