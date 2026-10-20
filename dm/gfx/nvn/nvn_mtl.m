@@ -1955,12 +1955,20 @@ static int udc_on(void) {
 // 只用于等价对照（同一回放局开 / 关逐字节比画面），不是产品配置
 // Diagnostic DM_NVN_TBDR=0: turns off all TBDR optimizations (store lookahead, load elision, same-target continuation, clear-only pass hoist, on-demand depth-stencil attach); replay takes the plainest 'attach all, load all, store all' path.
 // Only for equivalence comparison (the same replay run on / off, comparing the picture byte by byte), not a product configuration
+// P5R 单独续用完全相同的附件；显式开启，且不启用读写省略或通道重排。
+// P5R can continue identical attachments independently; opt-in, without load/store elision or pass reordering.
+static int p5r_rt_continue_on(void) {
+    if (dm_guest_d2r()) return 0;
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_P5R_RT_CONTINUE"); v = e && !strcmp(e, "1"); }
+    return v;
+}
 static int tbdr_on(void) {
     // The pass-merging/hoisting contracts were established for D2R. P5R uses
     // complete attachment loads/stores until its own command streams qualify.
     // P5R experiment: DM_P5R_TBDR=1 turns the pass optimisations back on (a heavy frame has
     // 273–317 passes with full load/store; this is the largest single lever on its submit time).
-    if(!dm_guest_d2r()){ static int p = -1; if(p<0) p = getenv("DM_P5R_TBDR") != NULL; return p; }
+    if(!dm_guest_d2r()){ static int p = -1; if(p<0) { const char *e=getenv("DM_P5R_TBDR"); p=e && !strcmp(e,"1"); } return p && !p5r_rt_continue_on(); }
     static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TBDR"), *r = getenv("DM_NVN_RULER"); v = !(e && !strcmp(e, "0")); g_ruler_truth = r && !strcmp(r, "1"); if (!v) MLOG("DM_NVN_TBDR=0：TBDR 优化全关（等价对照用）"); } return v && !g_ruler_truth;
 }
 int dm_nvn_ruler_truth(void) { tbdr_on(); return g_ruler_truth; }   // 视觉尺子真值阶段（宿主侧的被测设置据此让开，如 3D 渲染比例） | Visual ruler ground-truth phase (host-side settings under test yield accordingly, e.g. the 3D render scale)
@@ -2113,8 +2121,7 @@ static RENC rp_begin_ex(int clear_only) {
     // 附件范围候选的版本在捕获任何附件之前取；建立途中有变化则不续用。
     // The version of the attachment-range candidate is taken before capturing any attachment; if it changes during setup, there is no continuation.
     uint64_t reg0 = 0, ser0 = 0, dirty0 = 0;
-    if (rt_range_on()) { reg0 = g_reg_gen; ser0 = g_ser_gen; }
-    if (rt_range_on()) dirty0=nvn_dirty_now();
+    if (rt_range_on() || p5r_rt_continue_on()) { reg0 = g_reg_gen; ser0 = g_ser_gen; dirty0=nvn_dirty_now(); }
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     RPD *pd = [RPD new];
     int any = 0;
@@ -2218,7 +2225,7 @@ static RENC rp_begin_ex(int clear_only) {
         g_pass.dfmt = g_pass.hd ? (uint32_t)dt.pixelFormat : 0; g_pass.sfmt = stt ? (uint32_t)stt.pixelFormat : 0;
         if (dt || stt) g_pass.samples = (uint32_t)(dt ? dt : stt).sampleCount;
         pass_dims(pd, (NSUInteger)R.rt.n, &g_pass.tw, &g_pass.th);
-        if (rt_range_on()) { g_pass.reg_gen = reg0; g_pass.ser_gen = ser0; }
+        if (rt_range_on() || p5r_rt_continue_on()) { g_pass.reg_gen = reg0; g_pass.ser_gen = ser0; g_pass.range_dirty=dirty0; }
         if (rt_range_on()) { g_pass.range_dirty=dirty0; g_pass.range_color=pd.colorAttachments[0].texture; g_pass.range_depth=pd.depthAttachment.texture; }
         g_enc_pso = nil; g_enc_dss = nil;
     }
@@ -2483,7 +2490,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     int candidate=!dm_guest_d2r() && mode && !strcmp(mode,"guarded");
     if ((candidate?nvn_refl_from_json_candidate(j,&o->rf,err,sizeof err):nvn_refl_from_json(j,&o->rf,err,sizeof err))) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
     if(o->rf.guarded_candidate && ![j[@"stage"] isEqual:stage==0?@"vs":stage==1?@"ps":stage==5?@"cs":@""]) return nil;
-    if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
+    if (rt_range_on() || p5r_rt_continue_on()) o->range_ro=rt_range_bindings_ro(j);
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
     if(!o->fn)return nil;
     if(!dm_guest_d2r()) {
@@ -4126,6 +4133,13 @@ static int rt_same(const p_set_rt *a, const p_set_rt *b) {   // 同一组目标�
     }
     return 1;
 }
+// 只合并完整附件、无外部写且资源版本没变的通道；未知反射不能作为只读证明。
+// Merge only full-attachment passes without external writes or resource-version changes; unknown reflection is not proof of read-only access.
+static int p5r_rt_same(const p_set_rt *a, const p_set_rt *b) {
+    return p5r_rt_continue_on() && g_enc_mode == 0 && !g_pass.range_external &&
+        g_pass.reg_gen == g_reg_gen && g_pass.ser_gen == g_ser_gen &&
+        g_pass.range_dirty == nvn_dirty_now() && rt_same(a, b);
+}
 // 实验RT范围候选：只忽略实际渲染附件未使用的正nlevels差异，其它字段保持逐字相同。
 // Experimental RT range candidate: only ignore positive nlevels differences not used by the actual render attachments; other fields stay word-for-word identical.
 #define NVN_RT_RANGE_IMPL 1
@@ -5370,6 +5384,9 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (g_rt_merged && g_enc_mode != 0 && (((S.ds.dt || S.ds.dw) && !g_pass.hd) || (S.ds.st && !g_pass.hs))) {
         static int once2; if (!once2++) MLOG("同目标续用：续用通道内绘制要的深度 / 模板平面没挂，在此切开（首例 通道 %llu）", g_stat_pass);
         PD("M %llu 续用通道内绘制要的深度 / 模板平面没挂，在此切开", g_stat_pass); rp_end(); }
+    if (g_rt_merged && p5r_rt_continue_on() && (!rt_range_pr_ro(pr) ||
+        g_pass.reg_gen != g_reg_gen || g_pass.ser_gen != g_ser_gen ||
+        g_pass.range_dirty != nvn_dirty_now())) rp_end();
     if (g_rt_range_active && (!rt_range_pr_ro(pr) || !S.ds.dt || S.ds.dw || S.ds.st)) rp_end();   // 原encoder边界的外部写可见性不删 | The external write visibility at the original encoder boundary is not removed
     if (g_rt_merged && draw_samples_rt(pr)) { static int once; if (!once++) MLOG("同目标续用：续用通道内绘制要采样附件，在此切开（首例 通道 %llu）", g_stat_pass);
         PD("M %llu 续用通道内绘制要采样附件，在此切开", g_stat_pass); rp_end(); }
@@ -5569,7 +5586,8 @@ frz_plain:;
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0,dm_guest_d2r()?NULL:fragment_textures);
     // 参数绑定在登记表锁内捕获实际资源；资格判断到绑定期间有版本变化，则在任何GPU draw前切开重试。
     // Parameter binding captures the actual resources under the registry lock; if the version changed between the eligibility check and the binding, split and retry before any GPU draw.
-    if (g_rt_range_active && (g_pass.reg_gen != g_reg_gen || g_pass.ser_gen != g_ser_gen || g_pass.range_dirty != nvn_dirty_now())) { rp_end(); draw(dw, di); return; }
+    if ((g_rt_range_active || (g_rt_merged && p5r_rt_continue_on())) &&
+        (g_pass.reg_gen != g_reg_gen || g_pass.ser_gen != g_ser_gen || g_pass.range_dirty != nvn_dirty_now())) { rp_end(); draw(dw, di); return; }
     int prim = dw ? dw->prim : di->prim;
     MTLPrimitiveType mp;
     switch (prim) {
@@ -5625,7 +5643,7 @@ frz_plain:;
                S.has_vp ? S.vp[0][0] : 0, S.has_vp ? S.vp[0][1] : 0, S.has_vp ? S.vp[0][2] : (float)tw, S.has_vp ? S.vp[0][3] : (float)th);
         }
     }
-    if (rt_range_on() && !rt_range_pr_ro(pr)) g_pass.range_external=1;
+    if ((rt_range_on() || p5r_rt_continue_on()) && !rt_range_pr_ro(pr)) g_pass.range_external=1;
     rt_range_note_depth();
 #ifdef NVN_RT_RANGE_TEST
     rr_snap(dw,di);
@@ -6423,7 +6441,7 @@ void mtl_exec(const uint8_t *p) {
                     g_rt_merged = 1; if (!g_rt_merge_n++) MLOG("同目标续用：首例 通道 %llu", g_stat_pass); PD("M %llu 同目标续用通道", g_stat_pass); break; }
                 // 不续用只为清除开的通道；少挂深度 / 模板的可续用（绘制前核平面）
                 // Do not continue a render pass opened only for a clear; one with fewer depth / stencil attachments can be continued (check the planes before drawing)
-                if (g_enc && g_enc_mode != 1 && !pend && R.has_rt && tbdr_on() && rt_same(&R.rt, r)) { g_rt_merged = 1; if (!g_rt_merge_n++) MLOG("同目标续用：首例 通道 %llu", g_stat_pass); PD("M %llu 同目标续用通道", g_stat_pass); R.rt = *r; break; }
+                if (g_enc && g_enc_mode != 1 && !pend && R.has_rt && ((tbdr_on() && rt_same(&R.rt, r)) || p5r_rt_same(&R.rt, r))) { g_rt_merged = 1; if (!g_rt_merge_n++) MLOG("同目标续用：首例 通道 %llu", g_stat_pass); PD("M %llu 同目标续用通道", g_stat_pass); R.rt = *r; break; }
                 rp_flush(); R.rt = *r; R.has_rt = 1; break;
             }
             case OP_CLEAR_COLOR: {
@@ -6456,7 +6474,12 @@ void mtl_exec(const uint8_t *p) {
             case OP_DOWNSAMPLE: downsample(a); break;
             case OP_CLEAR_TEX: clear_tex(a); break;
             case OP_DISPATCH: dispatch(a); break;
-            case OP_BARRIER: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: break;
+            case OP_BARRIER:
+                // 保留屏障后的原通道边界；若已经续用则立即结束，未续用时不额外开通道。
+                // Preserve the original pass boundary after a barrier; end an already continued pass without adding passes before continuation.
+                if (p5r_rt_continue_on()) { if (g_rt_merged) rp_end(); else if (g_enc) g_pass.range_external=1; }
+                break;
+            case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: break;
             default: break;
         }
         p += h.size;

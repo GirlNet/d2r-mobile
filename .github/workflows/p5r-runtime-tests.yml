@@ -214,6 +214,28 @@ jobs:
           dm/gfx/tests/t_copy_draw_gpu
           make -C dm/gfx/tests t_shader_scratch_gpu
           dm/gfx/tests/t_shader_scratch_gpu
+      - name: Verify isolated P5R render-pass continuation and full attachment stores
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_p5r_rt_continue_gpu t_p5r_rt_continue_gpu_m4
+          python3 - <<'PY'
+          import os, subprocess
+          for backend in ('', '_m4'):
+              for mode in ('unset', '0', '1', 'both'):
+                  env = dict(os.environ, MTL_DEBUG_LAYER='1')
+                  env.pop('DM_P5R_RT_CONTINUE', None)
+                  env.pop('DM_P5R_TBDR', None)
+                  if mode != 'unset':
+                      env['DM_P5R_RT_CONTINUE'] = '1' if mode == 'both' else mode
+                  if mode == 'both':
+                      env['DM_P5R_TBDR'] = '1'
+                  result = subprocess.run(['dm/gfx/tests/t_p5r_rt_continue_gpu' + backend], env=env)
+                  if backend and result.returncode in (77, 78):
+                      print('::warning::Metal 4 P5R continuation execution unavailable')
+                      break
+                  if result.returncode:
+                      raise SystemExit(result.returncode)
+          PY
       - name: Verify continuous command families, synchronization and instance IDs
         run: |
           set -euo pipefail
