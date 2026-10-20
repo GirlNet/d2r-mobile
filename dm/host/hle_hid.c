@@ -466,13 +466,16 @@ HLE_FORCE_OPTIONAL("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", "Host full-ke
 // 震动：D2R 仍是设备数 0；P5R 放开许可并返回一个句柄，把 VibrationValue 交给 Taptic Engine
 // Vibration: D2R still reports 0 devices; P5R permits vibration, returns one handle and forwards the value to the Taptic Engine
 __attribute__((weak)) void dm_haptics_set(float low_amp, float low_freq, float high_amp, float high_freq) { (void)low_amp; (void)low_freq; (void)high_amp; (void)high_freq; }
-HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可（P5R 交给 Taptic Engine）", unsigned, h_hid_VibPermit, void) { return dm_guest_d2r() ? 0 : 1; }
+// 2026-10-20: P5R 一放开许可就去 ConnectToNamedPort（SVC 0x1f）初始化震动服务，宿主没有 IPC 会中止；
+// 在补上 hid 服务会话之前先保持 0（haptics.m 与 SendVibrationValue 的转发保留）。
+// Permission stays 0 for now: with it enabled P5R calls ConnectToNamedPort (SVC 0x1f) to bring up the
+// vibration service, which this IPC-less host cannot answer. haptics.m and the value forwarding remain.
+HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可（暂关：需要 hid 服务会话）", unsigned, h_hid_VibPermit, void) { return 0; }
 HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",
           "震动设备（P5R 一个；D2R 零个）", int, h_hid_GetVibHandles, void *out, int max, const uint32_t *id, uint32_t style) {
     (void)id; (void)style;
-    if (dm_guest_d2r() || !out || max < 1) return 0;
-    *(uint64_t *)out = 0;   // a single host handle | 一个宿主句柄
-    return 1;
+    (void)out; (void)max;
+    return 0;
 }
 HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "震动；宿主不支持", void, h_hid_InitVib, const void *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "震动 → Taptic Engine", void, h_hid_SendVib, const void *h, const void *v) {
