@@ -3524,6 +3524,13 @@ static void movie_textures_update(void) {
         id<MTLTexture> y = [g_dev newTextureWithDescriptor:dy];
         id<MTLTexture> uv = [g_dev newTextureWithDescriptor:du];
         if (!y || !uv) return;
+        // Metal 4 resolves argument-table texture IDs through the queue's residency set.
+        // The movie planes are direct replacements for the game's Y/UV bindings and
+        // therefore need the same lifetime and residency treatment as game textures.
+        // M4 的参数表通过驻留集解析贴图；影片 Y/UV 直接替换游戏绑定，也必须驻留。
+        if (g_movie_y_texture) defer_obj_release(g_movie_y_texture);
+        if (g_movie_uv_texture) defer_obj_release(g_movie_uv_texture);
+        res_add(y); res_add(uv);
         g_movie_y_texture = y; g_movie_uv_texture = uv;
         g_movie_texture_w = w; g_movie_texture_h = h;
     }
