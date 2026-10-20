@@ -2401,7 +2401,15 @@ static void shmap_load(void) {
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn; } @end   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
 @implementation NvShader @end
 #include "nvn_pso_skey.h"
-@interface NvProg : NSObject { @public NvShader *sh[6]; } @end
+@interface NvProg : NSObject {
+@public
+    NvShader *sh[6];
+    __unsafe_unretained NvProg *resource_cache[2];
+    uint64_t resource_key[2];
+    uint32_t shader_color_mask;
+    uint8_t flags_ready, has_image_binding, writes_image;
+}
+@end
 @implementation NvProg @end
 // 预热项：后台建好、等提交线程领用。vs / fs 强引用（pso 里只是裸指针，后台字典随任务结束释放）
 // Warm-up entry: built in the background, waiting to be taken by the submit thread. vs / fs are strong references (in pso they are only raw pointers, and the background dictionary is released when the task ends)
@@ -2886,6 +2894,7 @@ static struct {
     p_depth_bounds depth_bounds;
     dynamic_state dynamic;
 } S;
+static uint64_t g_tex_bind_gen[6];
 static unsigned g_guest_origin,g_guest_depth;
 void mtl_guest_coordinates(unsigned origin,unsigned depth) { g_guest_origin=origin;g_guest_depth=depth; }
 static void check_candidate_draw(NvProg *program,int primitive) {
@@ -2967,14 +2976,19 @@ static void apply_depth_bounds(RENC encoder) {
 }
 static void udc_note_draw(NvProg *pr) {
     if (R.has_rt) for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i]) { zskip_del(R.rt.color[i]->serial); g_zskip_cand_ok[i] = 0; }   // 零源集合：真画了就不再是全零 | Zero-source set: once really drawn it is no longer all zeros
-    if (pr) for (int st = 0; st < 6; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue; for (int i = 0; i < sh->rf.nb; i++) if (sh->rf.b[i].kind == NVN_RB_IMG) { zskip_clear(); break; } }   // 图像槽可写：保守清空 | Image slots are writable: conservatively clear
-    int image_write = 0;
-    uint32_t shader_color_mask = 0;
-    if (pr) for (int st = 0; st < 6; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
-        if (st == 1) shader_color_mask = sh->rf.color_mask;
-        for (int i = 0; i < sh->rf.nb; i++) if (sh->rf.b[i].kind == NVN_RB_IMG && sh->rf.b[i].rw) { image_write = 1; break; }
-        if (image_write) break;
+    if (pr && !pr->flags_ready) {
+        pr->flags_ready = 1;
+        for (int st = 0; st < 6; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
+            if (st == 1) pr->shader_color_mask = sh->rf.color_mask;
+            for (int i = 0; i < sh->rf.nb; i++) if (sh->rf.b[i].kind == NVN_RB_IMG) {
+                pr->has_image_binding = 1;
+                if (sh->rf.b[i].rw) pr->writes_image = 1;
+            }
+        }
     }
+    if (pr && pr->has_image_binding) zskip_clear();   // 图像槽可写：保守清空 | Image slots are writable: conservatively clear
+    int image_write = pr ? pr->writes_image : 0;
+    uint32_t shader_color_mask = pr ? pr->shader_color_mask : 0;
     for (int i = 0; i < g_nsd; i++) {
         sd_att *t = &g_sd[i];
         if (image_write) { t->wrote = 1; t->wwhy = 1; }
@@ -3047,12 +3061,25 @@ static NvShader *shader_stencil_variant(NvShader *shader) {
 }
 static NvProg *program_resources(NvProg *program,unsigned stages) {
     if(!program||dm_guest_d2r())return program;
+    int cache_slot = stages == 3 ? 0 : stages == (1u << 5) ? 1 : -1;
+    uint64_t generation = g_reg_gen;
+    for (unsigned i = 0; i < 6; i++)
+        if (stages & (1u << i)) generation = generation * 1099511628211ull ^ (g_tex_bind_gen[i] + i + 1);
+    if (cache_slot >= 0 && program->resource_cache[cache_slot] &&
+        program->resource_key[cache_slot] == generation)
+        return program->resource_cache[cache_slot];
     NvShader *selected[6];void *key[6];int changed=0;
     for(unsigned i=0;i<6;i++){selected[i]=(stages&(1u<<i))?shader_stencil_variant(program->sh[i]):program->sh[i];key[i]=(__bridge void *)selected[i];changed|=selected[i]!=program->sh[i];}
-    if(!changed)return program;
-    static NSMutableDictionary<NSData *,NvProg *> *variants;if(!variants)variants=[NSMutableDictionary dictionary];
-    NSData *identity=[NSData dataWithBytes:key length:sizeof key];NvProg *result=variants[identity];
-    if(!result){result=[NvProg new];for(unsigned i=0;i<6;i++)result->sh[i]=selected[i];variants[identity]=result;}
+    NvProg *result = program;
+    if (changed) {
+        static NSMutableDictionary<NSData *,NvProg *> *variants;if(!variants)variants=[NSMutableDictionary dictionary];
+        NSData *identity=[NSData dataWithBytes:key length:sizeof key];result=variants[identity];
+        if(!result){result=[NvProg new];for(unsigned i=0;i<6;i++)result->sh[i]=selected[i];variants[identity]=result;}
+    }
+    if (cache_slot >= 0) {
+        program->resource_cache[cache_slot] = result;
+        program->resource_key[cache_slot] = generation;
+    }
     return result;
 }
 
@@ -4066,7 +4093,7 @@ static int state_op(uint32_t op, const void *a) {
         case OP_BIND_VBUF: { const p_bind_vbuf *b = a; memcpy(&S.vbuf[b->first], b->r, sizeof *b->r * b->n); break; }
         case OP_BIND_UBO: { const p_bind_buf *b = a; if (b->stage < 6 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_args_dirty[b->stage] = 1; } break; }
         case OP_BIND_SSBO: { const p_bind_buf *b = a; if (b->stage < 6 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_args_dirty[b->stage] = 1; } break; }
-        case OP_BIND_TEX: { const p_bind_handles *b = a; if (nvn_apply_handles(&S.tex[0][0], NVN_TEX_SLOTS, b->stage, b->first, b->n, b->h)) g_args_dirty[b->stage] = 1; break; }
+        case OP_BIND_TEX: { const p_bind_handles *b = a; if (nvn_apply_handles(&S.tex[0][0], NVN_TEX_SLOTS, b->stage, b->first, b->n, b->h)) { g_args_dirty[b->stage] = 1; if (b->stage >= 0 && b->stage < 6) g_tex_bind_gen[b->stage]++; } break; }
         case OP_BIND_SAMP: { const p_bind_handles *b = a; if (nvn_apply_handles(&S.samp[0][0], 128, b->stage, b->first, b->n, b->h)) g_args_dirty[b->stage] = 1; break; }
         case OP_BIND_IMG: { const p_bind_handles *b = a; if (b->stage < 6 && b->first >= 0 && b->first + b->n <= 32) { if (memcmp(&S.img[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.img[b->stage][b->first], b->h, 8 * b->n); g_args_dirty[b->stage] = 1; } } else RED_ONCE(31, "图像槽越界 阶段 %d 起 %d 数 %d", b->stage, b->first, b->n); break; }
         case OP_STENCIL: {
@@ -5339,6 +5366,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     int instances=dw?dw->instance_count_minus_one+1:(di->instances?di->instances:1);
     if((dw?dw->count:di->count)==0 || !instances)return;
     uint64_t prof_state0 = subprof_now();
+    __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3);
     // 整帧清点（DM_P5R_FRAME_DUMP=1）：每 300 帧中的一帧，把每一笔绘制的着色器、顶点数与第一张贴图记下来，
     // 用来找出字幕那一层究竟走的哪个着色器/图集。
     // Whole-frame census (DM_P5R_FRAME_DUMP=1): for one frame out of every 300, record each draw's shaders,
@@ -5349,7 +5377,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
           if (f % 300 == 0 && f > 3000 && f != dump_frame) { dump_frame = f; lines = 0; }
           if (f == dump_frame && lines < 1400) {
               lines++;
-              __unsafe_unretained NvProg *cp = program_resources(programs_get(&S.programs),3);
+              __unsafe_unretained NvProg *cp = pr;
               uint64_t ser = 0, tw2 = 0, th2 = 0; int tid0 = 0;
               if (cp && cp->sh[1]) for (int i = 0; i < cp->sh[1]->rf.nb; i++) {
                   const nvn_rbind *b = &cp->sh[1]->rf.b[i];
@@ -5368,7 +5396,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     // Diagnostic: on the first draw of the settings text shader, record the paired vertex shader
     // and vertex layout. Text = atlas sample * vertex colour; a zero in either makes it transparent.
     if (!dm_guest_d2r()) {
-        __unsafe_unretained NvProg *tp = program_resources(programs_get(&S.programs),3);
+        __unsafe_unretained NvProg *tp = pr;
         if (tp && tp->sh[1] && !strncmp(tp->sh[1]->key, "720fc52850f3c28d", 16)) {
             static int once;
             if (!once++) {
@@ -5404,7 +5432,6 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if((primitive==NVN_DRAW_PRIMITIVE_LINES || primitive==NVN_DRAW_PRIMITIVE_LINE_STRIP) && S.dynamic.line_width!=1)MDIE("Wide lines unsupported");
     if(S.dynamic.subpixel[0] || S.dynamic.subpixel[1])MDIE("Nondefault subpixel precision unsupported");
     for(int i=0;i<4;i++)if(S.dynamic.swizzle[i]!=i*2)MDIE("Nonidentity viewport swizzle unsupported");
-    __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3);
     if (!pr) { RED_ONCE(18, "绘制前没有绑定程序"); return; }
     prepared_indices indices=di?prepare_indices(di):(prepared_indices){0};
     check_candidate_draw(pr,dw?dw->prim:di->prim);
