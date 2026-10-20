@@ -5407,7 +5407,13 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if((dw?dw->count:di->count)==0 || !instances)return;
     uint64_t prof_state0 = subprof_now();
     __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3);
-    if (pr && !pr->sh[1] && R.rt.n == 0 && g_ruler_truth == 0 && p5r_skip_depth_draws()) {
+    int skip_depth_draw = pr && !pr->sh[1] && g_ruler_truth == 0 && p5r_skip_depth_draws();
+    int no_color_targets = 1;
+    if (skip_depth_draw) {
+        for (int i = 0; i < R.rt.n && i < 8; i++)
+            if (R.rt.color[i]) { no_color_targets = 0; break; }
+    }
+    if (skip_depth_draw && no_color_targets) {
         if (g_p5r_skipped_depth_draws++ == 0)
             MLOG("P5R 性能模式：跳过无片元着色器的深度/阴影绘制（DM_P5R_SKIP_DEPTH_DRAW=0 可关闭）");
         return;
