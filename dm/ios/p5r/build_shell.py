@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[3]
 CORE = ['crash.c', 'entry.S', 'guest_bootstrap.c', 'hle.c', 'loader.c', 'main.c', 'memstat.m', 'thread.c', 'dm_i18n.c']
 EXCLUDE = {'hle_tact.c', 'hle_private_aim.c', 'hle_target.c', 'hle_charname.c', 'hle_granny.c', 'hle_movie.c'}
 FRAMEWORKS = ['UIKit', 'Foundation', 'QuartzCore', 'CoreGraphics', 'CoreText', 'CoreHaptics', 'Metal', 'AudioToolbox', 'ImageIO', 'UniformTypeIdentifiers',
-              'GameController', 'Network', 'AVFoundation', 'VideoToolbox', 'CoreMedia', 'CoreVideo', 'Security']
+              'GameController', 'Network', 'AVFoundation', 'VideoToolbox', 'CoreMedia', 'CoreVideo', 'Security', 'MetalFX']
 
 
 def sources():
@@ -109,7 +109,7 @@ def build(output,metal_backend=3):
     report['linked'] = True
     info = dict(CFBundleExecutable='P5RMobile', CFBundleIdentifier='org.p5r.experimental', CFBundleName='P5RMobile',
                 CFBundleDisplayName='P5R Mobile', CFBundlePackageType='APPL', CFBundleInfoDictionaryVersion='6.0',
-                CFBundleVersion='8', CFBundleShortVersionString='0.8', MinimumOSVersion='26.0',
+                CFBundleVersion='9', CFBundleShortVersionString='0.9', MinimumOSVersion='26.0',
                 CFBundleSupportedPlatforms=['iPhoneOS'], UIDeviceFamily=[1,2], LSRequiresIPhoneOS=True,
                 UIFileSharingEnabled=True, LSSupportsOpeningDocumentsInPlace=True, UILaunchScreen={},
                 LSSupportsGameMode=True, GCSupportsGameMode=True,

@@ -463,26 +463,64 @@ HLE_FORCE_OPTIONAL("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", "Host
 HLE_FORCE_OPTIONAL("_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE", "Full-key host input does not depend on single Joy-Con orientation", void, h_hid_SetJoyHold, int type) { (void)type; }
 HLE_FORCE_OPTIONAL("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", "Host full-key pad requires no Horizon Joy-Con pairing", void, h_hid_SetJoyDual, const uint32_t *id) { (void)id; }
 
-// 震动：D2R 仍是设备数 0；P5R 放开许可并返回一个句柄，把 VibrationValue 交给 Taptic Engine
-// Vibration: D2R still reports 0 devices; P5R permits vibration, returns one handle and forwards the value to the Taptic Engine
+// 震动：D2R 仍是设备数 0；P5R 把虚拟手柄的左右马达映射到手机 Taptic Engine。
+// Vibration: D2R still reports 0 devices; P5R maps the virtual controller's
+// left/right motors to the phone's Taptic Engine.
+typedef struct { float amplitude_low, frequency_low, amplitude_high, frequency_high; } P5RVibrationValue;
+typedef struct { uint32_t type, position; } P5RVibrationDeviceInfo;
+_Static_assert(sizeof(P5RVibrationValue) == 16, "Switch VibrationValue ABI");
+_Static_assert(sizeof(P5RVibrationDeviceInfo) == 8, "Switch VibrationDeviceInfo ABI");
+enum { P5R_VIBRATION_LEFT = 0x53530001u, P5R_VIBRATION_RIGHT = 0x53530002u };
+static P5RVibrationValue g_vibration_value[2];
+__attribute__((weak)) int dm_haptics_supported(void) { return 0; }
 __attribute__((weak)) void dm_haptics_set(float low_amp, float low_freq, float high_amp, float high_freq) { (void)low_amp; (void)low_freq; (void)high_amp; (void)high_freq; }
-// 2026-10-20: P5R 一放开许可就去 ConnectToNamedPort（SVC 0x1f）初始化震动服务，宿主没有 IPC 会中止；
-// 在补上 hid 服务会话之前先保持 0（haptics.m 与 SendVibrationValue 的转发保留）。
-// Permission stays 0 for now: with it enabled P5R calls ConnectToNamedPort (SVC 0x1f) to bring up the
-// vibration service, which this IPC-less host cannot answer. haptics.m and the value forwarding remain.
-HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可（暂关：需要 hid 服务会话）", unsigned, h_hid_VibPermit, void) { return 0; }
+static int vibration_index(uint32_t handle) {
+    return handle == P5R_VIBRATION_LEFT ? 0 : handle == P5R_VIBRATION_RIGHT ? 1 : -1;
+}
+static void vibration_set(uint32_t handle, const P5RVibrationValue *value) {
+    int index = vibration_index(handle);
+    if (index < 0 || !value) return;
+    g_vibration_value[index] = *value;
+    dm_haptics_set(value->amplitude_low, value->frequency_low, value->amplitude_high, value->frequency_high);
+}
+HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "虚拟手柄震动许可（手机支持触觉反馈）", unsigned, h_hid_VibPermit, void) {
+    return dm_guest_d2r() ? 0u : (unsigned)dm_haptics_supported();
+}
 HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",
-          "震动设备（P5R 一个；D2R 零个）", int, h_hid_GetVibHandles, void *out, int max, const uint32_t *id, uint32_t style) {
+          "虚拟手柄左右马达映射到手机触觉", int, h_hid_GetVibHandles, uint32_t *out, int max, const uint32_t *id, uint32_t style) {
     (void)id; (void)style;
-    (void)out; (void)max;
+    if (dm_guest_d2r() || !out || max <= 0 || !dm_haptics_supported()) return 0;
+    int count = max < 2 ? max : 2;
+    out[0] = P5R_VIBRATION_LEFT;
+    if (count > 1) out[1] = P5R_VIBRATION_RIGHT;
+    return count;
+}
+HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE",
+          "虚拟马达信息；绕开会触发 HID IPC 的 PermitVibration", void, h_hid_VibInfo, P5RVibrationDeviceInfo *out, const uint32_t *handle) {
+    if (!out) return;
+    out->type = 0;
+    out->position = 0;
+    int index = handle ? vibration_index(*handle) : -1;
+    if (index >= 0) { out->type = 1; out->position = (uint32_t)index + 1; }
+}
+HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "初始化虚拟马达", void, h_hid_InitVib, const uint32_t *handle) {
+    int index = handle ? vibration_index(*handle) : -1;
+    if (index >= 0) g_vibration_value[index] = (P5RVibrationValue){0, 160, 0, 320};
+}
+HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "虚拟手柄震动 → Taptic Engine", void, h_hid_SendVib, const uint32_t *handle, const P5RVibrationValue *value) {
+    if (!dm_guest_d2r() && handle) vibration_set(*handle, value);
+}
+HLE_FORCE("_ZN2nn3hid6detail19SendVibrationValuesEPKNS0_21VibrationDeviceHandleEPKNS0_14VibrationValueEi", "批量虚拟手柄震动 → Taptic Engine", Result, h_hid_SendVibs, const uint32_t *handles, const P5RVibrationValue *values, int count) {
+    if (!dm_guest_d2r() && handles && values) for (int i = 0; i < count; i++) vibration_set(handles[i], &values[i]);
     return 0;
 }
-HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "震动；宿主不支持", void, h_hid_InitVib, const void *h) { (void)h; }
-HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "震动 → Taptic Engine", void, h_hid_SendVib, const void *h, const void *v) {
-    (void)h;
-    if (dm_guest_d2r() || !v) return;
-    const float *f = v;   // nn::hid::VibrationValue { amplitude_low, frequency_low, amplitude_high, frequency_high }
-    dm_haptics_set(f[0], f[1], f[2], f[3]);
+HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "读取已提交的虚拟马达值", void, h_hid_GetActualVib, P5RVibrationValue *out, const uint32_t *handle) {
+    if (!out) return;
+    int index = handle ? vibration_index(*handle) : -1;
+    *out = index >= 0 ? g_vibration_value[index] : (P5RVibrationValue){0, 160, 0, 320};
+}
+HLE_FORCE("_ZN2nn3hid24IsVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE", "虚拟马达始终已连接", unsigned, h_hid_VibMounted, const uint32_t *handle) {
+    return !dm_guest_d2r() && handle && vibration_index(*handle) >= 0;
 }
 
 // 触屏：nn::hid::TouchScreenState<16> = { int64 sampling; int32 count; int32 _r; TouchState touches[16]（各 0x28） }

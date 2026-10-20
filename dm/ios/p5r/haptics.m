@@ -44,6 +44,10 @@ static BOOL haptic_start(void) {
     return YES;
 }
 
+int dm_haptics_supported(void) {
+    return CHHapticEngine.capabilitiesForHardware.supportsHaptics ? 1 : 0;
+}
+
 // intensity/sharpness already in [0,1]
 static void haptic_apply(float intensity, float sharpness) {
     if (!g_supported) return;
@@ -79,11 +83,25 @@ static void haptic_apply(float intensity, float sharpness) {
 
 // Called by the host HLE on every nn::hid::SendVibrationValue.
 void dm_haptics_set(float low_amp, float low_freq, float high_amp, float high_freq) {
-    (void)high_freq;
     float intensity = clamp01(fmaxf(low_amp, high_amp));
-    // Nintendo's low band is ~160 Hz (rumble) and the high band ~320 Hz (buzz); map to sharpness.
-    float sharpness = clamp01((low_freq - 100.0f) / 250.0f);
+    float power_low = clamp01(low_amp) * clamp01(low_amp);
+    float power_high = clamp01(high_amp) * clamp01(high_amp);
+    float power = power_low + power_high;
+    // Nintendo low/high bands are roughly 40-1280 Hz. Core Haptics exposes
+    // sharpness rather than a carrier frequency, so use a power-weighted
+    // logarithmic mapping to the 0..1 range.
+    float sharpness = power > 0
+        ? (power_low * log2f(fmaxf(low_freq, 40.0f) / 40.0f) +
+           power_high * log2f(fmaxf(high_freq, 40.0f) / 40.0f)) / (5.0f * power)
+        : 0.5f;
+    sharpness = clamp01(sharpness);
     if (fabsf(intensity - g_intensity) < 0.02f && fabsf(sharpness - g_sharpness) < 0.05f) return;
+    if (intensity > 0.001f) {
+        static int nonzero;
+        if (nonzero++ < 8)
+            fprintf(stderr, "[dm] P5R haptics request %.3f intensity, %.3f sharpness (%.1f/%.1f Hz)\n",
+                    intensity, sharpness, low_freq, high_freq);
+    }
     if (!g_queue) {
         g_queue = dispatch_queue_create("p5r.haptics", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         g_supported = CHHapticEngine.capabilitiesForHardware.supportsHaptics;

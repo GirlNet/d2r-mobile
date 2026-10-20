@@ -1,6 +1,7 @@
 // NVN 空设备的 Metal 执行层，见 nvn_mtl.h。
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
 #import <Metal/Metal.h>
+#import <MetalFX/MetalFX.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CAMetalDisplayLink.h>
 #import <ImageIO/ImageIO.h>
@@ -108,6 +109,11 @@ static id<MTLCommandQueue> g_q;
 #if !DM_NVN_M3
 static id<MTL4CommandQueue> g_q4;
 static dispatch_queue_t g_feedback_q;
+static id<MTL4Compiler> g_fx_compiler;
+static id<MTL4FXSpatialScaler> g_fx_scaler;
+static id<MTLTexture> g_fx_output;
+static NSUInteger g_fx_input_w, g_fx_input_h, g_fx_output_w, g_fx_output_h;
+static MTLPixelFormat g_fx_input_fmt, g_fx_output_fmt;
 #endif
 static _Atomic uint32_t g_present_qos;
 #define ALLOC_MAX 8
@@ -391,6 +397,10 @@ void mtl_init(void) {
     g_q4 = [g_dev newMTL4CommandQueueWithDescriptor:q4d error:&re];
     if (!g_q4) MDIE("建立 MTL4CommandQueue 失败");
     [g_q4 addResidencySet:g_res];
+    MTL4CompilerDescriptor *fxd = [MTL4CompilerDescriptor new];
+    fxd.label = @"P5R MetalFX spatial scaler";
+    g_fx_compiler = [g_dev newCompilerWithDescriptor:fxd error:&re];
+    if (!g_fx_compiler) MLOG("【红】MetalFX compiler unavailable: %s", re.localizedDescription.UTF8String ?: "unknown error");
 #endif
     g_alloc_n = 3;
 #if !DM_NVN_M3
@@ -1757,9 +1767,11 @@ static int g_subprof = -1;
 static _Atomic uint64_t g_subprof_rp_begin_ns, g_subprof_rp_end_ns;
 static _Atomic uint64_t g_subprof_tex_prep_ns, g_subprof_args_ns;
 static _Atomic uint64_t g_subprof_draw_state_ns, g_subprof_draw_call_ns;
+static _Atomic uint64_t g_subprof_pso_ns, g_subprof_dss_ns, g_subprof_fixed_ns, g_subprof_vbuf_ns;
 static _Atomic uint64_t g_subprof_rp_begin_n, g_subprof_rp_end_n;
 static _Atomic uint64_t g_subprof_tex_prep_n, g_subprof_args_n;
 static _Atomic uint64_t g_subprof_draw_state_n, g_subprof_draw_call_n;
+static _Atomic uint64_t g_subprof_pso_n, g_subprof_dss_n, g_subprof_fixed_n, g_subprof_vbuf_n;
 static inline int subprof_on(void) {
     if (g_subprof < 0) g_subprof = getenv("DM_NVN_SUBPROF") != NULL;
     return g_subprof;
@@ -5514,15 +5526,20 @@ frz_plain:;
     // 管线只依赖（程序, 通道目标, 混合 / 颜色 / 写掩码 / 多重采样状态, 顶点布局）：这些没变就沿用上次的
     // The pipeline depends only on (program, render pass targets, blend / color / write mask / multisample state, vertex layout): if these did not change, reuse the previous one
     static id<MTLRenderPipelineState> cur_ps; static NvProg *cur_pr; static uint64_t cur_ps_pass;
+    uint64_t prof_pso0 = subprof_now();
     if (g_fz.active && !g_defer_replaying) { g_pso_lmap = g_fz.phase == 1 ? g_fz.lmap1 : g_fz.lmap2; g_pso_fsfn = g_fz.phase == 1 ? nil : fz_fn; g_pso_fz = g_fz.phase == 1 ? (pso_fz_desc){0} : g_fz_desc; g_pso_dirty = 1; }   // 可读 tile 合并：按物理 → 逻辑映射与特化取管线 | Readable tile merge: fetch the pipeline by the physical -> logical mapping and the specialization
     if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial) { cur_ps = pso_get(pr, nil); cur_pr = pr; cur_ps_pass = g_pass.serial; g_pso_dirty = !cur_ps; }
     if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; }   // 下一次绘制重新按自身情况取 | The next draw fetches again according to its own situation
     __unsafe_unretained id<MTLRenderPipelineState> ps = cur_ps;
+    subprof_record(&g_subprof_pso_ns, &g_subprof_pso_n, prof_pso0);
     if (!ps) return;
     if (ps != g_enc_pso) { enc_r_pso(en, ps); g_enc_pso = ps; }
     static id<MTLDepthStencilState> cur_ds; static uint64_t cur_ds_pass;
+    uint64_t prof_dss0 = subprof_now();
     if (g_dss_dirty || cur_ds_pass != g_pass.serial) { cur_ds = dss_get(g_pass.hd, g_pass.hs); cur_ds_pass = g_pass.serial; g_dss_dirty = 0; }
     if (cur_ds != g_enc_dss) { enc_r_dss(en, cur_ds); g_enc_dss = cur_ds; }
+    subprof_record(&g_subprof_dss_ns, &g_subprof_dss_n, prof_dss0);
+    uint64_t prof_fixed0 = subprof_now();
     if (g_rt_ovr && g_pass.hs) enc_r_stencil_ref(en, g_rt_ovr == 3 ? 0x40 : 0, 0); else enc_r_stencil_ref(en, S.st_ref[0], S.st_ref[1]);
     // 视口 / 剪裁（夹到目标尺寸内）
     // Viewport / scissor (clamped within the target size)
@@ -5660,6 +5677,8 @@ frz_plain:;
     apply_depth_bounds(en);
     if (S.poly.offset_en & 4) enc_r_depth_bias(en, S.po.units, S.po.factor, S.po.clamp); else enc_r_depth_bias(en, 0, 0, 0);
     enc_r_blend_color(en, S.blend_color[0], S.blend_color[1], S.blend_color[2], S.blend_color[3]);
+    subprof_record(&g_subprof_fixed_ns, &g_subprof_fixed_n, prof_fixed0);
+    uint64_t prof_vbuf0 = subprof_now();
     for (int s_ = 0; s_ < 16; s_++) {
         if (!S.vbuf[s_].address) continue;
         void *mb; uint64_t mo;
@@ -5669,6 +5688,7 @@ frz_plain:;
     static id<MTLBuffer> zero; if (!zero) { zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(zero); }
     static uint64_t zero_gpu; if (!zero_gpu) zero_gpu = zero.gpuAddress;
     enc_r_vbuf(en, 30, zero_gpu);
+    subprof_record(&g_subprof_vbuf_ns, &g_subprof_vbuf_n, prof_vbuf0);
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1,dm_guest_d2r()?NULL:vertex_textures);
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0,dm_guest_d2r()?NULL:fragment_textures);
     // 参数绑定在登记表锁内捕获实际资源；资格判断到绑定期间有版本变化，则在任何GPU draw前切开重试。
@@ -6991,6 +7011,78 @@ static int present_encode_m4(CBUF cb, id<MTLTexture> src, id<MTLTexture> dst, co
     m4_end(en);
     return 1;
 }
+#if !DM_NVN_M3
+static int metal_fx_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("DM_P5R_METALFX");
+        enabled = !(value && !strcmp(value, "0"));
+#if TARGET_OS_SIMULATOR
+        enabled = 0;
+#endif
+    }
+    return enabled;
+}
+static id<MTLTexture> present_metal_fx_upscale(CBUF cb, id<MTLTexture> src,
+                                               id<MTLTexture> dst, const int crop[4]) {
+    if (!metal_fx_enabled() || !g_fx_compiler || !src || !dst) return nil;
+    if (![MTLFXSpatialScalerDescriptor supportsMetal4FX:g_dev]) return nil;
+    NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
+    if (crop && (crop[2] || crop[3])) {
+        cx = (NSUInteger)crop[0]; cy = (NSUInteger)crop[1];
+        cw = (NSUInteger)crop[2]; ch = (NSUInteger)crop[3];
+    }
+    // MetalFX spatial input content is anchored at the texture origin.
+    if (cx || cy || !cw || !ch || cw > src.width || ch > src.height) return nil;
+    double dw = dst.width, dh = dst.height, scale = fmin(dw / cw, dh / ch);
+    NSUInteger ow = (NSUInteger)round(cw * scale), oh = (NSUInteger)round(ch * scale);
+    if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) { ow = dst.width; oh = dst.height; }
+    if (!ow || !oh || (ow <= cw && oh <= ch)) return nil;
+    if (!g_fx_scaler || g_fx_input_w != src.width || g_fx_input_h != src.height ||
+        g_fx_output_w != ow || g_fx_output_h != oh ||
+        g_fx_input_fmt != src.pixelFormat || g_fx_output_fmt != dst.pixelFormat) {
+        MTLFXSpatialScalerDescriptor *d = [MTLFXSpatialScalerDescriptor new];
+        d.inputWidth = src.width; d.inputHeight = src.height;
+        d.colorTextureFormat = src.pixelFormat;
+        d.outputWidth = ow; d.outputHeight = oh;
+        d.outputTextureFormat = dst.pixelFormat;
+        d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
+        g_fx_scaler = [d newSpatialScalerWithDevice:g_dev compiler:g_fx_compiler];
+        if (!g_fx_scaler) {
+            MLOG("【红】MetalFX spatial scaler creation failed");
+            return nil;
+        }
+        if (!(src.usage & g_fx_scaler.colorTextureUsage)) {
+            MLOG("MetalFX 超分关闭：源纹理用途 %#lx 不满足 %#lx",
+                 (unsigned long)src.usage, (unsigned long)g_fx_scaler.colorTextureUsage);
+            g_fx_scaler = nil;
+            return nil;
+        }
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:dst.pixelFormat
+                                    width:ow height:oh mipmapped:NO];
+        td.usage = g_fx_scaler.outputTextureUsage | MTLTextureUsageShaderRead;
+        td.storageMode = MTLStorageModePrivate;
+        g_fx_output = [g_dev newTextureWithDescriptor:td];
+        if (!g_fx_output) {
+            MLOG("【红】MetalFX output texture creation failed");
+            g_fx_scaler = nil;
+            return nil;
+        }
+        res_add(g_fx_output);
+        g_fx_input_w = src.width; g_fx_input_h = src.height;
+        g_fx_output_w = ow; g_fx_output_h = oh;
+        g_fx_input_fmt = src.pixelFormat; g_fx_output_fmt = dst.pixelFormat;
+        MLOG("MetalFX spatial scaler：%lux%lu → %lux%lu", (unsigned long)cw,
+             (unsigned long)ch, (unsigned long)ow, (unsigned long)oh);
+    }
+    g_fx_scaler.colorTexture = src;
+    g_fx_scaler.inputContentWidth = cw;
+    g_fx_scaler.inputContentHeight = ch;
+    g_fx_scaler.outputTexture = g_fx_output;
+    [g_fx_scaler encodeToCommandBuffer:cb];
+    return g_fx_output;
+}
+#endif
 static double g_link_it_tin;   // 节拍回调正在上屏的那一帧的入队时刻（只在节拍线程读写） | Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
@@ -7072,7 +7164,10 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     [g_q4 waitForDrawable:dr];
     CBUF cb = g_present_cb[alloc_i];
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
-    if (!present_encode_m4(cb, src, dr.texture, crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; return 0; }
+    id<MTLTexture> upscaled = present_metal_fx_upscale(cb, src, dr.texture, crop);
+    if (!present_encode_m4(cb, upscaled ?: src, dr.texture, upscaled ? NULL : crop, alloc_i)) {
+        [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; return 0;
+    }
     [cb endCommandBuffer];
 #endif
 #if !DM_NVN_M3
@@ -7357,17 +7452,24 @@ void mtl_subprof_report(uint64_t frames) {
     uint64_t rb = atomic_exchange(&g_subprof_rp_begin_ns, 0), re = atomic_exchange(&g_subprof_rp_end_ns, 0);
     uint64_t tp = atomic_exchange(&g_subprof_tex_prep_ns, 0), ar = atomic_exchange(&g_subprof_args_ns, 0);
     uint64_t ds = atomic_exchange(&g_subprof_draw_state_ns, 0), dc = atomic_exchange(&g_subprof_draw_call_ns, 0);
+    uint64_t po = atomic_exchange(&g_subprof_pso_ns, 0), dss = atomic_exchange(&g_subprof_dss_ns, 0);
+    uint64_t fx = atomic_exchange(&g_subprof_fixed_ns, 0), vb = atomic_exchange(&g_subprof_vbuf_ns, 0);
     uint64_t rbn = atomic_exchange(&g_subprof_rp_begin_n, 0), ren = atomic_exchange(&g_subprof_rp_end_n, 0);
     uint64_t tpn = atomic_exchange(&g_subprof_tex_prep_n, 0), arn = atomic_exchange(&g_subprof_args_n, 0);
     uint64_t dsn = atomic_exchange(&g_subprof_draw_state_n, 0), dcn = atomic_exchange(&g_subprof_draw_call_n, 0);
+    uint64_t pon = atomic_exchange(&g_subprof_pso_n, 0), dssn = atomic_exchange(&g_subprof_dss_n, 0);
+    uint64_t fxn = atomic_exchange(&g_subprof_fixed_n, 0), vbn = atomic_exchange(&g_subprof_vbuf_n, 0);
     double d = frames ? (double)frames : 1.0;
     MLOG("提交内部分段 至帧 %llu：通道开始 %.2f ms/帧（%llu 次）、通道结束 %.2f ms/帧（%llu 次）、"
          "贴图预解析 %.2f ms/帧（%llu 次）、参数块 %.2f ms/帧（%llu 次）、"
-         "绘制状态 %.2f ms/帧（%llu 次）、Metal draw %.2f ms/帧（%llu 次）",
+         "绘制状态 %.2f ms/帧（%llu 次）、Metal draw %.2f ms/帧（%llu 次）；"
+         "管线 %.2f（%llu）、深度模板 %.2f（%llu）、固定状态 %.2f（%llu）、顶点绑定 %.2f（%llu）",
          (unsigned long long)atomic_load(&g_cur_frame), rb / 1e6 / d, (unsigned long long)rbn,
          re / 1e6 / d, (unsigned long long)ren, tp / 1e6 / d, (unsigned long long)tpn,
          ar / 1e6 / d, (unsigned long long)arn, ds / 1e6 / d, (unsigned long long)dsn,
-         dc / 1e6 / d, (unsigned long long)dcn);
+         dc / 1e6 / d, (unsigned long long)dcn, po / 1e6 / d, (unsigned long long)pon,
+         dss / 1e6 / d, (unsigned long long)dssn, fx / 1e6 / d, (unsigned long long)fxn,
+         vb / 1e6 / d, (unsigned long long)vbn);
 }
 uint64_t mtl_ds_omit(void) { return g_stat_ds_omit; }
 void mtl_bw(uint64_t *load, uint64_t *store, uint64_t *full) { *load = g_bw_load; *store = g_bw_store; *full = g_pass_full_rw; }

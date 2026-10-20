@@ -14,6 +14,7 @@
 // Virtual gamepad ported from seedds/nxnative (see dm_pad.m): 2D / 3D layouts, sticks, D-pad, L3 / R3.
 extern UIView *dm_gamepad_view(CGRect frame);
 extern void dm_gamepad_reset(void);
+extern void dm_haptics_stop(void);
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -299,7 +300,7 @@ static void *runHost(void *unused) {
     controller = [P5RController new]; self.window.rootViewController = controller; [self.window makeKeyAndVisible]; return YES;
 }
 - (void)applicationWillResignActive:(UIApplication *)application {
-    (void)application; (void)controller; dm_gamepad_reset(); dm_input_release_all();
+    (void)application; (void)controller; dm_gamepad_reset(); dm_input_release_all(); dm_haptics_stop();
     if (started && !dm_boot_probe_active()) { guest_clock_freeze_for(1, 1); dm_audio_suspend(1); dm_gfx_suspend(1); }
 }
 - (void)applicationDidBecomeActive:(UIApplication *)application {
