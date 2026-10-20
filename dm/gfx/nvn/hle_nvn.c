@@ -82,6 +82,7 @@ typedef struct { const char *name; void *fn; } nvn_impl;
 static int g_log;
 uint64_t nvn_new_serial(void) { static _Atomic uint64_t n; return ++n; }
 static unsigned g_nsem;                          // 语义实现个数（nvn_init_slots 填） | Number of semantic implementations (filled by nvn_init_slots)
+static _Atomic uint64_t g_hle_draw_submits;      // 诊断：游戏提交的绘制条数（REC 层，含被宿主跳过的） | Diagnostic: draws submitted by the guest (at REC time, including those the host later skips)
 #define OLOG(...) do { if (g_log) LOG("[nvn] " __VA_ARGS__); } while (0)
 
 static void nvn_init_slots(void) {
@@ -866,15 +867,17 @@ NVN(nvnCommandBufferSetStencilRef, void, NVNcommandBuffer *c, NVNface f, int v) 
 NVN(nvnCommandBufferSetPolygonOffsetClamp, void, NVNcommandBuffer *c, float fa, float un, float cl) {
     *REC(c, OP_POLY_OFFSET, p_poly_offset) = (p_poly_offset){fa, un, cl};
 }
-NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { *REC(c, OP_DRAW, p_draw) = (p_draw){.prim=pr,.first=first,.count=n}; }
+NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { atomic_fetch_add(&g_hle_draw_submits, 1); *REC(c, OP_DRAW, p_draw) = (p_draw){.prim=pr,.first=first,.count=n}; }
 NVN(nvnCommandBufferDrawArraysInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n, int base_instance, int instances) {
     if(first<0 || n<0 || base_instance<0 || instances<0)die("Invalid array instance parameters");
+    atomic_fetch_add(&g_hle_draw_submits, 1);
     *REC(c, OP_DRAW, p_draw)=(p_draw){pr,first,n,instances-1,base_instance};
 }
 NVN(nvnCommandBufferDrawElementsInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib,
     int bv, int bi, int inst) {
     if(n<0 || bi<0 || inst<0)die("Invalid indexed instance parameters");
     if(!inst)n=0;
+    atomic_fetch_add(&g_hle_draw_submits, 1);
     *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, n, bv, bi, inst, ib};
 }
 NVN(nvnCommandBufferDispatchCompute, void, NVNcommandBuffer *c, int x, int y, int z) {
@@ -1458,6 +1461,14 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     if (idx >= 0 && idx < o->ntex && idx < 4) o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // 只入队，立即返回 | enqueue only, return immediately
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);
+    // 诊断：每 300 帧记一行「游戏提交 vs 宿主编码」的绘制条数，区分物体消失是游戏没提交（CPU 剔除）还是宿主丢绘制。
+    // Diagnostic: every 300 frames log 'guest-submitted vs host-encoded' draw counts, to tell whether disappearing objects
+    // are culled by the game on the CPU (not submitted) or dropped by the host.
+    { static uint64_t last_report; uint64_t submits = atomic_load(&g_hle_draw_submits);
+      if (f >= last_report + 300) { last_report = f;
+        LOG("[nvn] 绘制提交累计 %llu / 编码累计 %llu / 差 %llu（帧 %llu，通道 %llu）",
+            (unsigned long long)submits, (unsigned long long)dr, (unsigned long long)(submits > dr ? submits - dr : 0),
+            (unsigned long long)f, (unsigned long long)ps); } }
     if ((g_frame + 1) % TWIN == 0) {
         extern void mtl_subprof_report(uint64_t frames);
         mtl_subprof_report(TWIN);
