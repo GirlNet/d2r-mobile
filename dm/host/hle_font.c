@@ -67,6 +67,40 @@ static uint32_t font_GetSharedFontLoadState(int type) {
     return 0;
 }
 
+// Font engine entry points (nn::font::ll::ScalableFontEngine). These are guest definitions too,
+// so they are reached the same way: patch the entry and jump into the host.
+// 字体引擎入口（nn::font::ll::ScalableFontEngine）：同样是客体定义，用同样的方式拦截。
+static _Atomic int g_fe_calls;
+static void fe_note(const char *what, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
+    if (atomic_fetch_add(&g_fe_calls, 1) < 60)
+        LOG("P5R font engine %s a0=%#llx a1=%#llx a2=%#llx a3=%#llx", what,
+            (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3);
+}
+// LoadFont(char* name, const void* data, u32 size, u32 index): log the data pointer and its first bytes.
+static uint32_t fe_LoadFont(char *name, const void *data, uint32_t size, uint32_t index) {
+    fe_note("LoadFont", (uint64_t)(uintptr_t)name, (uint64_t)(uintptr_t)data, (uint64_t)size, (uint64_t)index);
+    if (name) LOG("P5R font engine LoadFont name=%s", name);
+    if (data) {
+        const uint8_t *p = data; char hex[80]; size_t o = 0;
+        for (int i = 0; i < 24 && o + 3 < sizeof hex; i++) o += snprintf(hex + o, sizeof hex - o, "%02x", p[i]);
+        LOG("P5R font engine data head=%s", hex);
+    }
+    return 0;   // "loaded": the engine already behaves as if no font data arrived | 视为已加载：行为与现在一致
+}
+static uint32_t fe_SetFont(char *name) {
+    fe_note("SetFont", (uint64_t)(uintptr_t)name, 0, 0, 0);
+    if (name) LOG("P5R font engine SetFont name=%s", name);
+    return 0;
+}
+static void *fe_AcquireGlyphmap(uint32_t cp, uint16_t size) {
+    fe_note("AcquireGlyphmap", (uint64_t)cp, (uint64_t)size, 0, 0);
+    return NULL;
+}
+static uint32_t fe_Initialize(void *a, uint32_t b) {
+    fe_note("Initialize", (uint64_t)(uintptr_t)a, (uint64_t)b, 0, 0);
+    return 0;
+}
+
 void dm_font_patch(void) {
     if (dm_guest_d2r()) return;
     struct { const char *name; void *fn; } tab[] = {
@@ -75,6 +109,10 @@ void dm_font_patch(void) {
         {"_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", (void *)font_GetSharedFontSize},
         {"_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE", (void *)font_RequestSharedFontLoad},
         {"_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", (void *)font_GetSharedFontLoadState},
+        {"_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", (void *)fe_LoadFont},
+        {"_ZN2nn6fontll18ScalableFontEngine7SetFontEPc", (void *)fe_SetFont},
+        {"_ZN2nn6fontll18ScalableFontEngine15AcquireGlyphmapEjt", (void *)fe_AcquireGlyphmap},
+        {"_ZN2nn6fontll18ScalableFontEngine10InitializeEPvj", (void *)fe_Initialize},
     };
     int ok = 0, miss = 0;
     for (unsigned i = 0; i < sizeof tab / sizeof *tab; i++) {
