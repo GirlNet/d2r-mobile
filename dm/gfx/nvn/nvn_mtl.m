@@ -1,7 +1,12 @@
 // NVN 空设备的 Metal 执行层，见 nvn_mtl.h。
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
 #import <Metal/Metal.h>
+#if defined(DM_P5R_METALFX) && DM_P5R_METALFX && __has_include(<MetalFX/MetalFX.h>)
 #import <MetalFX/MetalFX.h>
+#define DM_NVN_METALFX 1
+#else
+#define DM_NVN_METALFX 0
+#endif
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CAMetalDisplayLink.h>
 #import <ImageIO/ImageIO.h>
@@ -109,11 +114,13 @@ static id<MTLCommandQueue> g_q;
 #if !DM_NVN_M3
 static id<MTL4CommandQueue> g_q4;
 static dispatch_queue_t g_feedback_q;
+#if DM_NVN_METALFX
 static id<MTL4Compiler> g_fx_compiler;
 static id<MTL4FXSpatialScaler> g_fx_scaler;
 static id<MTLTexture> g_fx_output;
 static NSUInteger g_fx_input_w, g_fx_input_h, g_fx_output_w, g_fx_output_h;
 static MTLPixelFormat g_fx_input_fmt, g_fx_output_fmt;
+#endif
 #endif
 static _Atomic uint32_t g_present_qos;
 #define ALLOC_MAX 8
@@ -397,10 +404,12 @@ void mtl_init(void) {
     g_q4 = [g_dev newMTL4CommandQueueWithDescriptor:q4d error:&re];
     if (!g_q4) MDIE("建立 MTL4CommandQueue 失败");
     [g_q4 addResidencySet:g_res];
+#if DM_NVN_METALFX
     MTL4CompilerDescriptor *fxd = [MTL4CompilerDescriptor new];
     fxd.label = @"P5R MetalFX spatial scaler";
     g_fx_compiler = [g_dev newCompilerWithDescriptor:fxd error:&re];
     if (!g_fx_compiler) MLOG("【红】MetalFX compiler unavailable: %s", re.localizedDescription.UTF8String ?: "unknown error");
+#endif
 #endif
     g_alloc_n = 3;
 #if !DM_NVN_M3
@@ -7012,6 +7021,7 @@ static int present_encode_m4(CBUF cb, id<MTLTexture> src, id<MTLTexture> dst, co
     return 1;
 }
 #if !DM_NVN_M3
+#if DM_NVN_METALFX
 static int metal_fx_enabled(void) {
     static int enabled = -1;
     if (enabled < 0) {
@@ -7082,6 +7092,13 @@ static id<MTLTexture> present_metal_fx_upscale(CBUF cb, id<MTLTexture> src,
     [g_fx_scaler encodeToCommandBuffer:cb];
     return g_fx_output;
 }
+#else
+static id<MTLTexture> present_metal_fx_upscale(CBUF cb, id<MTLTexture> src,
+                                               id<MTLTexture> dst, const int crop[4]) {
+    (void)cb; (void)src; (void)dst; (void)crop;
+    return nil;
+}
+#endif
 #endif
 static double g_link_it_tin;   // 节拍回调正在上屏的那一帧的入队时刻（只在节拍线程读写） | Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {

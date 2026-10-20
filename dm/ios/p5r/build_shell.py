@@ -58,6 +58,7 @@ def build(output,metal_backend=3):
     vp9 = build_vp9.build(output / 'vp9', 'ios')
     flags = ['xcrun', '--sdk', 'iphoneos', 'clang', '-arch', 'arm64', '-miphoneos-version-min=26.0', '-O1',
              '-fobjc-arc', '-fblocks', '-Werror=implicit-function-declaration', '-DDM_P5R_ONLY=1', '-DDM_SHELL=1',
+             '-DDM_P5R_METALFX=1',
              '-DDM_NVN_M3='+str(int(metal_backend==3)),
              '-I' + str(REPO / 'dm/host'), '-I' + str(REPO / 'dm/gfx/nvn/include'), '-I' + str(vp9 / 'include')]
     plan = []
