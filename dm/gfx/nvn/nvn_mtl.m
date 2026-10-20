@@ -1053,7 +1053,11 @@ static int bc_recheck(const tex_t *t, uint64_t *stamp) {
 // 直接回答「字形页里到底有没有字」：全零 = 数据从没进来，有内容 = 问题在采样/绘制这一侧。
 // Compressed-atlas evidence: read back up to two large BC textures that received a b2t, writing them
 // into DM_TEMP. Answers directly whether the glyph page has any content.
-static struct { void *tex; uint64_t ser; int want, sent, block; } g_ad[13];   // [0] 512x1024 字形页，其余按出现顺序；block=1 表示 BC 块行 | [0] the 512x1024 glyph page, the rest in order; block=1 means BC block rows
+static struct { void *tex; uint64_t ser; int want, sent, block; } g_ad[14];   // [0] 512x1024 字形页，其余按出现顺序；block=1 表示 BC 块行；[13] 绘制当刻的文字图集 | [0] the 512x1024 glyph page, the rest in order; block=1 means BC block rows; [13] the text atlas as it is at draw time
+static void atlas_dump_named(id<MTLTexture> t, uint64_t ser) {   // 绘制当刻的文字图集（序号 999999） | Text atlas at draw time (serial 999999)
+    if (!t || g_ad[13].want || g_ad[13].sent) return;
+    g_ad[13].tex = (__bridge void *)t; g_ad[13].ser = ser; g_ad[13].want = 1; g_ad[13].block = 1;
+}
 static void target_dump_request(id<MTLTexture> t) {   // 文字那一趟的颜色目标（序号记 0，文件名 p5r-atlas-0.bin） | colour target of the text pass (serial 0, file p5r-atlas-0.bin)
     if (!t || g_ad[12].want || g_ad[12].sent) return;
     g_ad[12].tex = (__bridge void *)t; g_ad[12].ser = 0; g_ad[12].want = 1; g_ad[12].block = 0;
@@ -1067,7 +1071,7 @@ static void atlas_dump_request(id<MTLTexture> t, uint64_t ser, uint32_t w, uint3
 }
 static void atlas_dump_begin(void) {
     if (!g_cb) return;
-    for (int i = 0; i < 13; i++) {
+    for (int i = 0; i < 14; i++) {
         if (!g_ad[i].want || g_ad[i].sent || !g_ad[i].tex) continue;
         id<MTLTexture> t = (__bridge id<MTLTexture>)g_ad[i].tex; uint64_t ser = g_ad[i].ser; g_ad[i].want = 0; g_ad[i].sent = 1;
         NSUInteger W = t.width, H = t.height;
@@ -5492,6 +5496,18 @@ frz_plain:;
                         LOG("P5R text rect frame=%llu pass=%llu ser=%llu ndc=%g..%g , %g..%g (count=%llu)",
                             (unsigned long long)fr, (unsigned long long)(g_stat_pass + 1),
                             (unsigned long long)(R.rt.color[0] ? R.rt.color[0]->serial : 0), x0, x1, y0, y1, (unsigned long long)n);
+                        // 混合与写掩码：文字在屏幕内却看不见时，这两项是第一个怀疑对象。
+                        // Blend and write mask: the first suspects when on-screen text produces no pixels.
+                        MLOG("P5R text blend en=%#x chmask=%#x src=%d,%d dst=%d,%d eq=%d,%d", S.color.blend_en, S.chmask.mask,
+                             S.blend[0].src_rgb, S.blend[0].dst_rgb, S.blend[0].src_a, S.blend[0].dst_a,
+                             S.blend[0].eq_rgb, S.blend[0].eq_a);
+                        {   // 绘制当刻的图集内容：槽 128 绑的贴图 | The atlas bound at draw time: the texture in slot 128
+                            uint64_t h = S.tex[1][128]; int tid = h ? (int)nvn_handle_texture_id(h) : 0;
+                            if (tid > 0 && tid < g_ntreg && g_treg[tid].ok) {
+                                pthread_mutex_lock(&g_rmu); id<MTLTexture> at = tex_by_id(tid); pthread_mutex_unlock(&g_rmu);
+                                if (at) { atlas_dump_named(at, 999999); MLOG("P5R text atlas at draw tid=%d ser=%llu", tid, (unsigned long long)g_treg[tid].t.serial); }
+                            }
+                        }
                         if (!g_ad[12].want && !g_ad[12].sent && R.rt.color[0])
                             target_dump_request(tex_mtl(R.rt.color[0]));   // 第一笔真的落在画面里的文字，抓它这一趟 | First text that really lands on screen: capture its pass
                     }
