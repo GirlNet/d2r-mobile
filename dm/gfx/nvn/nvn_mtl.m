@@ -1788,6 +1788,8 @@ static _Atomic uint64_t g_subprof_draw_state_ns, g_subprof_draw_call_ns;
 static _Atomic uint64_t g_subprof_pso_ns, g_subprof_dss_ns, g_subprof_fixed_ns, g_subprof_vbuf_ns;
 static _Atomic uint64_t g_subprof_program_ns, g_subprof_preopen_ns, g_subprof_textdiag_ns;
 static _Atomic uint64_t g_subprof_program_n, g_subprof_preopen_n, g_subprof_textdiag_n;
+static _Atomic uint64_t g_subprof_index_ns, g_subprof_candidate_ns;
+static _Atomic uint64_t g_subprof_index_n, g_subprof_candidate_n;
 static _Atomic uint64_t g_subprof_rp_begin_n, g_subprof_rp_end_n;
 static _Atomic uint64_t g_subprof_tex_prep_n, g_subprof_args_n;
 static _Atomic uint64_t g_subprof_draw_state_n, g_subprof_draw_call_n;
@@ -5558,8 +5560,12 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if(S.dynamic.subpixel[0] || S.dynamic.subpixel[1])MDIE("Nondefault subpixel precision unsupported");
     for(int i=0;i<4;i++)if(S.dynamic.swizzle[i]!=i*2)MDIE("Nonidentity viewport swizzle unsupported");
     if (!pr) { RED_ONCE(18, "绘制前没有绑定程序"); return; }
+    uint64_t prof_index0 = subprof_now();
     prepared_indices indices=di?prepare_indices(di):(prepared_indices){0};
+    subprof_record(&g_subprof_index_ns, &g_subprof_index_n, prof_index0);
+    uint64_t prof_candidate0 = subprof_now();
     check_candidate_draw(pr,dw?dw->prim:di->prim);
+    subprof_record(&g_subprof_candidate_ns, &g_subprof_candidate_n, prof_candidate0);
     if (g_ruler_truth == 0) {   // 尺子负对照（DM_NVN_RULER_NEG=<片元键>）：被测模式下丢掉该着色器的绘制，尺子必须报不等价 | Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
         if (ng && pr) for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (sh && sh->stage == 1 && !strncmp(sh->key, neg, strlen(neg))) { static int once; if (!once++) MLOG("DM_NVN_RULER_NEG：被测模式丢弃着色器 %s 的绘制", sh->key); return; } }
@@ -7628,6 +7634,7 @@ void mtl_subprof_report(uint64_t frames) {
     uint64_t fx = atomic_exchange(&g_subprof_fixed_ns, 0), vb = atomic_exchange(&g_subprof_vbuf_ns, 0);
     uint64_t pg = atomic_exchange(&g_subprof_program_ns, 0), po2 = atomic_exchange(&g_subprof_preopen_ns, 0);
     uint64_t td = atomic_exchange(&g_subprof_textdiag_ns, 0);
+    uint64_t ix = atomic_exchange(&g_subprof_index_ns, 0), ca = atomic_exchange(&g_subprof_candidate_ns, 0);
     uint64_t rbn = atomic_exchange(&g_subprof_rp_begin_n, 0), ren = atomic_exchange(&g_subprof_rp_end_n, 0);
     uint64_t tpn = atomic_exchange(&g_subprof_tex_prep_n, 0), arn = atomic_exchange(&g_subprof_args_n, 0);
     uint64_t dsn = atomic_exchange(&g_subprof_draw_state_n, 0), dcn = atomic_exchange(&g_subprof_draw_call_n, 0);
@@ -7635,6 +7642,7 @@ void mtl_subprof_report(uint64_t frames) {
     uint64_t fxn = atomic_exchange(&g_subprof_fixed_n, 0), vbn = atomic_exchange(&g_subprof_vbuf_n, 0);
     uint64_t pgn = atomic_exchange(&g_subprof_program_n, 0), po2n = atomic_exchange(&g_subprof_preopen_n, 0);
     uint64_t tdn = atomic_exchange(&g_subprof_textdiag_n, 0);
+    uint64_t ixn = atomic_exchange(&g_subprof_index_n, 0), can = atomic_exchange(&g_subprof_candidate_n, 0);
     double d = frames ? (double)frames : 1.0;
     MLOG("提交内部分段 至帧 %llu：通道开始 %.2f ms/帧（%llu 次）、通道结束 %.2f ms/帧（%llu 次）、"
          "贴图预解析 %.2f ms/帧（%llu 次）、参数块 %.2f ms/帧（%llu 次）、"
@@ -7649,6 +7657,8 @@ void mtl_subprof_report(uint64_t frames) {
     MLOG("绘制细项 程序 %.2f ms/帧（%llu）、开通道前 %.2f（%llu）、文字诊断 %.2f（%llu）",
          pg / 1e6 / d, (unsigned long long)pgn, po2 / 1e6 / d,
          (unsigned long long)po2n, td / 1e6 / d, (unsigned long long)tdn);
+    MLOG("开通道前细项 索引 %.2f ms/帧（%llu）、候选检查 %.2f（%llu）",
+         ix / 1e6 / d, (unsigned long long)ixn, ca / 1e6 / d, (unsigned long long)can);
 }
 uint64_t mtl_ds_omit(void) { return g_stat_ds_omit; }
 void mtl_bw(uint64_t *load, uint64_t *store, uint64_t *full) { *load = g_bw_load; *store = g_bw_store; *full = g_pass_full_rw; }
