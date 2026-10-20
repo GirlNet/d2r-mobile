@@ -265,20 +265,24 @@ static void defer_obj_release_ex(id obj, int keep_resident) {
 static void defer_obj_release(id obj) { defer_obj_release_ex(obj, 0); }
 static void defer_obj_unref(id obj) { defer_obj_release_ex(obj, 1); }
 static void defer_drain(void) {
+    // 释放安全边距（栅栏数）：Metal 4 的参数表可能还引用在途命令缓冲里的退役对象，立即释放会
+    // kIOGPUCommandBufferCallbackErrorPageFault。原实现 M4 下永久保活，驻留集无限增长、长时间游玩
+    // 计算/GPU 路径越走越慢；改成「等过边距后再释放」，把驻留集限制在最近几帧，同时保留足够余量避开页错误。
+    // Release safety margin (in fences): Metal 4's argument table may still reference a retired object from an
+    // in-flight command buffer, and releasing it immediately raises kIOGPUCommandBufferCallbackErrorPageFault.
+    // The old code kept objects forever under M4, so the residency set grew unboundedly and the compute/GPU path
+    // slowed down over a long session; drain only after the margin so the set is bounded to the last few frames.
+    static long margin = -1;
+    if (margin < 0) { const char *e = getenv("DM_P5R_RELEASE_MARGIN"); margin = e ? atol(e) : 16; if (margin < 0) margin = 0; }
+    uint64_t done = g_done;
 #if !DM_NVN_M3
-    // Metal 4 adaptation: a retired object may still be referenced by an in-flight MTL4 command
-    // buffer's argument table; freeing it or dropping it from the residency set faults the GPU
-    // (kIOGPUCommandBufferCallbackErrorPageFault). Keep every retired object alive and resident
-    // for the rest of the process; memory is bounded by the session and the phone has headroom.
-    // M4 适配：退役对象可能仍被在途命令缓冲的参数表引用；释放或撤驻留就会 GPU 页错误。
-    // 这里全部保活、保持驻留到进程结束。
-    return;
-#else
+    done = g_done > (uint64_t)margin ? g_done - (uint64_t)margin : 0;
+#endif
     NSMutableArray<NvDeferredRelease *> *ready = [NSMutableArray array];
     pthread_mutex_lock(&g_deferred_mu);
     for (NSInteger i = g_deferred.count - 1; i >= 0; i--) {
         NvDeferredRelease *d = g_deferred[(NSUInteger)i];
-        if (d->fence <= g_done) { [ready addObject:d]; [g_deferred removeObjectAtIndex:(NSUInteger)i]; }
+        if (d->fence <= done) { [ready addObject:d]; [g_deferred removeObjectAtIndex:(NSUInteger)i]; }
     }
     pthread_mutex_unlock(&g_deferred_mu);
     for (NvDeferredRelease *d in ready) {
@@ -291,7 +295,6 @@ static void defer_drain(void) {
         }
         d->object = nil;
     }
-#endif
 }
 
 static pthread_mutex_t g_bf_want_mu = PTHREAD_MUTEX_INITIALIZER;
