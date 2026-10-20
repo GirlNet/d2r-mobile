@@ -54,8 +54,12 @@ static int one_level(int level,int w,int h,int row){
         float value=(float)(phase*8+level+1)/16.0f,rgba[]={value,0,0,1};
         h_nvnCommandBufferBeginRecording(&cmd);const NVNtexture *targets[]={&source};
         h_nvnCommandBufferSetRenderTargets(&cmd,1,targets,NULL,NULL,NULL);
-        h_nvnCommandBufferClearColor(&cmd,0,rgba,1);CHECK(!run_commands(&cmd));
-        for(int y=0;y<h;y++)for(int x=0;x<w;x++){float actual;memcpy(&actual,src->mem+y*row+x*4,4);CHECK(actual==value);}
+        h_nvnCommandBufferClearColor(&cmd,0,rgba,NVN_CLEAR_COLOR_MASK_RGBA);CHECK(!run_commands(&cmd));
+        for(int y=0;y<h;y++)for(int x=0;x<w;x++){
+            float actual;memcpy(&actual,src->mem+y*row+x*4,4);
+            if(actual!=value)fprintf(stderr,"level=%d phase=%d pixel=%d,%d actual=%g expected=%g\n",level,phase,x,y,actual,value);
+            CHECK(actual==value);
+        }
         for(int y=0;y<h;y++)for(int x=0;x<w;x++){float next=pattern(x,y,phase,level);memcpy(src->mem+y*row+x*4,&next,4);}
         pthread_mutex_lock(&g_rmu);id<MTLTexture> cached=tex_by_id(1801);pthread_mutex_unlock(&g_rmu);CHECK(cached==linear);
         h_nvnCommandBufferBeginRecording(&cmd);NVNcopyRegion region={0,0,0,w,h,1};
