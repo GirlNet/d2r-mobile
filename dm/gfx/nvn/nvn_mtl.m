@@ -3847,7 +3847,7 @@ static int encode_args_impl(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stag
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
             if (p5r_draw_debug()) { static int n; int bcf = t && tid > 0 && tid < g_ntreg && g_treg[tid].t.d.format >= 0x41 && g_treg[tid].t.d.format <= 0x4E;
               if (bcf && n++ < 40) LOG("P5R img bind key=%s st=%d ser=%llu fmt=%#x %ux%u rw=%d", sh->key, nvn_stage,
-                  (unsigned long long)g_treg[tid].t.serial, g_treg[tid].t.d.format, g_treg[tid].t.d.width, g_treg[tid].t.d.height, b->rw); } }
+                  (unsigned long long)g_treg[tid].t.serial, g_treg[tid].t.d.format, g_treg[tid].t.d.width, g_treg[tid].t.d.height, b->rw); }
             if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "图像槽绑的贴图没有可写用途（贴图号 %d）", tid); t = nil; }
             if (!t) { t = dummy_img(b->dtt, b->dpf); trid = g_dummy_img_rid[b->dtt & 7][b->dpf & 3]; }   // 未绑：D3D 语义写入丢弃——写进专用哑贴图，不污染读出 0 的那套 | Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
             slots[aid] = trid;
