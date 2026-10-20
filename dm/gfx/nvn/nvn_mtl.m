@@ -5993,7 +5993,7 @@ frz_plain:;
                     }
                 }
             }
-            LOG("obj key=%s h=%016llx vc=%d", pr->sh[0]->key, (unsigned long long)h64, dw ? dw->count : di->count);
+            LOG("obj f=%llu key=%s h=%016llx vc=%d", (unsigned long long)fr, pr->sh[0]->key, (unsigned long long)h64, dw ? dw->count : di->count);
         }
     }
     { static int tg; if (!tg) { tg = 1; const char *e = getenv("DM_TEST_GHOST"); float v[8];   // 测试开关 DM_TEST_GHOST=px,py,gx,gy,gw,gh,cx,cy（归一化；按下点、格网、跟手图中心）：不经前端直接开跟手图（Mac 宿主截图验证用） | Test switch DM_TEST_GHOST=px,py,gx,gy,gw,gh,cx,cy (normalized; press point, grid, center of the drag-follow image): turns on the drag-follow image directly without going through the front end (for Mac host screenshot verification)
