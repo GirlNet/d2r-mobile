@@ -2978,7 +2978,32 @@ static void check_candidate_draw(NvProg *program,int primitive) {
             MDIE("P5R candidate dual-source blending unsupported");
     }
 }
-static int render_allowed(void) {
+// Conditional render is set once around a batch of draws. The original path
+// committed and waited for the GPU before every draw in that batch. Keep the
+// decoded value for the same condition while its 24-byte source remains
+// unchanged; CPU and replayed GPU writes invalidate it below.
+static struct {
+    int valid, allowed;
+    uint64_t address;
+    uint32_t mode;
+    uint8_t source[24];
+} g_cond_cache;
+static uint64_t g_cond_waits, g_cond_hits;
+static void cond_invalidate(void) { g_cond_cache.valid = 0; }
+static int program_writes_resources(NvProg *program) {
+    if (!program) return 0;
+    for (int st = 0; st < 6; st++) {
+        NvShader *sh = program->sh[st];
+        if (!sh) continue;
+        for (int i = 0; i < sh->rf.nb; i++) {
+            const nvn_rbind *b = &sh->rf.b[i];
+            if (!b->rw) continue;
+            if (b->kind == NVN_RB_IMG || b->kind == NVN_RB_SBUFP) return 1;
+        }
+    }
+    return 0;
+}
+static int render_allowed(NvProg *program) {
     if(dm_guest_d2r())return 1;
     if(!S.render_enable)return 0;
     if(!S.conditional_active)return 1;
@@ -2986,14 +3011,29 @@ static int render_allowed(void) {
     if(!mtl_addr(S.conditional.address,24,&native,&offset))MDIE("Conditional render input is outside a registered buffer");
     id<MTLBuffer> buffer=(__bridge id<MTLBuffer>)native;
     if(!buffer.contents)MDIE("Conditional render input is not CPU-readable");
+    const uint8_t *source = (const uint8_t *)buffer.contents + offset;
+    if (g_cond_cache.valid && g_cond_cache.address == S.conditional.address &&
+        g_cond_cache.mode == S.conditional.mode &&
+        !memcmp(g_cond_cache.source, source, sizeof g_cond_cache.source)) {
+        if (g_cond_hits++ == 0) MLOG("P5R 条件渲染：同一条件区域已复用首次 GPU 读取结果");
+        return g_cond_cache.allowed;
+    }
     // A conservative synchronous path. Waiting on g_done includes CPU query
     // callbacks, so ReportCounter data and preceding GPU writes are both ready.
     uint64_t fence=mtl_sub_commit();
     if(!mtl_wait(fence,5000000000ull) || mtl_last_commit_error())MDIE("Conditional render input synchronization failed");
+    if (g_cond_waits++ == 0) MLOG("P5R 条件渲染：首次读取已同步 GPU");
     int allowed=0;
-    if(!nvn_conditional_render_decode((int)S.conditional.mode,(const uint8_t *)buffer.contents+offset,24,&allowed))
+    if(!nvn_conditional_render_decode((int)S.conditional.mode,source,24,&allowed))
         MDIE("Invalid conditional render comparison");
-    vis_fold_completed();mtl_sub_begin();return allowed;
+    g_cond_cache.valid = 1;
+    g_cond_cache.allowed = allowed;
+    g_cond_cache.address = S.conditional.address;
+    g_cond_cache.mode = S.conditional.mode;
+    memcpy(g_cond_cache.source, source, sizeof g_cond_cache.source);
+    vis_fold_completed();mtl_sub_begin();
+    if (program_writes_resources(program)) cond_invalidate();
+    return allowed;
 }
 static int depth_bounds_supported(void) {
     if(@available(macOS 26.0,iOS 26.0,*))return [g_dev supportsFamily:MTLGPUFamilyApple10];
@@ -4182,9 +4222,9 @@ static int state_op(uint32_t op, const void *a) {
         case OP_DEPTH_CLAMP: S.depth_clamp = *(const uint32_t *)a != 0; break;
         case OP_RASTER_DISCARD: {uint32_t value=*(const uint32_t *)a!=0;if(S.raster_discard!=value){S.raster_discard=value;g_pso_dirty=1;}break;}
         case OP_SAMPLE_MASK: if(S.sample_mask!=*(const uint32_t *)a){S.sample_mask=*(const uint32_t *)a;g_pso_dirty=1;}break;
-        case OP_RENDER_ENABLE: if(S.render_enable!=*(const uint32_t *)a || S.conditional_active){S.render_enable=*(const uint32_t *)a;S.conditional_active=0;g_pso_dirty=1;}break;
+        case OP_RENDER_ENABLE: if(S.render_enable!=*(const uint32_t *)a || S.conditional_active){S.render_enable=*(const uint32_t *)a;S.conditional_active=0;cond_invalidate();g_pso_dirty=1;}break;
         case OP_CONSERVATIVE_RASTER: if(S.conservative_raster!=*(const uint32_t *)a){S.conservative_raster=*(const uint32_t *)a;g_pso_dirty=1;}break;
-        case OP_CONDITIONAL_RENDER: S.conditional=*(const p_conditional_render *)a;S.conditional_active=1;S.render_enable=1;g_pso_dirty=1;break;
+        case OP_CONDITIONAL_RENDER: S.conditional=*(const p_conditional_render *)a;S.conditional_active=1;S.render_enable=1;cond_invalidate();g_pso_dirty=1;break;
         case OP_DEPTH_BOUNDS: S.depth_bounds=*(const p_depth_bounds *)a;break;
         case OP_PRIMITIVE_RESTART: S.restart = *(const p_primitive_restart *)a; break;
         case OP_DYNAMIC_STATE: {
@@ -4509,6 +4549,7 @@ static void sdx_walk(const uint8_t *p, int depth) {
     }
 }
 void mtl_sub_index(const uint64_t *h, int n) {   // 提交开始（hle_nvn.c QueueSubmitCommands）：建本次提交的写回前瞻索引 | Start of submit (hle_nvn.c QueueSubmitCommands): build this submit's store lookahead index
+    cond_invalidate();
     g_xv_ntouch = 0; g_sdx_n = g_sdx_nop = 0; g_rtx_n = g_drx_n = 0; g_exec_seq = 0; g_sdx_ok = tbdr_on();
     if (!g_sdx_ok) { g_xv_n = 0; g_xv_block = 1; return; }   // 索引不可用：账本清空、本次提交不新增（没法核下一次触碰） | Index unavailable: clear the ledger and add nothing in this submit (the next touch cannot be verified)
     g_xv_block = 0;
@@ -5553,7 +5594,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         }
     }
     if(instances<0)MDIE("Invalid draw instance count");
-    if(!render_allowed())return;
+    if(!render_allowed(pr))return;
     int primitive=dw?dw->prim:di->prim;
     if(primitive==NVN_DRAW_PRIMITIVE_POINTS && S.dynamic.point_size!=1)MDIE("Nondefault point size unsupported");
     if((primitive==NVN_DRAW_PRIMITIVE_LINES || primitive==NVN_DRAW_PRIMITIVE_LINE_STRIP) && S.dynamic.line_width!=1)MDIE("Wide lines unsupported");
@@ -5947,6 +5988,7 @@ frz_plain:;
                 di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
     }
     subprof_record(&g_subprof_draw_call_ns, &g_subprof_draw_call_n, prof_call0);
+    if (program_writes_resources(pr)) cond_invalidate();
     if (g_rt_range_pending) { PD("j rt_level_range pass=%llu vc=%u", g_stat_pass, (unsigned)(dw ? dw->count : di->count)); g_rt_range_pending=0; }
 }
 static nvn_hmap g_cps = {.klen = sizeof(void *)};
@@ -6667,7 +6709,7 @@ void mtl_exec(const uint8_t *p) {
         if (trace) PD("o cmd=%p pass=%llu op=%u size=%u", p, g_stat_pass, (unsigned)h.op, (unsigned)h.size);
         if (g_hoist_n && hoist_take(p)) { if (g_fz.active && p == g_fz.rt2_op) { g_fz.phase = 2; g_rt_merged = 0; PD("F %llu 合并通道进入后一个通道的绘制", g_stat_pass); } p += h.size; continue; }   // 已提前执行的纯清除通道 / 已并入的后一个通道开头   // 进入后一个通道：前一个通道的同目标续用到此为止，后一个通道读前一个通道附件由 fz_p2_draw 证本像素，不再按续用规则切开 | A pure-clear render pass already executed early / the start of a later pass already merged in   // Entering the later pass: the same-target continuation of the earlier pass ends here; the later pass reading the earlier pass's attachment is proven to be same-pixel by fz_p2_draw, and is no longer split by the continuation rule
         const void *a = p + 8;
-        if((h.op==OP_CLEAR_COLOR || h.op==OP_CLEAR_DS) && !render_allowed()){p+=h.size;continue;}
+        if((h.op==OP_CLEAR_COLOR || h.op==OP_CLEAR_DS) && !render_allowed(programs_get(&S.programs))){p+=h.size;continue;}
         if(!dm_guest_d2r() && (!S.render_enable || S.conditional_active) && (h.op==OP_CLEAR_TEX || h.op==OP_DOWNSAMPLE))
             MDIE("P5R conditional texture clear/resolve is not implemented");
         switch (h.op) {
@@ -6695,6 +6737,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, (const uint8_t *)a + 8, 4); memcpy(&v, (const uint8_t *)a + 12, 4);
                 PD("Y signal_event cmd=%p dst=%p mode=%u value=%u", p, val, m, v); mtl_sub_event(val, m, v); break; }
             case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, (const uint8_t *)a + 8, 8); g_cnt_report[t & 31]++;
+                cond_invalidate();
                 PD("Q report type=%llu cmd=%p dst=%#llx", (unsigned long long)t, p, (unsigned long long)ad);
                 if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) { post((post_op){3, NULL, 0, 0, ad, (uint32_t)t, vis_snapshot()}); g_vis_cur = -1; }
                 else mtl_sub_counter(ad, (uint32_t)t);
@@ -6706,10 +6749,12 @@ void mtl_exec(const uint8_t *p) {
 #endif
                     g_vis_on = 1; g_vis_counting = 1; vis_clear(); }
                 break; }
-            case OP_CLEAR_BUF: clear_buffer(a); break;
+            case OP_CLEAR_BUF: cond_invalidate(); clear_buffer(a); break;
             case OP_COPY_B2B: { uint64_t s_, d, n; memcpy(&s_, a, 8); memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8);
+                cond_invalidate();
                 PD("Y copy_b2b cmd=%p src=%#llx dst=%#llx bytes=%llu", p, (unsigned long long)s_, (unsigned long long)d, (unsigned long long)n); mtl_sub_copy(s_, d, n); break; }
             case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8);
+                cond_invalidate();
                 PD("Y update_ub cmd=%p src=%#llx dst=%#llx bytes=%llu", p, (unsigned long long)((const uint8_t *)a + 16), (unsigned long long)d, (unsigned long long)n); mtl_sub_copy((uint64_t)((const uint8_t *)a + 16), d, n); break; }
             case OP_SET_RT: {
                 const p_set_rt *r = a;
@@ -6749,11 +6794,11 @@ void mtl_exec(const uint8_t *p) {
             case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_COPY_IMAGE_STRIDE: case OP_DEPTH_CLAMP: case OP_PRIMITIVE_RESTART: case OP_RASTER_DISCARD: case OP_DEPTH_BOUNDS: case OP_SAMPLE_MASK: case OP_RENDER_ENABLE: case OP_CONSERVATIVE_RASTER: case OP_CONDITIONAL_RENDER:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
-            case OP_COPY_T2B: copy_t2b(a); break;
+            case OP_COPY_T2B: cond_invalidate(); copy_t2b(a); break;
             case OP_COPY_T2T: copy_t2t(a); break;
             case OP_DOWNSAMPLE: downsample(a); break;
             case OP_CLEAR_TEX: clear_tex(a); break;
-            case OP_DISPATCH: dispatch(a); break;
+            case OP_DISPATCH: cond_invalidate(); dispatch(a); break;
             case OP_BARRIER:
                 // 保留屏障后的原通道边界；若已经续用则立即结束，未续用时不额外开通道。
                 // Preserve the original pass boundary after a barrier; end an already continued pass without adding passes before continuation.
