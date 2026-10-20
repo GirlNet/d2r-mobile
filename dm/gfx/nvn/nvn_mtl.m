@@ -3580,6 +3580,18 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 MDIE("P5R candidate uniform buffer range/alignment invalid: stage=%d slot=%d",nvn_stage,reg);
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "阶段 %d cb%d 没有绑定 uniform 缓冲", nvn_stage, reg); continue; }
             use_rec("buf", u->addr, u->size, 0, NULL);
+            // 实验：文字的纵向换算按 1920x1440（4:3 版面）而不是 1920x1080。
+            // 观测到的文字矩形按 1080 换算整段落在画面下方，按 1440 换算正好落在画面底部——
+            // 也就是游戏给的是 4:3 版面的坐标，而着色器用了 16:9 的半高。
+            // Experiment: scale text vertically as if the canvas were 1920x1440 instead of 1920x1080.
+            // Observed rectangles fall below the screen with 1080 and land at the bottom edge with 1440.
+            if (nvn_stage == 0 && !strncmp(sh->key, "e0b2c674be75c256", 16) && getenv("DM_P5R_TEXT1440") && u->size >= 32) {
+                static id<MTLBuffer> tbuf; static uint64_t tgpu;
+                if (!tbuf) { tbuf = [g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared]; res_add(tbuf); tgpu = tbuf.gpuAddress; }
+                memcpy(tbuf.contents, (const void *)u->addr, 32);
+                ((float *)tbuf.contents)[7] = 720.0f;   // _m0[1].w：半高 720（1440 版面） | _m0[1].w: half height 720 (1440 canvas)
+                gpu = tgpu;
+            }
             if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
             if (bl) {
                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
