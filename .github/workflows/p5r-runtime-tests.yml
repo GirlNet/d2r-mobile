@@ -99,7 +99,7 @@ jobs:
   linear-storage-gpu:
     # 独立验证共享线性存储，避免 macOS 26 运行器排队阻塞基础 GPU 像素回归。
     # Validate shared linear storage independently so macOS 26 runner queues do not block basic GPU pixel regressions.
-    runs-on: macos-15-arm64
+    runs-on: macos-15
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
