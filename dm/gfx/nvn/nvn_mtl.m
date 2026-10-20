@@ -2387,6 +2387,7 @@ static uint64_t g_warm_shaders, g_warm_rps, g_warm_cps, g_warm_skip_fz;
 static uint64_t g_warm_claim_shaders, g_warm_claim_rps, g_warm_claim_cps;
 static id<MTLFunction> bf_fn(NvShader *fs, const int *fx, uint8_t fbmask, const uint8_t *lmap);
 static int rt_range_bindings_ro(NSDictionary *j);
+static int attachment_bindings_ro(NSDictionary *j, int p5r);
 static FILE *g_pso_record; static int g_pso_record_checked;
 static FILE *pso_record_file(void) {
     if (g_pso_record_checked) return g_pso_record;
@@ -2490,7 +2491,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     int candidate=!dm_guest_d2r() && mode && !strcmp(mode,"guarded");
     if ((candidate?nvn_refl_from_json_candidate(j,&o->rf,err,sizeof err):nvn_refl_from_json(j,&o->rf,err,sizeof err))) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
     if(o->rf.guarded_candidate && ![j[@"stage"] isEqual:stage==0?@"vs":stage==1?@"ps":stage==5?@"cs":@""]) return nil;
-    if (rt_range_on() || p5r_rt_continue_on()) o->range_ro=rt_range_bindings_ro(j);
+    if (rt_range_on() || p5r_rt_continue_on()) o->range_ro=attachment_bindings_ro(j,p5r_rt_continue_on());
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
     if(!o->fn)return nil;
     if(!dm_guest_d2r()) {
@@ -2520,12 +2521,20 @@ static int stage_of(NSString *zh) {
 #define NVN_RT_RANGE_RO_IMPL 1
 // 私有续用只接受明确RO的B反射，sbuf缺rw不把默认0当证明；不改变既有反射/翻译链。
 // Private continuation accepts only B reflection that is explicitly RO; a missing rw on sbuf does not let the default 0 count as proof; does not change the existing reflection / translation chain.
-static int rt_range_bindings_ro(NSDictionary *j) {
+static int attachment_bindings_ro(NSDictionary *j, int p5r) {
     if (![j[@"route"] isEqual:@"B"] || ![j[@"bindings"] isKindOfClass:[NSArray class]] ||
         ![j[@"drv_reads"] isKindOfClass:[NSDictionary class]] || [j[@"drv_reads"] count]) return 0;
     for (NSDictionary *b in j[@"bindings"]) {
         if (![b isKindOfClass:[NSDictionary class]] || ![b[@"kind"] isKindOfClass:[NSString class]] || ![b[@"msl_type"] isKindOfClass:[NSString class]]) return 0;
         NSString *k=b[@"kind"], *t=b[@"msl_type"];
+        // P5R 组合槽只改变句柄索引；support 是只读常量。按生产反射解析器的种类核验。
+        // P5R combined slots only change handle indices; support is constant data. Match the production reflection parser's kinds.
+        if (p5r) {
+            if ([k isEqual:@"tex_combined"]) k=@"tex";
+            else if ([k isEqual:@"tbuf_combined"]) k=@"tbuf";
+            else if ([k isEqual:@"samp_combined"] || [k isEqual:@"samp_tex"]) k=@"sampt";
+            else if ([k isEqual:@"support"]) k=@"cbuf";
+        }
         if (b[@"rw"] && (![b[@"rw"] isKindOfClass:[NSNumber class]] || [b[@"rw"] boolValue])) return 0;
         if ([k isEqual:@"cbuf"] || [k isEqual:@"c1"]) { if (![t hasPrefix:@"constant "]) return 0; }
         else if ([k isEqual:@"sbuf"]) { if (![b[@"rw"] isKindOfClass:[NSNumber class]] || [b[@"rw"] boolValue] || ![t hasPrefix:@"const device "]) return 0; }
@@ -2536,6 +2545,7 @@ static int rt_range_bindings_ro(NSDictionary *j) {
     }
     return 1;
 }
+static int rt_range_bindings_ro(NSDictionary *j) { return attachment_bindings_ro(j,0); }
 static int rt_range_pr_ro(NvProg *p) {
     if (!p || !p->sh[0] || !p->sh[1]) return 0;
     for (int k=0;k<6;k++) if (p->sh[k] && (k>1 || p->sh[k]->stage != k || !p->sh[k]->range_ro || p->sh[k]->rf.drv_read[0] || p->sh[k]->rf.drv_read[2])) return 0;

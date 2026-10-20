@@ -38,6 +38,8 @@ static int read_planes(tex_t *color,tex_t *depth,int cleared,int sampled) {
         uint8_t *c=(uint8_t *)output[0].contents+y*256+x*4;
         int second=cleared||x>=4;
         const uint8_t want[]={second&&!sampled?0:255,second&&!sampled?255:0,0,255};
+        if(memcmp(c,want,4))fprintf(stderr,"pixel %d,%d got=%u,%u,%u,%u expected=%u,%u,%u,%u\n",
+            x,y,c[0],c[1],c[2],c[3],want[0],want[1],want[2],want[3]);
         CHECK(!memcmp(c,want,4));
         CHECK(*(float *)((uint8_t *)output[1].contents+y*256+x*4)==(second?.75f:.5f));
         CHECK(*((uint8_t *)output[2].contents+y*256+x)==(second?0x66:0x55));
@@ -136,6 +138,20 @@ int main(void){@autoreleasepool{
     CHECK(dm_guest_profile_select("p5r"));mtl_init();
     mtl_guest_coordinates(NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT,NVN_DEPTH_MODE_NEAR_IS_ZERO);
     int enabled=p5r_rt_continue_on();CHECK(!tbdr_on());
+    NSDictionary *bindings=@{@"route":@"B",@"stage":@"ps",@"drv_reads":@{},@"bindings":@[
+        @{@"kind":@"tex_combined",@"reg":@0,@"arg_id":@0,@"msl_type":@"texture2d<float>"}]};
+    CHECK(attachment_bindings_ro(bindings,1));
+    CHECK(!attachment_bindings_ro(bindings,0));
+    for(NSDictionary *binding in @[
+        @{@"kind":@"tex_combined",@"msl_type":@"texture2d<float, access::write>"},
+        @{@"kind":@"tex_combined",@"msl_type":@"texture2d<float>",@"rw":@YES},
+        @{@"kind":@"support",@"msl_type":@"device float*"},
+        @{@"kind":@"sbuf",@"msl_type":@"const device float*"},
+        @{@"kind":@"img",@"msl_type":@"texture2d<float>"}])
+        CHECK(!attachment_bindings_ro(@{@"route":@"B",@"drv_reads":@{},@"bindings":@[binding]},1));
+    CHECK(attachment_bindings_ro(@{@"route":@"B",@"drv_reads":@{},@"bindings":@[
+        @{@"kind":@"support",@"msl_type":@"constant float*"},
+        @{@"kind":@"samp_combined",@"msl_type":@"sampler"}]},1));
     NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
         "vertex float4 v(uint n[[vertex_id]]){float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return float4(p[n],.5,1);}\n"
         "vertex float4 w(uint n[[vertex_id]]){float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return float4(p[n],.75,1);}\n"
@@ -153,9 +169,11 @@ int main(void){@autoreleasepool{
         // Test shaders are explicitly read-only; two negative cases deliberately leave metadata unknown.
         p->sh[0]->range_ro=p->sh[1]->range_ro=k!=2&&k!=3;
         if(k==4) {
-            p->sh[1]->rf.nb=1;
-            p->sh[1]->rf.b[0]=(nvn_rbind){.kind=NVN_RB_TEX,.dtt=MTLTextureType2D};
+            char reason[160];CHECK(!nvn_refl_from_json(bindings,&p->sh[1]->rf,reason,sizeof reason));
+            CHECK(p->sh[1]->rf.b[0].reg==NVN_COMBINED_TEX_FIRST);
+            p->sh[1]->range_ro=attachment_bindings_ro(bindings,1);
             p->sh[1]->ae=[p->sh[1]->fn newArgumentEncoderWithBufferIndex:0];
+            p->sh[1]->arg_len=p->sh[1]->ae.encodedLength;
         }
         serial_put(programs[k].serial,p);
     }
