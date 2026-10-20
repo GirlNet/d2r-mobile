@@ -6180,6 +6180,13 @@ static void copy_layout_failure(const p_copy_b2t *c, const char *direction, int 
 }
 static void copy_t2b(const p_copy_b2t *c) {
     if (c->tex) xv_check(c->tex->serial, c->has_view && c->view.set_levels ? c->view.base_level : 0, c->has_view && c->view.set_layers ? c->view.min_layer : 0, "贴图读缓冲");
+    // 诊断：游戏把深度贴图拷回 CPU（软件遮挡剔除 / Hi-Z）时打一行，确认远处物体消失是否来自这条延迟一帧的读回。
+    // Diagnostic: log depth-texture readbacks (CPU occlusion culling / Hi-Z), to check whether the one-frame-delayed
+    // readback is what culls distant geometry.
+    { static uint64_t n; if (c->tex && (c->tex->d.format == NVN_FORMAT_DEPTH24 || c->tex->d.format == NVN_FORMAT_DEPTH32F ||
+          c->tex->d.format == NVN_FORMAT_DEPTH24_STENCIL8 || c->tex->d.format == NVN_FORMAT_DEPTH32F_STENCIL8)) {
+        if (n++ < 24) MLOG("P5R 深度读回 格式 %#x %ux%u 区域 %u,%u %ux%u", c->tex->d.format, c->tex->d.width, c->tex->d.height,
+                           c->r.xoffset, c->r.yoffset, c->r.width, c->r.height); } }
     id<MTLTexture> t = tex_mtl(c->tex);
     if (!t) return;
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
@@ -6201,6 +6208,10 @@ static void copy_t2b(const p_copy_b2t *c) {
 // CPU texture read (ReadTexels): for packaged textures the pool memory is the ground truth, de-layout and read directly; the rest are read back from the MTLTexture by blit (the caller has already waited for the GPU per NVN rules)
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
     xv_check(t->serial, level, layer0, "CPU读回");
+    { static uint64_t n; if (t && (t->d.format == NVN_FORMAT_DEPTH24 || t->d.format == NVN_FORMAT_DEPTH32F ||
+          t->d.format == NVN_FORMAT_DEPTH24_STENCIL8 || t->d.format == NVN_FORMAT_DEPTH32F_STENCIL8)) {
+        if (n++ < 24) MLOG("P5R 深度读回(ReadTexels) 格式 %#x %ux%u 区域 %u,%u %ux%u", t->d.format, t->d.width, t->d.height,
+                           r->xoffset, r->yoffset, r->width, r->height); } }
     PD("U cpu_read ser=%llu lv%u sl%u xyz=%d,%d,%d size=%d,%d,%d dst=%p row=%lu img=%lu", t->serial, level, layer0, r->xoffset, r->yoffset, r->zoffset, r->width, r->height, r->depth, dst, (unsigned long)row, (unsigned long)img);
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     size_t wb = (size_t)((r->width + bw - 1) / bw) * bpb, hb = (r->height + bh - 1) / bh, x0 = (size_t)(r->xoffset / bw) * bpb, y0 = r->yoffset / bh;
