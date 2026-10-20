@@ -252,6 +252,15 @@ static void defer_obj_release_ex(id obj, int keep_resident) {
 static void defer_obj_release(id obj) { defer_obj_release_ex(obj, 0); }
 static void defer_obj_unref(id obj) { defer_obj_release_ex(obj, 1); }
 static void defer_drain(void) {
+#if !DM_NVN_M3
+    // Metal 4 adaptation: a retired object may still be referenced by an in-flight MTL4 command
+    // buffer's argument table; freeing it or dropping it from the residency set faults the GPU
+    // (kIOGPUCommandBufferCallbackErrorPageFault). Keep every retired object alive and resident
+    // for the rest of the process; memory is bounded by the session and the phone has headroom.
+    // M4 适配：退役对象可能仍被在途命令缓冲的参数表引用；释放或撤驻留就会 GPU 页错误。
+    // 这里全部保活、保持驻留到进程结束。
+    return;
+#else
     NSMutableArray<NvDeferredRelease *> *ready = [NSMutableArray array];
     pthread_mutex_lock(&g_deferred_mu);
     for (NSInteger i = g_deferred.count - 1; i >= 0; i--) {
@@ -269,6 +278,7 @@ static void defer_drain(void) {
         }
         d->object = nil;
     }
+#endif
 }
 
 static pthread_mutex_t g_bf_want_mu = PTHREAD_MUTEX_INITIALIZER;
