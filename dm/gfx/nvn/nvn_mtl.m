@@ -1770,6 +1770,14 @@ static int g_pso_dirty = 1, g_dss_dirty = 1;   // 回放中改了管线 / 深度
 static uint64_t g_stat_args_enc, g_stat_args_reuse;   // 参数缓冲：新编 / 复用次数 | Argument buffer: new-encode / reuse counts
 static uint64_t g_stat_draw, g_stat_pass, g_bw_load, g_bw_store, g_pass_full_rw, g_udc_saved_bytes;   // 带宽账：附件读入 / 写出字节、全量读写通道数 | Bandwidth ledger: attachment load / store bytes, number of full load-store passes
 static uint64_t g_p5r_skipped_depth_draws;
+// 性能模式状态探针：不改变提交行为。性能模式没有命中时，区分是开关未生效、掩码条件不成立，
+// 还是程序解析后仍有片元着色器；每 60 帧汇总一次最近窗口。
+// Performance-mode state probe: does not change submission. When the mode misses, distinguish an
+// ineffective switch from a non-zero mask or a resolved fragment shader; summarise a 60-frame window.
+static uint64_t g_p5r_probe_draws, g_p5r_probe_mask0, g_p5r_probe_no_fs, g_p5r_probe_no_pr;
+static uint64_t g_p5r_probe_no_color, g_p5r_probe_color, g_p5r_probe_depth, g_p5r_probe_stencil;
+static uint64_t g_p5r_probe_frame;
+static int g_p5r_probe_env_logged;
 // DM_NVN_SUBPROF=1: account QueueSubmitCommands internals on the submit thread.
 // The normal path performs no clock reads when the switch is off.
 // DM_NVN_SUBPROF=1：只统计提交线程内部各阶段；开关关闭时不读取时钟。
@@ -5407,12 +5415,52 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if((dw?dw->count:di->count)==0 || !instances)return;
     uint64_t prof_state0 = subprof_now();
     int skip_depth_mode = p5r_skip_depth_draws() && g_ruler_truth == 0;
+    if (skip_depth_mode) {
+        if (!g_p5r_probe_env_logged) {
+            const char *probe_env = getenv("DM_P5R_SKIP_DEPTH_DRAW");
+            MLOG("P5R perf probe: env=%s enabled=%d ruler=%d", probe_env ? probe_env : "(unset)",
+                 skip_depth_mode, g_ruler_truth);
+            g_p5r_probe_env_logged = 1;
+        }
+        g_p5r_probe_draws++;
+        if (S.chmask.mask == 0) g_p5r_probe_mask0++;
+    }
     if (skip_depth_mode && S.chmask.mask == 0) {
         if (g_p5r_skipped_depth_draws++ == 0)
             MLOG("P5R 性能模式：跳过颜色写入掩码为 0 的深度/阴影绘制（DM_P5R_SKIP_DEPTH_DRAW=0 可关闭）");
         return;
     }
     __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3);
+    if (skip_depth_mode) {
+        int colors = 0;
+        if (!pr) g_p5r_probe_no_pr++;
+        if (pr && !pr->sh[1]) g_p5r_probe_no_fs++;
+        for (int i = 0; R.has_rt && i < R.rt.n; i++) if (R.rt.color[i]) colors++;
+        if (!colors) g_p5r_probe_no_color++; else g_p5r_probe_color++;
+        if (R.has_rt && R.rt.depth) g_p5r_probe_depth++;
+        if (R.has_rt && R.rt.depth &&
+            (R.rt.depth->d.format == NVN_FORMAT_DEPTH24_STENCIL8 ||
+             R.rt.depth->d.format == NVN_FORMAT_DEPTH32F_STENCIL8))
+            g_p5r_probe_stencil++;
+        uint64_t frame = atomic_load(&g_cur_frame);
+        if (frame != g_p5r_probe_frame && frame % 60 == 0) {
+            g_p5r_probe_frame = frame;
+            NSUInteger cw = 0, ch = 0, dw2 = 0, dh = 0;
+            if (R.has_rt && R.rt.color[0]) { cw = R.rt.color[0]->d.width; ch = R.rt.color[0]->d.height; }
+            if (R.has_rt && R.rt.depth) { dw2 = R.rt.depth->d.width; dh = R.rt.depth->d.height; }
+            MLOG("P5R perf probe f=%llu pass=%llu draws=%llu mask0=%llu no_fs=%llu no_pr=%llu no_color=%llu "
+                 "color=%llu depth=%llu stencil=%llu chmask=%#x color0=%lux%llu depth0=%lux%llu",
+                 (unsigned long long)frame, (unsigned long long)(g_stat_pass + 1),
+                 (unsigned long long)g_p5r_probe_draws, (unsigned long long)g_p5r_probe_mask0,
+                 (unsigned long long)g_p5r_probe_no_fs, (unsigned long long)g_p5r_probe_no_pr,
+                 (unsigned long long)g_p5r_probe_no_color, (unsigned long long)g_p5r_probe_color,
+                 (unsigned long long)g_p5r_probe_depth, (unsigned long long)g_p5r_probe_stencil,
+                 S.chmask.mask, (unsigned long long)cw, (unsigned long long)ch,
+                 (unsigned long long)dw2, (unsigned long long)dh);
+            g_p5r_probe_draws = g_p5r_probe_mask0 = g_p5r_probe_no_fs = g_p5r_probe_no_pr = 0;
+            g_p5r_probe_no_color = g_p5r_probe_color = g_p5r_probe_depth = g_p5r_probe_stencil = 0;
+        }
+    }
     if (skip_depth_mode && pr && !pr->sh[1]) {
         if (g_p5r_skipped_depth_draws++ == 0)
             MLOG("P5R 性能模式：跳过无片元着色器的深度/阴影绘制（DM_P5R_SKIP_DEPTH_DRAW=0 可关闭）");
