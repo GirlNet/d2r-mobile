@@ -5213,6 +5213,29 @@ static prepared_indices prepare_indices(const p_draw_idx *draw) {
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     int instances=dw?dw->instance_count_minus_one+1:(di->instances?di->instances:1);
     if((dw?dw->count:di->count)==0 || !instances)return;
+    // 整帧清点（DM_P5R_FRAME_DUMP=1）：每 300 帧中的一帧，把每一笔绘制的着色器、顶点数与第一张贴图记下来，
+    // 用来找出字幕那一层究竟走的哪个着色器/图集。
+    // Whole-frame census (DM_P5R_FRAME_DUMP=1): for one frame out of every 300, record each draw's shaders,
+    // vertex count and first texture, to identify the subtitle layer.
+    { static int fdump = -1; if (fdump < 0) fdump = getenv("DM_P5R_FRAME_DUMP") != NULL;
+      if (fdump) {
+          uint64_t f = atomic_load(&g_cur_frame); static uint64_t last, lines;
+          if (f != last && f % 300 == 0 && f > 3000 && lines < 1500) {
+              last = f; lines++;
+              __unsafe_unretained NvProg *cp = program_resources(programs_get(&S.programs),3);
+              uint64_t ser = 0, tw2 = 0, th2 = 0; int tid0 = 0;
+              if (cp && cp->sh[1]) for (int i = 0; i < cp->sh[1]->rf.nb; i++) {
+                  const nvn_rbind *b = &cp->sh[1]->rf.b[i];
+                  if (b->kind != NVN_RB_TEX && b->kind != NVN_RB_IMG && b->kind != NVN_RB_TBUF) continue;
+                  int t = (int)nvn_handle_texture_id(nvn_rbind_handle(b, S.tex[1], S.samp[1], S.img[1]));
+                  if (t > 0 && t < g_ntreg && g_treg[t].ok) { tid0 = t; ser = g_treg[t].t.serial; tw2 = g_treg[t].t.d.width; th2 = g_treg[t].t.d.height; break; }
+              }
+              LOG("P5R draw dump f=%llu pass=%llu vs=%s fs=%s count=%u tex=%llu %llux%llu",
+                  (unsigned long long)f, (unsigned long long)(g_stat_pass + 1),
+                  cp && cp->sh[0] ? cp->sh[0]->key : "-", cp && cp->sh[1] ? cp->sh[1]->key : "-",
+                  dw ? dw->count : di->count, (unsigned long long)ser, (unsigned long long)tw2, (unsigned long long)th2);
+          }
+      } }
     // 诊断：设置菜单文字着色器首次绘制时，记下配对的顶点着色器与顶点布局。
     // 文字 = 图集采样 × 顶点色；任一项取成 0 都会让字完全透明。
     // Diagnostic: on the first draw of the settings text shader, record the paired vertex shader
