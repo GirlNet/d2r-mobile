@@ -3000,6 +3000,15 @@ static int cond_ignore(void) {
     }
     return enabled;
 }
+static int p5r_no_cull(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("DM_P5R_NO_CULL");
+        enabled = value && strcmp(value, "0");
+        if (enabled) MLOG("P5R 剔除：DM_P5R_NO_CULL=1，关闭背面剔除（诊断）");
+    }
+    return enabled;
+}
 static void cond_invalidate(void) {
     for (unsigned i = 0; i < sizeof g_cond_cache / sizeof *g_cond_cache; i++)
         g_cond_cache[i].valid = 0;
@@ -5703,7 +5712,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         } else if (g_bloomq.state) { RED_ONCE(61, "泛光 1/4 起点：链中途出现别的绘制，本帧泛光不完整"); bloomq_reset(); }
       }
     }
-    if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
+    if (S.poly.cull == NVN_FACE_FRONT_AND_BACK && !p5r_no_cull()) return;
     // 续用的通道可能是少挂深度 / 模板开的（开法 2 / 3 / 4）：这次绘制要的平面没挂，就在它之前切开（重开时按新前瞻挂）
     // The continued render pass may have been opened with fewer depth / stencil attachments (open modes 2 / 3 / 4): if the plane this draw needs is not attached, split before it (on reopen, attach per the new lookahead)
     if (g_rt_merged && g_enc_mode != 0 && (((S.ds.dt || S.ds.dw) && !g_pass.hd) || (S.ds.st && !g_pass.hs))) {
@@ -5903,7 +5912,7 @@ frz_plain:;
     }
     subprof_record(&g_subprof_textdiag_ns, &g_subprof_textdiag_n, prof_textdiag0);
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
-    enc_r_cull(en, S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone);
+    enc_r_cull(en, p5r_no_cull() ? MTLCullModeNone : S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone);
     enc_r_winding(en, S.poly.front == NVN_FRONT_FACE_CCW ? MTLWindingCounterClockwise : MTLWindingClockwise);
     enc_r_fill(en, S.poly.mode == NVN_POLYGON_MODE_LINE ? MTLTriangleFillModeLines : MTLTriangleFillModeFill);
     enc_r_depth_clip(en, !S.depth_clamp);
