@@ -2987,9 +2987,13 @@ static struct {
     uint64_t address;
     uint32_t mode;
     uint8_t source[24];
-} g_cond_cache;
+} g_cond_cache[64];
+static unsigned g_cond_next;
 static uint64_t g_cond_waits, g_cond_hits;
-static void cond_invalidate(void) { g_cond_cache.valid = 0; }
+static void cond_invalidate(void) {
+    for (unsigned i = 0; i < sizeof g_cond_cache / sizeof *g_cond_cache; i++)
+        g_cond_cache[i].valid = 0;
+}
 static int program_writes_resources(NvProg *program) {
     if (!program) return 0;
     for (int st = 0; st < 6; st++) {
@@ -3012,11 +3016,14 @@ static int render_allowed(NvProg *program) {
     id<MTLBuffer> buffer=(__bridge id<MTLBuffer>)native;
     if(!buffer.contents)MDIE("Conditional render input is not CPU-readable");
     const uint8_t *source = (const uint8_t *)buffer.contents + offset;
-    if (g_cond_cache.valid && g_cond_cache.address == S.conditional.address &&
-        g_cond_cache.mode == S.conditional.mode &&
-        !memcmp(g_cond_cache.source, source, sizeof g_cond_cache.source)) {
-        if (g_cond_hits++ == 0) MLOG("P5R 条件渲染：同一条件区域已复用首次 GPU 读取结果");
-        return g_cond_cache.allowed;
+    for (unsigned i = 0; i < sizeof g_cond_cache / sizeof *g_cond_cache; i++) {
+        typeof(g_cond_cache[0]) *entry = &g_cond_cache[i];
+        if (entry->valid && entry->address == S.conditional.address &&
+            entry->mode == S.conditional.mode &&
+            !memcmp(entry->source, source, sizeof entry->source)) {
+            if (g_cond_hits++ == 0) MLOG("P5R 条件渲染：条件区域已复用首次 GPU 读取结果");
+            return entry->allowed;
+        }
     }
     // A conservative synchronous path. Waiting on g_done includes CPU query
     // callbacks, so ReportCounter data and preceding GPU writes are both ready.
@@ -3026,11 +3033,13 @@ static int render_allowed(NvProg *program) {
     int allowed=0;
     if(!nvn_conditional_render_decode((int)S.conditional.mode,source,24,&allowed))
         MDIE("Invalid conditional render comparison");
-    g_cond_cache.valid = 1;
-    g_cond_cache.allowed = allowed;
-    g_cond_cache.address = S.conditional.address;
-    g_cond_cache.mode = S.conditional.mode;
-    memcpy(g_cond_cache.source, source, sizeof g_cond_cache.source);
+    typeof(g_cond_cache[0]) *entry =
+        &g_cond_cache[g_cond_next++ % (sizeof g_cond_cache / sizeof *g_cond_cache)];
+    entry->valid = 1;
+    entry->allowed = allowed;
+    entry->address = S.conditional.address;
+    entry->mode = S.conditional.mode;
+    memcpy(entry->source, source, sizeof entry->source);
     vis_fold_completed();mtl_sub_begin();
     if (program_writes_resources(program)) cond_invalidate();
     return allowed;
@@ -4222,9 +4231,9 @@ static int state_op(uint32_t op, const void *a) {
         case OP_DEPTH_CLAMP: S.depth_clamp = *(const uint32_t *)a != 0; break;
         case OP_RASTER_DISCARD: {uint32_t value=*(const uint32_t *)a!=0;if(S.raster_discard!=value){S.raster_discard=value;g_pso_dirty=1;}break;}
         case OP_SAMPLE_MASK: if(S.sample_mask!=*(const uint32_t *)a){S.sample_mask=*(const uint32_t *)a;g_pso_dirty=1;}break;
-        case OP_RENDER_ENABLE: if(S.render_enable!=*(const uint32_t *)a || S.conditional_active){S.render_enable=*(const uint32_t *)a;S.conditional_active=0;cond_invalidate();g_pso_dirty=1;}break;
+        case OP_RENDER_ENABLE: if(S.render_enable!=*(const uint32_t *)a || S.conditional_active){S.render_enable=*(const uint32_t *)a;S.conditional_active=0;g_pso_dirty=1;}break;
         case OP_CONSERVATIVE_RASTER: if(S.conservative_raster!=*(const uint32_t *)a){S.conservative_raster=*(const uint32_t *)a;g_pso_dirty=1;}break;
-        case OP_CONDITIONAL_RENDER: S.conditional=*(const p_conditional_render *)a;S.conditional_active=1;S.render_enable=1;cond_invalidate();g_pso_dirty=1;break;
+        case OP_CONDITIONAL_RENDER: S.conditional=*(const p_conditional_render *)a;S.conditional_active=1;S.render_enable=1;g_pso_dirty=1;break;
         case OP_DEPTH_BOUNDS: S.depth_bounds=*(const p_depth_bounds *)a;break;
         case OP_PRIMITIVE_RESTART: S.restart = *(const p_primitive_restart *)a; break;
         case OP_DYNAMIC_STATE: {
