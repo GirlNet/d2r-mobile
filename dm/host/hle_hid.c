@@ -463,13 +463,24 @@ HLE_FORCE_OPTIONAL("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", "Host
 HLE_FORCE_OPTIONAL("_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE", "Full-key host input does not depend on single Joy-Con orientation", void, h_hid_SetJoyHold, int type) { (void)type; }
 HLE_FORCE_OPTIONAL("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", "Host full-key pad requires no Horizon Joy-Con pairing", void, h_hid_SetJoyDual, const uint32_t *id) { (void)id; }
 
-// 震动：设备数 0，游戏不会再初始化 / 发送
-// Vibration: device count 0, the game will not initialize / send any further
-HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可；宿主不支持（返回 bool）", unsigned, h_hid_VibPermit, void) { return 0; }
+// 震动：D2R 仍是设备数 0；P5R 放开许可并返回一个句柄，把 VibrationValue 交给 Taptic Engine
+// Vibration: D2R still reports 0 devices; P5R permits vibration, returns one handle and forwards the value to the Taptic Engine
+__attribute__((weak)) void dm_haptics_set(float low_amp, float low_freq, float high_amp, float high_freq) { (void)low_amp; (void)low_freq; (void)high_amp; (void)high_freq; }
+HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可（P5R 交给 Taptic Engine）", unsigned, h_hid_VibPermit, void) { return dm_guest_d2r() ? 0 : 1; }
 HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",
-          "震动设备；宿主 0 个", int, h_hid_GetVibHandles, void *out, int max, const uint32_t *id, uint32_t style) { (void)out; (void)max; (void)id; (void)style; return 0; }
+          "震动设备（P5R 一个；D2R 零个）", int, h_hid_GetVibHandles, void *out, int max, const uint32_t *id, uint32_t style) {
+    (void)id; (void)style;
+    if (dm_guest_d2r() || !out || max < 1) return 0;
+    *(uint64_t *)out = 0;   // a single host handle | 一个宿主句柄
+    return 1;
+}
 HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "震动；宿主不支持", void, h_hid_InitVib, const void *h) { (void)h; }
-HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "震动；宿主不支持", void, h_hid_SendVib, const void *h, const void *v) { (void)h; (void)v; }
+HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "震动 → Taptic Engine", void, h_hid_SendVib, const void *h, const void *v) {
+    (void)h;
+    if (dm_guest_d2r() || !v) return;
+    const float *f = v;   // nn::hid::VibrationValue { amplitude_low, frequency_low, amplitude_high, frequency_high }
+    dm_haptics_set(f[0], f[1], f[2], f[3]);
+}
 
 // 触屏：nn::hid::TouchScreenState<16> = { int64 sampling; int32 count; int32 _r; TouchState touches[16]（各 0x28） }
 // 内容由 hle_touch.c 按前端推来的触点填（布局与短按锁存见该文件）；游戏只看第 0 份，返回写入的状态份数 1
