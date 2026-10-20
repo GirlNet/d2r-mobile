@@ -3018,6 +3018,12 @@ static int force_visible(void) {
     }
     return enabled;
 }
+// 诊断 DM_P5R_OBJLOG=1：每 300 帧中的连续 2 帧，逐绘制记「着色器键 + 物体矩阵哈希 + 顶点数」，
+// 用来对比「物体可见(近) vs 消失(远)」两帧：若该物体的绘制在远帧仍出现→是渲染 bug；消失→游戏 CPU 剔除。
+// Diagnostic DM_P5R_OBJLOG=1: for 2 consecutive frames out of every 300, record per-draw "shader key +
+// object-matrix hash + vertex count". Diff the near (visible) vs far (vanished) frames: if the draw is still
+// present in the far frame it is a rendering bug; if gone, the game culled it on the CPU.
+static int objlog_on(void) { static int on = -1; if (on < 0) { on = getenv("DM_P5R_OBJLOG") != NULL; if (on) MLOG("P5R 物体追踪：DM_P5R_OBJLOG=1 开"); } return on; }
 static void cond_invalidate(void) {
     for (unsigned i = 0; i < sizeof g_cond_cache / sizeof *g_cond_cache; i++)
         g_cond_cache[i].valid = 0;
@@ -5966,6 +5972,24 @@ frz_plain:;
         }
     }
     g_stat_draw++;
+    if (objlog_on() && pr && pr->sh[0]) {   // 物体追踪：每 300 帧中的连续 3 帧逐绘制记物体矩阵哈希
+        uint64_t fr = atomic_load(&g_cur_frame);
+        if (fr > 3000 && fr % 120 < 3) {
+            NvShader *v = pr->sh[0]; uint64_t h64 = 0; int got = 0;
+            for (int i = 0; i < v->rf.nb && !got; i++) {
+                const nvn_rbind *b = &v->rf.b[i];
+                if (b->kind == NVN_RB_CBUF && b->reg < 16) {
+                    const p_bind_buf *u = &S.ubo[0][b->reg]; void *mb; uint64_t mo; const uint8_t *base;
+                    if (u->addr && u->size >= 64 && !pend_hits(u->addr, u->size) && mtl_addr(u->addr, u->size, &mb, &mo) && (base = [(__bridge id<MTLBuffer>)mb contents])) {
+                        uint64_t h = 1469598103934665603ull;
+                        for (uint64_t q = 0; q < 64; q++) h = (h ^ base[mo + q]) * 1099511628211ull;
+                        h64 = h; got = 1;
+                    }
+                }
+            }
+            LOG("obj key=%s h=%016llx vc=%d", pr->sh[0]->key, (unsigned long long)h64, dw ? dw->count : di->count);
+        }
+    }
     { static int tg; if (!tg) { tg = 1; const char *e = getenv("DM_TEST_GHOST"); float v[8];   // 测试开关 DM_TEST_GHOST=px,py,gx,gy,gw,gh,cx,cy（归一化；按下点、格网、跟手图中心）：不经前端直接开跟手图（Mac 宿主截图验证用） | Test switch DM_TEST_GHOST=px,py,gx,gy,gw,gh,cx,cy (normalized; press point, grid, center of the drag-follow image): turns on the drag-follow image directly without going through the front end (for Mac host screenshot verification)
         if (e && sscanf(e, "%f,%f,%f,%f,%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]) == 8) mtl_ui_ghost(1, v[0], v[1], &v[2], v[6], v[7]); } }
     if (dw && atomic_load(&g_ghost_on)) ghost_note(dw);
