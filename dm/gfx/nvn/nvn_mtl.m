@@ -1769,6 +1769,7 @@ static int g_enc_vis, g_enc_has_vis;   // 本编码器当前的可见性计数�
 static int g_pso_dirty = 1, g_dss_dirty = 1;   // 回放中改了管线 / 深度模板相关状态 | Pipeline / depth-stencil related state was changed during replay
 static uint64_t g_stat_args_enc, g_stat_args_reuse;   // 参数缓冲：新编 / 复用次数 | Argument buffer: new-encode / reuse counts
 static uint64_t g_stat_draw, g_stat_pass, g_bw_load, g_bw_store, g_pass_full_rw, g_udc_saved_bytes;   // 带宽账：附件读入 / 写出字节、全量读写通道数 | Bandwidth ledger: attachment load / store bytes, number of full load-store passes
+static uint64_t g_p5r_skipped_depth_draws;
 // DM_NVN_SUBPROF=1: account QueueSubmitCommands internals on the submit thread.
 // The normal path performs no clock reads when the switch is off.
 // DM_NVN_SUBPROF=1：只统计提交线程内部各阶段；开关关闭时不读取时钟。
@@ -1792,6 +1793,15 @@ static inline void subprof_record(_Atomic uint64_t *ns, _Atomic uint64_t *count,
     if (!t0) return;
     atomic_fetch_add_explicit(ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0, memory_order_relaxed);
     atomic_fetch_add_explicit(count, 1, memory_order_relaxed);
+}
+static int p5r_skip_depth_draws(void) {
+    if (dm_guest_d2r()) return 0;
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("DM_P5R_SKIP_DEPTH_DRAW");
+        enabled = !(value && !strcmp(value, "0"));
+    }
+    return enabled;
 }
 // DM_NVN_PASSDUMP：逐条记通道附件 / 采样 / 出图（贴图按序号），供离线做数据流分析；P / D / R / S 行的通道号一致（= 开通道后的 g_stat_pass）
 // DM_NVN_PASSDUMP=帧号 或 起-止（含两端）
@@ -5397,6 +5407,11 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if((dw?dw->count:di->count)==0 || !instances)return;
     uint64_t prof_state0 = subprof_now();
     __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3);
+    if (pr && !pr->sh[1] && R.rt.n == 0 && g_ruler_truth == 0 && p5r_skip_depth_draws()) {
+        if (g_p5r_skipped_depth_draws++ == 0)
+            MLOG("P5R 性能模式：跳过无片元着色器的深度/阴影绘制（DM_P5R_SKIP_DEPTH_DRAW=0 可关闭）");
+        return;
+    }
     // 整帧清点（DM_P5R_FRAME_DUMP=1）：每 300 帧中的一帧，把每一笔绘制的着色器、顶点数与第一张贴图记下来，
     // 用来找出字幕那一层究竟走的哪个着色器/图集。
     // Whole-frame census (DM_P5R_FRAME_DUMP=1): for one frame out of every 300, record each draw's shaders,
