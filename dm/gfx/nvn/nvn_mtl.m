@@ -5449,8 +5449,8 @@ frz_plain:;
         // 每笔文字绘制算一次屏幕坐标：只有落在画面里的文字才需要抓目标，否则抓到的当然是空白。
         // Per text draw, compute the screen rectangle: only on-screen text is worth capturing; otherwise the
         // captured target is trivially empty.
-        static int drawn;
-        if (drawn < 200) {
+        static int drawn; static uint64_t stat_frame; static int stat_draws, stat_on;
+        {   // 每笔都统计（屏幕内 / 屏幕外），细节行只在前 60 笔、且过了启动画面之后打 | Count every draw; detail lines only for the first 60 after boot
             va_st a0 = S.attr[0];
             uint64_t n = dw ? dw->count : di->count;
             const p_bind_buf *u = &S.ubo[0][0];
@@ -5467,12 +5467,22 @@ frz_plain:;
                         float w = m1x ? m1x : 1, x = (kx * pos[0] - m1x) / w, y = (-ky * pos[1] + m1x) / w;
                         if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
                     }
-                    drawn++;
-                    LOG("P5R text rect frame=%llu pass=%llu ser=%llu ndc=%g..%g , %g..%g (count=%llu)",
-                        (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(g_stat_pass + 1),
-                        (unsigned long long)(R.rt.color[0] ? R.rt.color[0]->serial : 0), x0, x1, y0, y1, (unsigned long long)n);
-                    if (!g_ad[12].want && !g_ad[12].sent && x1 > 0 && x0 < 1 && y1 > 0 && y0 < 1 && R.rt.color[0])
-                        target_dump_request(tex_mtl(R.rt.color[0]));   // 第一笔真的落在画面里的文字，抓它这一趟 | First text that really lands on screen: capture its pass
+                    int on = x1 > 0 && x0 < 1 && y1 > -1 && y0 < 1;
+                    uint64_t fr = atomic_load(&g_cur_frame);
+                    if (fr != stat_frame) {
+                        if (stat_frame && stat_frame % 60 == 0)
+                            LOG("P5R text stats frame=%llu draws=%d onscreen=%d", (unsigned long long)stat_frame, stat_draws, stat_on);
+                        stat_frame = fr; stat_draws = 0; stat_on = 0;
+                    }
+                    stat_draws++; stat_on += on;
+                    if (on && drawn < 60 && fr > 2000) {
+                        drawn++;
+                        LOG("P5R text rect frame=%llu pass=%llu ser=%llu ndc=%g..%g , %g..%g (count=%llu)",
+                            (unsigned long long)fr, (unsigned long long)(g_stat_pass + 1),
+                            (unsigned long long)(R.rt.color[0] ? R.rt.color[0]->serial : 0), x0, x1, y0, y1, (unsigned long long)n);
+                        if (!g_ad[12].want && !g_ad[12].sent && R.rt.color[0])
+                            target_dump_request(tex_mtl(R.rt.color[0]));   // 第一笔真的落在画面里的文字，抓它这一趟 | First text that really lands on screen: capture its pass
+                    }
                 }
             }
         }
