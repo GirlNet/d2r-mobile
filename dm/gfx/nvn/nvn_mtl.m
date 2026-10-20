@@ -1958,7 +1958,9 @@ static int udc_on(void) {
 static int tbdr_on(void) {
     // The pass-merging/hoisting contracts were established for D2R. P5R uses
     // complete attachment loads/stores until its own command streams qualify.
-    if(!dm_guest_d2r())return 0;
+    // P5R experiment: DM_P5R_TBDR=1 turns the pass optimisations back on (a heavy frame has
+    // 273–317 passes with full load/store; this is the largest single lever on its submit time).
+    if(!dm_guest_d2r()){ static int p = -1; if(p<0) p = getenv("DM_P5R_TBDR") != NULL; return p; }
     static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_TBDR"), *r = getenv("DM_NVN_RULER"); v = !(e && !strcmp(e, "0")); g_ruler_truth = r && !strcmp(r, "1"); if (!v) MLOG("DM_NVN_TBDR=0：TBDR 优化全关（等价对照用）"); } return v && !g_ruler_truth;
 }
 int dm_nvn_ruler_truth(void) { tbdr_on(); return g_ruler_truth; }   // 视觉尺子真值阶段（宿主侧的被测设置据此让开，如 3D 渲染比例） | Visual ruler ground-truth phase (host-side settings under test yield accordingly, e.g. the 3D render scale)
