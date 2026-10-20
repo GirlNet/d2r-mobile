@@ -1786,6 +1786,8 @@ static _Atomic uint64_t g_subprof_rp_begin_ns, g_subprof_rp_end_ns;
 static _Atomic uint64_t g_subprof_tex_prep_ns, g_subprof_args_ns;
 static _Atomic uint64_t g_subprof_draw_state_ns, g_subprof_draw_call_ns;
 static _Atomic uint64_t g_subprof_pso_ns, g_subprof_dss_ns, g_subprof_fixed_ns, g_subprof_vbuf_ns;
+static _Atomic uint64_t g_subprof_program_ns, g_subprof_preopen_ns, g_subprof_textdiag_ns;
+static _Atomic uint64_t g_subprof_program_n, g_subprof_preopen_n, g_subprof_textdiag_n;
 static _Atomic uint64_t g_subprof_rp_begin_n, g_subprof_rp_end_n;
 static _Atomic uint64_t g_subprof_tex_prep_n, g_subprof_args_n;
 static _Atomic uint64_t g_subprof_draw_state_n, g_subprof_draw_call_n;
@@ -5453,6 +5455,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         return;
     }
     __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3);
+    subprof_record(&g_subprof_program_ns, &g_subprof_program_n, prof_state0);
     if (skip_depth_mode && p5r_perf_probe()) {
         int colors = 0;
         if (!pr) g_p5r_probe_no_pr++;
@@ -5488,6 +5491,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
             MLOG("P5R 性能模式：跳过无片元着色器的深度/阴影绘制（DM_P5R_SKIP_DEPTH_DRAW=0 可关闭）");
         return;
     }
+    uint64_t prof_preopen0 = subprof_now();
     // 整帧清点（DM_P5R_FRAME_DUMP=1）：每 300 帧中的一帧，把每一笔绘制的着色器、顶点数与第一张贴图记下来，
     // 用来找出字幕那一层究竟走的哪个着色器/图集。
     // Whole-frame census (DM_P5R_FRAME_DUMP=1): for one frame out of every 300, record each draw's shaders,
@@ -5661,6 +5665,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         prepare_shader_textures(pr->sh[0],0,vertex_textures);
         prepare_shader_textures(pr->sh[1],1,fragment_textures);
     }
+    subprof_record(&g_subprof_preopen_ns, &g_subprof_preopen_n, prof_preopen0);
 #ifdef NVN_RT_RANGE_TEST
     if (!g_enc) rr_begin();
 #endif
@@ -5734,6 +5739,7 @@ frz_plain:;
     // 位置由 vp_c3 里的屏幕尺寸换算；那块为 0 时顶点会落到屏幕外或变成 NaN。
     // Text shader: on the first real draw, record viewport / scissor / cull and its uniform block.
     // Positions come from the screen size in vp_c3; a zero block sends vertices off-screen or to NaN.
+    uint64_t prof_textdiag0 = subprof_now();
     if (p5r_draw_debug() && !dm_guest_d2r() && pr->sh[1] && !strncmp(pr->sh[1]->key, "720fc52850f3c28d", 16)) {
         static int once2;
         if (!once2++) {
@@ -5826,6 +5832,7 @@ frz_plain:;
             }
         }
     }
+    subprof_record(&g_subprof_textdiag_ns, &g_subprof_textdiag_n, prof_textdiag0);
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
     enc_r_cull(en, S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone);
     enc_r_winding(en, S.poly.front == NVN_FRONT_FACE_CCW ? MTLWindingCounterClockwise : MTLWindingClockwise);
@@ -7619,11 +7626,15 @@ void mtl_subprof_report(uint64_t frames) {
     uint64_t ds = atomic_exchange(&g_subprof_draw_state_ns, 0), dc = atomic_exchange(&g_subprof_draw_call_ns, 0);
     uint64_t po = atomic_exchange(&g_subprof_pso_ns, 0), dss = atomic_exchange(&g_subprof_dss_ns, 0);
     uint64_t fx = atomic_exchange(&g_subprof_fixed_ns, 0), vb = atomic_exchange(&g_subprof_vbuf_ns, 0);
+    uint64_t pg = atomic_exchange(&g_subprof_program_ns, 0), po2 = atomic_exchange(&g_subprof_preopen_ns, 0);
+    uint64_t td = atomic_exchange(&g_subprof_textdiag_ns, 0);
     uint64_t rbn = atomic_exchange(&g_subprof_rp_begin_n, 0), ren = atomic_exchange(&g_subprof_rp_end_n, 0);
     uint64_t tpn = atomic_exchange(&g_subprof_tex_prep_n, 0), arn = atomic_exchange(&g_subprof_args_n, 0);
     uint64_t dsn = atomic_exchange(&g_subprof_draw_state_n, 0), dcn = atomic_exchange(&g_subprof_draw_call_n, 0);
     uint64_t pon = atomic_exchange(&g_subprof_pso_n, 0), dssn = atomic_exchange(&g_subprof_dss_n, 0);
     uint64_t fxn = atomic_exchange(&g_subprof_fixed_n, 0), vbn = atomic_exchange(&g_subprof_vbuf_n, 0);
+    uint64_t pgn = atomic_exchange(&g_subprof_program_n, 0), po2n = atomic_exchange(&g_subprof_preopen_n, 0);
+    uint64_t tdn = atomic_exchange(&g_subprof_textdiag_n, 0);
     double d = frames ? (double)frames : 1.0;
     MLOG("提交内部分段 至帧 %llu：通道开始 %.2f ms/帧（%llu 次）、通道结束 %.2f ms/帧（%llu 次）、"
          "贴图预解析 %.2f ms/帧（%llu 次）、参数块 %.2f ms/帧（%llu 次）、"
@@ -7635,6 +7646,9 @@ void mtl_subprof_report(uint64_t frames) {
          dc / 1e6 / d, (unsigned long long)dcn, po / 1e6 / d, (unsigned long long)pon,
          dss / 1e6 / d, (unsigned long long)dssn, fx / 1e6 / d, (unsigned long long)fxn,
          vb / 1e6 / d, (unsigned long long)vbn);
+    MLOG("绘制细项 程序 %.2f ms/帧（%llu）、开通道前 %.2f（%llu）、文字诊断 %.2f（%llu）",
+         pg / 1e6 / d, (unsigned long long)pgn, po2 / 1e6 / d,
+         (unsigned long long)po2n, td / 1e6 / d, (unsigned long long)tdn);
 }
 uint64_t mtl_ds_omit(void) { return g_stat_ds_omit; }
 void mtl_bw(uint64_t *load, uint64_t *store, uint64_t *full) { *load = g_bw_load; *store = g_bw_store; *full = g_pass_full_rw; }
