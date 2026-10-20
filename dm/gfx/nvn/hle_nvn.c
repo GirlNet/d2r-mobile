@@ -1461,14 +1461,19 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     if (idx >= 0 && idx < o->ntex && idx < 4) o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // 只入队，立即返回 | enqueue only, return immediately
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);
-    // 诊断：每 300 帧记一行「游戏提交 vs 宿主编码」的绘制条数，区分物体消失是游戏没提交（CPU 剔除）还是宿主丢绘制。
-    // Diagnostic: every 300 frames log 'guest-submitted vs host-encoded' draw counts, to tell whether disappearing objects
-    // are culled by the game on the CPU (not submitted) or dropped by the host.
-    { static uint64_t last_report; uint64_t submits = atomic_load(&g_hle_draw_submits);
-      if (f >= last_report + 300) { last_report = f;
-        LOG("[nvn] 绘制提交累计 %llu / 编码累计 %llu / 差 %llu（帧 %llu，通道 %llu）",
-            (unsigned long long)submits, (unsigned long long)dr, (unsigned long long)(submits > dr ? submits - dr : 0),
-            (unsigned long long)f, (unsigned long long)ps); } }
+    // 诊断：每 30 帧记一行「游戏提交 vs 宿主编码」的绘制条数（含本段增量），区分物体消失是游戏没提交（CPU 剔除，
+    // 增量骤降）还是宿主丢绘制（差 > 0）或画出来不可见（增量不变）。帧间隔按实况调整，赌场大厅约 20fps → 30 帧 ≈ 1.5s。
+    // Diagnostic: every 30 frames log 'guest-submitted vs host-encoded' draw counts (with deltas), to tell whether a
+    // disappearing object is culled on the CPU by the game (delta drops), dropped by the host (diff > 0), or drawn but
+    // invisible (delta unchanged).
+    { static uint64_t last_report, last_submits, last_dr; uint64_t submits = atomic_load(&g_hle_draw_submits);
+      if (f >= last_report + 30) { last_report = f;
+        LOG("[nvn] 绘制 提交累计 %llu(+%llu) / 编码累计 %llu(+%llu) / 差 %llu（帧 %llu，通道 %llu）",
+            (unsigned long long)submits, (unsigned long long)(submits - last_submits),
+            (unsigned long long)dr, (unsigned long long)(dr - last_dr),
+            (unsigned long long)(submits > dr ? submits - dr : 0),
+            (unsigned long long)f, (unsigned long long)ps);
+        last_submits = submits; last_dr = dr; } }
     if ((g_frame + 1) % TWIN == 0) {
         extern void mtl_subprof_report(uint64_t frames);
         mtl_subprof_report(TWIN);
