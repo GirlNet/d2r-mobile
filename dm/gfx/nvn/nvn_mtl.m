@@ -5507,12 +5507,12 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     }
     id<MTLTexture> vertex_textures[NVN_REFL_MAXB]={nil},fragment_textures[NVN_REFL_MAXB]={nil};
     if(!dm_guest_d2r()) {
-        // Reusing an argument block already contains resolved resource IDs. Avoid
-        // resolving every reflection entry a second time on that path.
-        // 参数块复用时资源 ID 已在块内，省掉整份绑定的重复解析。
-        if (!args_reusable(pr->sh[0], 0)) prepare_shader_textures(pr->sh[0],0,vertex_textures);
-        int movie = pr->sh[1] && !strncmp(pr->sh[1]->key, "372fb3bf90397b4e", 16);
-        if (movie || !args_reusable(pr->sh[1], 1)) prepare_shader_textures(pr->sh[1],1,fragment_textures);
+        // Resolve the current binding once before opening the encoder. A cached
+        // argument block cannot be trusted to prove that a guest texture handle
+        // still has a live descriptor.
+        // 打开编码器前先解析当前绑定；缓存的参数块不能证明客体贴图句柄仍然有效。
+        prepare_shader_textures(pr->sh[0],0,vertex_textures);
+        prepare_shader_textures(pr->sh[1],1,fragment_textures);
     }
 #ifdef NVN_RT_RANGE_TEST
     if (!g_enc) rr_begin();
