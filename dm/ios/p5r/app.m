@@ -15,6 +15,7 @@
 extern UIView *dm_gamepad_view(CGRect frame);
 extern void dm_gamepad_reset(void);
 extern void dm_haptics_stop(void);
+extern void dm_haptics_ios_init(void);
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -296,7 +297,7 @@ static void *runHost(void *unused) {
 @end
 @implementation P5RApp
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
-    (void)application; (void)options; self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    (void)application; (void)options; dm_haptics_ios_init(); self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     controller = [P5RController new]; self.window.rootViewController = controller; [self.window makeKeyAndVisible]; return YES;
 }
 - (void)applicationWillResignActive:(UIApplication *)application {
