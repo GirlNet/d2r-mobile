@@ -551,6 +551,7 @@ static zskip_zero g_zskip_zero[4096]; static int g_zskip_n, g_zskip_count;
 static zskip_zero g_zskip_cand[8]; static uint8_t g_zskip_cand_ok[8];
 static void zskip_clear(void);
 static int tbdr_on(void);
+static int p5r_rt_continue_on(void);
 static id g_cb;
 static BENC g_blit;
 static NSMutableArray<dispatch_block_t> *g_commit_blocks;
@@ -629,6 +630,7 @@ void mtl_sub_begin(void) {
 #endif
     atlas_dump_begin();   // 上一批已提交的图集内容现在可以读回（排在本提交最前面） | Read back atlases committed by earlier batches (placed first in this submit)
     g_commit_blocks = [NSMutableArray array];
+    { static int once; if (!once++) MLOG("P5R 通道选项：RT_CONTINUE=%d TBDR=%d", p5r_rt_continue_on(), tbdr_on()); }
     g_npost = 0; g_vis = nil; g_vis_n = 0; g_vis_cur = -1; g_npend = 0; g_pend_over = 0;
     zskip_clear(); g_zskip_count = 0;
     int pick = -1;
