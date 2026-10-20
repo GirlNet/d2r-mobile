@@ -2395,6 +2395,9 @@ static void shmap_load(void) {
     NSString *vertex_source,*vertex_entry; NSMutableDictionary<NSNumber *,id<MTLFunction>> *vertex_variants;
     NSString *fragment_source,*fragment_entry; NSMutableDictionary<NSNumber *,id<MTLFunction>> *fragment_variants;
     NSString *resource_source,*resource_entry; NSMutableDictionary<NSData *,NvShader *> *resource_variants;
+    __unsafe_unretained NvShader *stencil_cache;
+    uint64_t stencil_cache_key;
+    int stencil_cache_ready;
     // 上次编好的参数缓冲
     // The argument buffer encoded last time
     id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass;   // ab_pass：编这块参数的渲染通道序号——只在同一通道内复用（跨通道 / 跨提交的块所在 arena 可能已回收重写） | ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
@@ -3019,6 +3022,19 @@ static void state_reset(void) {
 // in the existing pipeline key, so rebinding a depth view selects the base again.
 static NvShader *shader_stencil_variant(NvShader *shader) {
     if(!shader||dm_guest_d2r()||!shader->rf.guarded_candidate)return shader;
+    uint64_t cache_key = (g_reg_gen ^ (g_ser_gen * 11400714819323198485ull)) * 1099511628211ull;
+    int relevant = 0;
+    for(int i=0;i<shader->rf.nb;i++) {
+        const nvn_rbind *b=&shader->rf.b[i];
+        if(b->kind!=NVN_RB_TEX||b->dpf!=NVN_DPF_FLOAT||b->aid>=64)continue;
+        uint64_t handle=nvn_rbind_handle(b,S.tex[shader->stage],S.samp[shader->stage],S.img[shader->stage]);
+        cache_key = (cache_key ^ handle ^ (uint64_t)b->aid) * 1099511628211ull;
+        relevant = 1;
+    }
+    if(!relevant)return shader;
+    if(shader->stencil_cache_ready && shader->stencil_cache_key==cache_key &&
+       shader->stencil_cache)
+        return shader->stencil_cache;
     uint8_t kinds[64]={0};int any=0;
     pthread_mutex_lock(&g_rmu);
     for(int i=0;i<shader->rf.nb;i++) {
@@ -3033,10 +3049,21 @@ static NvShader *shader_stencil_variant(NvShader *shader) {
             kinds[b->aid]=NVN_DPF_UINT,any=1;
     }
     pthread_mutex_unlock(&g_rmu);
-    if(!any)return shader;
+    if(!any) {
+        shader->stencil_cache = shader;
+        shader->stencil_cache_key = cache_key;
+        shader->stencil_cache_ready = 1;
+        return shader;
+    }
     NSData *identity=[NSData dataWithBytes:kinds length:sizeof kinds];
     @synchronized(shader) {
-        NvShader *variant=shader->resource_variants[identity];if(variant)return variant;
+        NvShader *variant=shader->resource_variants[identity];
+        if(variant) {
+            shader->stencil_cache = variant;
+            shader->stencil_cache_key = cache_key;
+            shader->stencil_cache_ready = 1;
+            return variant;
+        }
         if(!shader->resource_source)MDIE("P5R stencil load requires retained MSL source: %s",shader->key);
         char *converted=NULL,error[160];uint64_t applied=0;
         if(nvn_texture_bits_source(shader->resource_source.UTF8String,kinds,&converted,&applied,error,sizeof error))
@@ -3055,6 +3082,9 @@ static NvShader *shader_stencil_variant(NvShader *shader) {
         if(shader->stage==0){variant->vertex_source=source;variant->vertex_entry=shader->vertex_entry;}
         if(shader->stage==1){variant->fragment_source=source;variant->fragment_entry=shader->fragment_entry;}
         if(!shader->resource_variants)shader->resource_variants=[NSMutableDictionary dictionary];shader->resource_variants[identity]=variant;
+        shader->stencil_cache = variant;
+        shader->stencil_cache_key = cache_key;
+        shader->stencil_cache_ready = 1;
         MLOG("P5R stencil load variant shader=%s stage=%d arguments=%#llx",shader->key,shader->stage,(unsigned long long)applied);
         return variant;
     }
