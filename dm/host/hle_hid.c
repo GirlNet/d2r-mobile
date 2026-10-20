@@ -484,7 +484,10 @@ static void vibration_set(uint32_t handle, const P5RVibrationValue *value) {
     dm_haptics_set(value->amplitude_low, value->frequency_low, value->amplitude_high, value->frequency_high);
 }
 HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "虚拟手柄震动许可（手机支持触觉反馈）", unsigned, h_hid_VibPermit, void) {
-    return dm_guest_d2r() ? 0u : (unsigned)dm_haptics_supported();
+    unsigned supported = dm_guest_d2r() ? 0u : (unsigned)dm_haptics_supported();
+    static int logged;
+    if (!logged++) LOG("P5R vibration: permission requested -> %u", supported);
+    return supported;
 }
 HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",
           "虚拟手柄左右马达映射到手机触觉", int, h_hid_GetVibHandles, uint32_t *out, int max, const uint32_t *id, uint32_t style) {
@@ -493,6 +496,8 @@ HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiR
     int count = max < 2 ? max : 2;
     out[0] = P5R_VIBRATION_LEFT;
     if (count > 1) out[1] = P5R_VIBRATION_RIGHT;
+    static int logged;
+    if (!logged++) LOG("P5R vibration: device handles=%d first=%#x", count, out[0]);
     return count;
 }
 HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE",
