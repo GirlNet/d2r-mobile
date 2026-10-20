@@ -1811,6 +1811,22 @@ static int p5r_skip_depth_draws(void) {
     }
     return enabled;
 }
+static int p5r_draw_debug(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("DM_P5R_DRAW_DEBUG");
+        enabled = value && strcmp(value, "0");
+    }
+    return enabled;
+}
+static int p5r_perf_probe(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("DM_P5R_PERF_PROBE");
+        enabled = value && strcmp(value, "0");
+    }
+    return enabled;
+}
 // DM_NVN_PASSDUMP：逐条记通道附件 / 采样 / 出图（贴图按序号），供离线做数据流分析；P / D / R / S 行的通道号一致（= 开通道后的 g_stat_pass）
 // DM_NVN_PASSDUMP=帧号 或 起-止（含两端）
 // DM_NVN_PASSDUMP: records pass attachments / samples / presents one by one (textures by serial) for offline data-flow analysis; the pass numbers of P / D / R / S lines agree (= g_stat_pass after the pass is opened)
@@ -3673,7 +3689,7 @@ static void movie_textures_update(void) {
 static void prepare_shader_textures_impl(NvShader *shader,int stage,id<MTLTexture> __strong textures[NVN_REFL_MAXB]) {
     if(!shader)return;
     static char ui_seen[64][24]; static int ui_seen_n; int log_ui=0;
-    if(shader->rf.nb>=4) {
+    if(p5r_draw_debug() && shader->rf.nb>=4) {
         int found=0;
         for(int n=0;n<ui_seen_n;n++) if(!strcmp(ui_seen[n],shader->key)) { found=1; break; }
         if(!found&&ui_seen_n<64) {
@@ -3684,7 +3700,7 @@ static void prepare_shader_textures_impl(NvShader *shader,int stage,id<MTLTextur
     pthread_mutex_lock(&g_rmu);
     for(int i=0;i<shader->rf.nb;i++) {
         const nvn_rbind *b=&shader->rf.b[i];
-        if(!strcmp(shader->key,"372fb3bf90397b4e_b")&&(b->reg==128||b->reg==129)) {
+        if((b->reg==128||b->reg==129)&&!strcmp(shader->key,"372fb3bf90397b4e_b")) {
             movie_textures_update();
             id<MTLTexture> override_texture=b->reg==128?g_movie_y_texture:g_movie_uv_texture;
             if(override_texture) { textures[i]=override_texture; continue; }
@@ -3702,7 +3718,7 @@ static void prepare_shader_textures_impl(NvShader *shader,int stage,id<MTLTextur
         check_guest_texture(shader,b,tid,textures[i]);
         // 诊断：哪一次绘制绑到了设置菜单那张文字图集（高 1240 / 序号 1938）。
         // Diagnostic: which draw binds the settings-menu text atlas (height 1240 / serial 1938).
-        if(!dm_guest_d2r()&&tid>0&&tid<g_ntreg&&g_treg[tid].ok&&(g_treg[tid].t.d.height==1240||g_treg[tid].t.serial==1938)) {
+        if(p5r_draw_debug()&&tid>0&&tid<g_ntreg&&g_treg[tid].ok&&(g_treg[tid].t.d.height==1240||g_treg[tid].t.serial==1938)) {
             static char seen[32][24]; static int ns;
             int dup=0; for(int k=0;k<ns;k++) if(!strcmp(seen[k],shader->key)){dup=1;break;}
             if(!dup&&ns<32){strncpy(seen[ns++],shader->key,23);
@@ -3826,9 +3842,9 @@ static int encode_args_impl(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stag
             __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             check_guest_texture(sh, b, tid, t);
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
-            { static int n; int bcf = t && tid > 0 && tid < g_ntreg && g_treg[tid].t.d.format >= 0x41 && g_treg[tid].t.d.format <= 0x4E;
+            if (p5r_draw_debug()) { static int n; int bcf = t && tid > 0 && tid < g_ntreg && g_treg[tid].t.d.format >= 0x41 && g_treg[tid].t.d.format <= 0x4E;
               if (bcf && n++ < 40) LOG("P5R img bind key=%s st=%d ser=%llu fmt=%#x %ux%u rw=%d", sh->key, nvn_stage,
-                  (unsigned long long)g_treg[tid].t.serial, g_treg[tid].t.d.format, g_treg[tid].t.d.width, g_treg[tid].t.d.height, b->rw); }
+                  (unsigned long long)g_treg[tid].t.serial, g_treg[tid].t.d.format, g_treg[tid].t.d.width, g_treg[tid].t.d.height, b->rw); } }
             if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "图像槽绑的贴图没有可写用途（贴图号 %d）", tid); t = nil; }
             if (!t) { t = dummy_img(b->dtt, b->dpf); trid = g_dummy_img_rid[b->dtt & 7][b->dpf & 3]; }   // 未绑：D3D 语义写入丢弃——写进专用哑贴图，不污染读出 0 的那套 | Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
             slots[aid] = trid;
@@ -5418,7 +5434,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     // g_ruler_truth stays -1 on the P5R path, so combining the two disabled
     // both the optimisation and its diagnostic probe.
     int skip_depth_mode = p5r_skip_depth_draws();
-    if (skip_depth_mode) {
+    if (skip_depth_mode && p5r_perf_probe()) {
         if (!g_p5r_probe_env_logged) {
             const char *probe_env = getenv("DM_P5R_SKIP_DEPTH_DRAW");
             MLOG("P5R perf probe: env=%s enabled=%d ruler=%d", probe_env ? probe_env : "(unset)",
@@ -5434,7 +5450,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         return;
     }
     __unsafe_unretained NvProg *pr = program_resources(programs_get(&S.programs),3);
-    if (skip_depth_mode) {
+    if (skip_depth_mode && p5r_perf_probe()) {
         int colors = 0;
         if (!pr) g_p5r_probe_no_pr++;
         if (pr && !pr->sh[1]) g_p5r_probe_no_fs++;
@@ -5497,7 +5513,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     // 文字 = 图集采样 × 顶点色；任一项取成 0 都会让字完全透明。
     // Diagnostic: on the first draw of the settings text shader, record the paired vertex shader
     // and vertex layout. Text = atlas sample * vertex colour; a zero in either makes it transparent.
-    if (!dm_guest_d2r()) {
+    if (p5r_draw_debug() && !dm_guest_d2r()) {
         __unsafe_unretained NvProg *tp = pr;
         if (tp && tp->sh[1] && !strncmp(tp->sh[1]->key, "720fc52850f3c28d", 16)) {
             static int once;
@@ -5715,7 +5731,7 @@ frz_plain:;
     // 位置由 vp_c3 里的屏幕尺寸换算；那块为 0 时顶点会落到屏幕外或变成 NaN。
     // Text shader: on the first real draw, record viewport / scissor / cull and its uniform block.
     // Positions come from the screen size in vp_c3; a zero block sends vertices off-screen or to NaN.
-    if (!dm_guest_d2r() && pr->sh[1] && !strncmp(pr->sh[1]->key, "720fc52850f3c28d", 16)) {
+    if (p5r_draw_debug() && !dm_guest_d2r() && pr->sh[1] && !strncmp(pr->sh[1]->key, "720fc52850f3c28d", 16)) {
         static int once2;
         if (!once2++) {
             MLOG("P5R text draw pass=%llu target=%lux%lu vp=%d sc=%d cull=%d count=%d",
