@@ -9,6 +9,7 @@
 #include "hle.h"
 #include <stdatomic.h>
 #include <sys/mman.h>
+#include <libkern/OSCacheControl.h>
 
 void *module_sym(module_t *m, const char *name);
 extern module_t g_mod[];
@@ -22,7 +23,7 @@ static int patch_jump(void *fn, const void *target) {
     uint32_t code[2] = {0x58000050u, 0xD61F0200u};   // ldr x16, #8 ; br x16
     memcpy(fn, code, 8);
     memcpy((uint8_t *)fn + 8, &target, sizeof target);
-    __builtin___clear_cache((char *)fn, (char *)fn + 16);
+    sys_icache_invalidate(fn, 16);   // Darwin：刷新指令缓存（__builtin___clear_cache 在 Apple 上不可链接） | Darwin: flush the instruction cache
     mprotect((void *)page, len, PROT_READ | PROT_EXEC);
     return 1;
 }
