@@ -1756,8 +1756,10 @@ static uint64_t g_stat_draw, g_stat_pass, g_bw_load, g_bw_store, g_pass_full_rw,
 static int g_subprof = -1;
 static _Atomic uint64_t g_subprof_rp_begin_ns, g_subprof_rp_end_ns;
 static _Atomic uint64_t g_subprof_tex_prep_ns, g_subprof_args_ns;
+static _Atomic uint64_t g_subprof_draw_state_ns, g_subprof_draw_call_ns;
 static _Atomic uint64_t g_subprof_rp_begin_n, g_subprof_rp_end_n;
 static _Atomic uint64_t g_subprof_tex_prep_n, g_subprof_args_n;
+static _Atomic uint64_t g_subprof_draw_state_n, g_subprof_draw_call_n;
 static inline int subprof_on(void) {
     if (g_subprof < 0) g_subprof = getenv("DM_NVN_SUBPROF") != NULL;
     return g_subprof;
@@ -5315,6 +5317,7 @@ static prepared_indices prepare_indices(const p_draw_idx *draw) {
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     int instances=dw?dw->instance_count_minus_one+1:(di->instances?di->instances:1);
     if((dw?dw->count:di->count)==0 || !instances)return;
+    uint64_t prof_state0 = subprof_now();
     // 整帧清点（DM_P5R_FRAME_DUMP=1）：每 300 帧中的一帧，把每一笔绘制的着色器、顶点数与第一张贴图记下来，
     // 用来找出字幕那一层究竟走的哪个着色器/图集。
     // Whole-frame census (DM_P5R_FRAME_DUMP=1): for one frame out of every 300, record each draw's shaders,
@@ -5733,6 +5736,8 @@ frz_plain:;
     rr_snap(dw,di);
 #endif
     udc_note_draw(pr);
+    subprof_record(&g_subprof_draw_state_ns, &g_subprof_draw_state_n, prof_state0);
+    uint64_t prof_call0 = subprof_now();
     // 0 个图元的绘制（游戏会发 count=0）不画任何像素，跳过编码；Metal 规定计数必须非零，校验层否则当场中止（营地 / 野外 / 战斗页实测）
     // A draw with 0 primitives (the game does send count=0) draws no pixels, so skip encoding; Metal requires the count to be non-zero, otherwise the validation layer aborts on the spot (measured on the camp / wilderness / combat pages)
     if (dw && prim == 7) {   // 四边形：共享索引 0,1,2,0,2,3 | Quads: shared indices 0,1,2,0,2,3
@@ -5751,6 +5756,7 @@ frz_plain:;
         if (di->count) enc_r_draw_indexed(en, mp, di->count, indices.type, indices.gpu, indices.length,
                 di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
     }
+    subprof_record(&g_subprof_draw_call_ns, &g_subprof_draw_call_n, prof_call0);
     if (g_rt_range_pending) { PD("j rt_level_range pass=%llu vc=%u", g_stat_pass, (unsigned)(dw ? dw->count : di->count)); g_rt_range_pending=0; }
 }
 static nvn_hmap g_cps = {.klen = sizeof(void *)};
@@ -7350,14 +7356,18 @@ void mtl_subprof_report(uint64_t frames) {
     if (!subprof_on()) return;
     uint64_t rb = atomic_exchange(&g_subprof_rp_begin_ns, 0), re = atomic_exchange(&g_subprof_rp_end_ns, 0);
     uint64_t tp = atomic_exchange(&g_subprof_tex_prep_ns, 0), ar = atomic_exchange(&g_subprof_args_ns, 0);
+    uint64_t ds = atomic_exchange(&g_subprof_draw_state_ns, 0), dc = atomic_exchange(&g_subprof_draw_call_ns, 0);
     uint64_t rbn = atomic_exchange(&g_subprof_rp_begin_n, 0), ren = atomic_exchange(&g_subprof_rp_end_n, 0);
     uint64_t tpn = atomic_exchange(&g_subprof_tex_prep_n, 0), arn = atomic_exchange(&g_subprof_args_n, 0);
+    uint64_t dsn = atomic_exchange(&g_subprof_draw_state_n, 0), dcn = atomic_exchange(&g_subprof_draw_call_n, 0);
     double d = frames ? (double)frames : 1.0;
     MLOG("提交内部分段 至帧 %llu：通道开始 %.2f ms/帧（%llu 次）、通道结束 %.2f ms/帧（%llu 次）、"
-         "贴图预解析 %.2f ms/帧（%llu 次）、参数块 %.2f ms/帧（%llu 次）",
+         "贴图预解析 %.2f ms/帧（%llu 次）、参数块 %.2f ms/帧（%llu 次）、"
+         "绘制状态 %.2f ms/帧（%llu 次）、Metal draw %.2f ms/帧（%llu 次）",
          (unsigned long long)atomic_load(&g_cur_frame), rb / 1e6 / d, (unsigned long long)rbn,
          re / 1e6 / d, (unsigned long long)ren, tp / 1e6 / d, (unsigned long long)tpn,
-         ar / 1e6 / d, (unsigned long long)arn);
+         ar / 1e6 / d, (unsigned long long)arn, ds / 1e6 / d, (unsigned long long)dsn,
+         dc / 1e6 / d, (unsigned long long)dcn);
 }
 uint64_t mtl_ds_omit(void) { return g_stat_ds_omit; }
 void mtl_bw(uint64_t *load, uint64_t *store, uint64_t *full) { *load = g_bw_load; *store = g_bw_store; *full = g_pass_full_rw; }

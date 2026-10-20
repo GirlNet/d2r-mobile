@@ -109,7 +109,7 @@ def build(output,metal_backend=3):
     report['linked'] = True
     info = dict(CFBundleExecutable='P5RMobile', CFBundleIdentifier='org.p5r.experimental', CFBundleName='P5RMobile',
                 CFBundleDisplayName='P5R Mobile', CFBundlePackageType='APPL', CFBundleInfoDictionaryVersion='6.0',
-                CFBundleVersion='7', CFBundleShortVersionString='0.7', MinimumOSVersion='26.0',
+                CFBundleVersion='8', CFBundleShortVersionString='0.8', MinimumOSVersion='26.0',
                 CFBundleSupportedPlatforms=['iPhoneOS'], UIDeviceFamily=[1,2], LSRequiresIPhoneOS=True,
                 UIFileSharingEnabled=True, LSSupportsOpeningDocumentsInPlace=True, UILaunchScreen={},
                 LSSupportsGameMode=True, GCSupportsGameMode=True,
