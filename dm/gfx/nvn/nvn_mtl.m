@@ -5979,9 +5979,12 @@ frz_plain:;
         uint64_t fr = atomic_load(&g_cur_frame);
         if (fr > 3000 && fr % 120 < 3) {
             NvShader *v = pr->sh[0]; uint64_t h64 = 0; int got = 0;
-            for (int i = 0; i < v->rf.nb && !got; i++) {
-                const nvn_rbind *b = &v->rf.b[i];
-                if (b->kind == NVN_RB_CBUF && b->reg < 16) {
+            for (int pass = 0; pass < 2 && !got; pass++) {
+                for (int i = 0; i < v->rf.nb && !got; i++) {
+                    const nvn_rbind *b = &v->rf.b[i];
+                    int want3 = b->reg == 3;   // 物体缓冲（世界矩阵）通常在 r3；先取它，再退回到任意 ≥64 字节的 CBUF
+                    if ((pass == 0) != want3) continue;
+                    if (!(b->kind == NVN_RB_CBUF && b->reg < 16)) continue;
                     const p_bind_buf *u = &S.ubo[0][b->reg]; void *mb; uint64_t mo; const uint8_t *base;
                     if (u->addr && u->size >= 64 && !pend_hits(u->addr, u->size) && mtl_addr(u->addr, u->size, &mb, &mo) && (base = [(__bridge id<MTLBuffer>)mb contents])) {
                         uint64_t h = 1469598103934665603ull;
