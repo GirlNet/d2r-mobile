@@ -1750,6 +1750,26 @@ static int g_enc_vis, g_enc_has_vis;   // 本编码器当前的可见性计数�
 static int g_pso_dirty = 1, g_dss_dirty = 1;   // 回放中改了管线 / 深度模板相关状态 | Pipeline / depth-stencil related state was changed during replay
 static uint64_t g_stat_args_enc, g_stat_args_reuse;   // 参数缓冲：新编 / 复用次数 | Argument buffer: new-encode / reuse counts
 static uint64_t g_stat_draw, g_stat_pass, g_bw_load, g_bw_store, g_pass_full_rw, g_udc_saved_bytes;   // 带宽账：附件读入 / 写出字节、全量读写通道数 | Bandwidth ledger: attachment load / store bytes, number of full load-store passes
+// DM_NVN_SUBPROF=1: account QueueSubmitCommands internals on the submit thread.
+// The normal path performs no clock reads when the switch is off.
+// DM_NVN_SUBPROF=1：只统计提交线程内部各阶段；开关关闭时不读取时钟。
+static int g_subprof = -1;
+static _Atomic uint64_t g_subprof_rp_begin_ns, g_subprof_rp_end_ns;
+static _Atomic uint64_t g_subprof_tex_prep_ns, g_subprof_args_ns;
+static _Atomic uint64_t g_subprof_rp_begin_n, g_subprof_rp_end_n;
+static _Atomic uint64_t g_subprof_tex_prep_n, g_subprof_args_n;
+static inline int subprof_on(void) {
+    if (g_subprof < 0) g_subprof = getenv("DM_NVN_SUBPROF") != NULL;
+    return g_subprof;
+}
+static inline uint64_t subprof_now(void) {
+    return subprof_on() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
+}
+static inline void subprof_record(_Atomic uint64_t *ns, _Atomic uint64_t *count, uint64_t t0) {
+    if (!t0) return;
+    atomic_fetch_add_explicit(ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0, memory_order_relaxed);
+    atomic_fetch_add_explicit(count, 1, memory_order_relaxed);
+}
 // DM_NVN_PASSDUMP：逐条记通道附件 / 采样 / 出图（贴图按序号），供离线做数据流分析；P / D / R / S 行的通道号一致（= 开通道后的 g_stat_pass）
 // DM_NVN_PASSDUMP=帧号 或 起-止（含两端）
 // DM_NVN_PASSDUMP: records pass attachments / samples / presents one by one (textures by serial) for offline data-flow analysis; the pass numbers of P / D / R / S lines agree (= g_stat_pass after the pass is opened)
@@ -2106,6 +2126,7 @@ static int g_el_w, g_el_h, g_el_draws; static char g_el_key[12];
 static int enc_label_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_ENC_LABEL"); v = e && atoi(e); } return v; }
 static void ghost_flush(void);
 static void rp_end(void) { if (g_enc) {
+    uint64_t prof_t0 = subprof_now();
     ghost_flush();
     if (enc_label_on()) { static uint64_t lf = ~0ull, base; uint64_t f = atomic_load(&g_cur_frame); if (f != lf) { lf = f; base = g_stat_pass - 1; }   // 帧内序号：同一趟每帧同名，表里才能按名归并 | Intra-frame serial: the same pass has the same name every frame, so the table can aggregate by name
         [(id)g_enc setLabel:[NSString stringWithFormat:@"p%02llu %dx%d %s d%d", (unsigned long long)(g_stat_pass - base), g_el_w, g_el_h, g_el_key[0] ? g_el_key : "-", g_el_draws]]; }
@@ -2113,6 +2134,10 @@ static void rp_end(void) { if (g_enc) {
     int ranged=g_rt_range_active && !g_rt_range_pending;
 #endif
     sd_finish(); enc_r_end(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_rt_range_active = g_rt_range_pending = 0; pg_end_render(); ts_after(); if (g_lp.count) lp_finish(); fz_end();
+    if (prof_t0) {
+        atomic_fetch_add_explicit(&g_subprof_rp_end_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - prof_t0, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_subprof_rp_end_n, 1, memory_order_relaxed);
+    }
 #ifdef NVN_RT_RANGE_TEST
     rr_finish(ranged);
 #endif
@@ -2134,9 +2159,10 @@ static RENC rp_begin_ex(int clear_only);
 static RENC rp_begin(void) { return rp_begin_ex(0); }
 static RENC rp_begin_ex(int clear_only) {
     if (g_enc) return g_enc;
+    uint64_t prof_t0 = subprof_now();
     memset(g_zskip_cand_ok, 0, sizeof g_zskip_cand_ok);
     g_enc_mode = clear_only;
-    if (!R.has_rt) { RED_ONCE(3, "绘制前没有设置渲染目标"); return nil; }
+    if (!R.has_rt) { RED_ONCE(3, "绘制前没有设置渲染目标"); subprof_record(&g_subprof_rp_begin_ns, &g_subprof_rp_begin_n, prof_t0); return nil; }
     // 附件范围候选的版本在捕获任何附件之前取；建立途中有变化则不续用。
     // The version of the attachment-range candidate is taken before capturing any attachment; if it changes during setup, there is no continuation.
     uint64_t reg0 = 0, ser0 = 0, dirty0 = 0;
@@ -2192,7 +2218,7 @@ static RENC rp_begin_ex(int clear_only) {
             }
         }
     }
-    if (!any) { RED_ONCE(4, "渲染目标都建不出 MTLTexture"); return nil; }
+    if (!any) { RED_ONCE(4, "渲染目标都建不出 MTLTexture"); subprof_record(&g_subprof_rp_begin_ns, &g_subprof_rp_begin_n, prof_t0); return nil; }
     for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && zskip_zero_clear(i)) {
         g_zskip_cand_ok[i] = 1; g_zskip_cand[i] = (zskip_zero){R.rt.color[i]->serial, (uint16_t)(R.rt.has_cview[i] && R.rt.cview[i].set_levels ? R.rt.cview[i].base_level : 0), (uint16_t)(R.rt.has_cview[i] && R.rt.cview[i].set_layers ? R.rt.cview[i].min_layer : 0)};
     }
@@ -2265,6 +2291,7 @@ static RENC rp_begin_ex(int clear_only) {
     args_dirty_all();
     g_stat_pass++;
     if (enc_label_on()) { id<MTLTexture> lt = pd.colorAttachments[0].texture ?: pd.depthAttachment.texture ?: pd.stencilAttachment.texture; g_el_w = (int)lt.width; g_el_h = (int)lt.height; g_el_draws = 0; g_el_key[0] = 0; }
+    subprof_record(&g_subprof_rp_begin_ns, &g_subprof_rp_begin_n, prof_t0);
     return g_enc;
 }
 // 开通道前的空剪裁预检查：第一个有效目标的选中级尺寸是实际pass最小边界的上界。
@@ -3545,7 +3572,7 @@ static void movie_textures_update(void) {
     [g_movie_uv_texture replaceRegion:MTLRegionMake2D(0, 0, cw, ch) mipmapLevel:0 withBytes:g_movie_texture_frame + (size_t)w * h bytesPerRow:2 * cw];
     g_movie_texture_seq = seq;
 }
-static void prepare_shader_textures(NvShader *shader,int stage,id<MTLTexture> __strong textures[NVN_REFL_MAXB]) {
+static void prepare_shader_textures_impl(NvShader *shader,int stage,id<MTLTexture> __strong textures[NVN_REFL_MAXB]) {
     if(!shader)return;
     static char ui_seen[64][24]; static int ui_seen_n; int log_ui=0;
     if(shader->rf.nb>=4) {
@@ -3594,7 +3621,12 @@ static void prepare_shader_textures(NvShader *shader,int stage,id<MTLTexture> __
     }
     pthread_mutex_unlock(&g_rmu);
 }
-static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex,
+static void prepare_shader_textures(NvShader *shader,int stage,id<MTLTexture> __strong textures[NVN_REFL_MAXB]) {
+    uint64_t prof_t0 = subprof_now();
+    prepare_shader_textures_impl(shader, stage, textures);
+    subprof_record(&g_subprof_tex_prep_ns, &g_subprof_tex_prep_n, prof_t0);
+}
+static int encode_args_impl(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex,
                        id<MTLTexture> __strong const prepared[NVN_REFL_MAXB]) {
     if (!sh->ae) return 1;
     uint64_t slots[NVN_REFL_MAXB] = {0};
@@ -3763,6 +3795,13 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
     sh->ab_buf = ab; sh->ab_gpu = g_cur_arena->gpu + off; sh->ab_off = off; sh->ab_pass = g_pass.serial; g_args_dirty[nvn_stage] = 0;
     g_stat_args_enc++;
     return 1;
+}
+static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex,
+                       id<MTLTexture> __strong const prepared[NVN_REFL_MAXB]) {
+    uint64_t prof_t0 = subprof_now();
+    int result = encode_args_impl(en, sh, nvn_stage, metal_vertex, prepared);
+    subprof_record(&g_subprof_args_ns, &g_subprof_args_n, prof_t0);
+    return result;
 }
 static id<MTLBuffer> g_quad_ib; static uint64_t g_quad_gpu;
 static RENC rp_begin(void);
@@ -7307,6 +7346,19 @@ void mtl_present_flush(void) { pthread_mutex_lock(&g_pq_mu); uint64_t h = g_pq_i
 void mtl_stats(uint64_t *passes, uint64_t *draws) { *passes = g_stat_pass; *draws = g_stat_draw; }
 void mtl_args_stats(uint64_t *enc, uint64_t *reuse) { *enc = g_stat_args_enc; *reuse = g_stat_args_reuse; }
 void mtl_use_stats(uint64_t *call, uint64_t *skip) { *call = 0; *skip = 0; }
+void mtl_subprof_report(uint64_t frames) {
+    if (!subprof_on()) return;
+    uint64_t rb = atomic_exchange(&g_subprof_rp_begin_ns, 0), re = atomic_exchange(&g_subprof_rp_end_ns, 0);
+    uint64_t tp = atomic_exchange(&g_subprof_tex_prep_ns, 0), ar = atomic_exchange(&g_subprof_args_ns, 0);
+    uint64_t rbn = atomic_exchange(&g_subprof_rp_begin_n, 0), ren = atomic_exchange(&g_subprof_rp_end_n, 0);
+    uint64_t tpn = atomic_exchange(&g_subprof_tex_prep_n, 0), arn = atomic_exchange(&g_subprof_args_n, 0);
+    double d = frames ? (double)frames : 1.0;
+    MLOG("提交内部分段 至帧 %llu：通道开始 %.2f ms/帧（%llu 次）、通道结束 %.2f ms/帧（%llu 次）、"
+         "贴图预解析 %.2f ms/帧（%llu 次）、参数块 %.2f ms/帧（%llu 次）",
+         (unsigned long long)atomic_load(&g_cur_frame), rb / 1e6 / d, (unsigned long long)rbn,
+         re / 1e6 / d, (unsigned long long)ren, tp / 1e6 / d, (unsigned long long)tpn,
+         ar / 1e6 / d, (unsigned long long)arn);
+}
 uint64_t mtl_ds_omit(void) { return g_stat_ds_omit; }
 void mtl_bw(uint64_t *load, uint64_t *store, uint64_t *full) { *load = g_bw_load; *store = g_bw_store; *full = g_pass_full_rw; }
 uint64_t mtl_udc_saved_bytes(void) { return g_udc_saved_bytes; }
