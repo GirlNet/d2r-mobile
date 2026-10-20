@@ -2990,6 +2990,16 @@ static struct {
 } g_cond_cache[64];
 static unsigned g_cond_next;
 static uint64_t g_cond_waits, g_cond_hits;
+static _Atomic uint64_t g_subprof_cond_ns, g_subprof_cond_n;
+static int cond_ignore(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("DM_P5R_COND_IGNORE");
+        enabled = value && strcmp(value, "0");
+        if (enabled) MLOG("P5R 条件渲染：DM_P5R_COND_IGNORE=1，忽略条件直接绘制（诊断）");
+    }
+    return enabled;
+}
 static void cond_invalidate(void) {
     for (unsigned i = 0; i < sizeof g_cond_cache / sizeof *g_cond_cache; i++)
         g_cond_cache[i].valid = 0;
@@ -3011,6 +3021,7 @@ static int render_allowed(NvProg *program) {
     if(dm_guest_d2r())return 1;
     if(!S.render_enable)return 0;
     if(!S.conditional_active)return 1;
+    if(cond_ignore())return 1;
     void *native=NULL;uint64_t offset=0;
     if(!mtl_addr(S.conditional.address,24,&native,&offset))MDIE("Conditional render input is outside a registered buffer");
     id<MTLBuffer> buffer=(__bridge id<MTLBuffer>)native;
@@ -3027,8 +3038,10 @@ static int render_allowed(NvProg *program) {
     }
     // A conservative synchronous path. Waiting on g_done includes CPU query
     // callbacks, so ReportCounter data and preceding GPU writes are both ready.
+    uint64_t prof_cond0 = subprof_now();
     uint64_t fence=mtl_sub_commit();
     if(!mtl_wait(fence,5000000000ull) || mtl_last_commit_error())MDIE("Conditional render input synchronization failed");
+    subprof_record(&g_subprof_cond_ns, &g_subprof_cond_n, prof_cond0);
     if (g_cond_waits++ == 0) MLOG("P5R 条件渲染：首次读取已同步 GPU");
     int allowed=0;
     if(!nvn_conditional_render_decode((int)S.conditional.mode,source,24,&allowed))
@@ -7689,6 +7702,7 @@ void mtl_subprof_report(uint64_t frames) {
     uint64_t pg = atomic_exchange(&g_subprof_program_ns, 0), po2 = atomic_exchange(&g_subprof_preopen_ns, 0);
     uint64_t td = atomic_exchange(&g_subprof_textdiag_ns, 0);
     uint64_t ix = atomic_exchange(&g_subprof_index_ns, 0), ca = atomic_exchange(&g_subprof_candidate_ns, 0);
+    uint64_t co = atomic_exchange(&g_subprof_cond_ns, 0);
     uint64_t rbn = atomic_exchange(&g_subprof_rp_begin_n, 0), ren = atomic_exchange(&g_subprof_rp_end_n, 0);
     uint64_t tpn = atomic_exchange(&g_subprof_tex_prep_n, 0), arn = atomic_exchange(&g_subprof_args_n, 0);
     uint64_t dsn = atomic_exchange(&g_subprof_draw_state_n, 0), dcn = atomic_exchange(&g_subprof_draw_call_n, 0);
@@ -7697,6 +7711,7 @@ void mtl_subprof_report(uint64_t frames) {
     uint64_t pgn = atomic_exchange(&g_subprof_program_n, 0), po2n = atomic_exchange(&g_subprof_preopen_n, 0);
     uint64_t tdn = atomic_exchange(&g_subprof_textdiag_n, 0);
     uint64_t ixn = atomic_exchange(&g_subprof_index_n, 0), can = atomic_exchange(&g_subprof_candidate_n, 0);
+    uint64_t con = atomic_exchange(&g_subprof_cond_n, 0);
     double d = frames ? (double)frames : 1.0;
     MLOG("提交内部分段 至帧 %llu：通道开始 %.2f ms/帧（%llu 次）、通道结束 %.2f ms/帧（%llu 次）、"
          "贴图预解析 %.2f ms/帧（%llu 次）、参数块 %.2f ms/帧（%llu 次）、"
@@ -7713,6 +7728,7 @@ void mtl_subprof_report(uint64_t frames) {
          (unsigned long long)po2n, td / 1e6 / d, (unsigned long long)tdn);
     MLOG("开通道前细项 索引 %.2f ms/帧（%llu）、候选检查 %.2f（%llu）",
          ix / 1e6 / d, (unsigned long long)ixn, ca / 1e6 / d, (unsigned long long)can);
+    MLOG("条件渲染同步 %.2f ms/帧（%llu 次）", co / 1e6 / d, (unsigned long long)con);
 }
 uint64_t mtl_ds_omit(void) { return g_stat_ds_omit; }
 void mtl_bw(uint64_t *load, uint64_t *store, uint64_t *full) { *load = g_bw_load; *store = g_bw_store; *full = g_pass_full_rw; }
