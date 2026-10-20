@@ -5414,7 +5414,10 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     int instances=dw?dw->instance_count_minus_one+1:(di->instances?di->instances:1);
     if((dw?dw->count:di->count)==0 || !instances)return;
     uint64_t prof_state0 = subprof_now();
-    int skip_depth_mode = p5r_skip_depth_draws() && g_ruler_truth == 0;
+    // P5R's performance mode is independent of D2R's visual-ruler state.
+    // g_ruler_truth stays -1 on the P5R path, so combining the two disabled
+    // both the optimisation and its diagnostic probe.
+    int skip_depth_mode = p5r_skip_depth_draws();
     if (skip_depth_mode) {
         if (!g_p5r_probe_env_logged) {
             const char *probe_env = getenv("DM_P5R_SKIP_DEPTH_DRAW");

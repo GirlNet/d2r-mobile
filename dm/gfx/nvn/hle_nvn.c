@@ -1010,6 +1010,38 @@ NVN(nvnVertexStreamStateSetDivisor, void, NVNvertexStreamState *s, int d) { ST(v
 
 static _Atomic uint64_t g_sub_wall_ns, g_sub_cpu_ns, g_sub_instr;   // 提交（不含出图）的墙钟 / 本线程 CPU 时间 / 本线程退休指令数（逐帧取走） | Wall clock / this thread's CPU time / this thread's retired instruction count for submit (excluding present) (taken away per frame)
 static _Atomic uint64_t g_cum_sub_instr, g_cum_sub_cpu_ns;   // 同上累计（每 300 帧汇总「翻译」行取差，真机经日志口读：每次绘制指令数 / 每帧提交 CPU） | Cumulative versions of the above (the 「翻译」(translation) summary row every 300 frames takes the difference; on a real device read through the log port: instructions per draw / submit CPU per frame)
+// DM_NVN_SUBPROF：提交前后的大段计时。绘制内部已有细分，但热场景的大部分墙钟落在
+// QueueSubmitCommands 的前后同步点；这里把它们单独拆开，开关关闭时不读时钟。
+// DM_NVN_SUBPROF: coarse timing around submission. The draw path already has internal
+// timers; on heavy scenes most wall time is in the surrounding synchronisation points.
+static _Atomic uint64_t g_hsp_restore_ns, g_hsp_begin_ns, g_hsp_index_ns;
+static _Atomic uint64_t g_hsp_exec_ns, g_hsp_commit_ns, g_hsp_capture_ns;
+static _Atomic uint64_t g_hsp_submit_n;
+static int host_subprof_on(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("DM_NVN_SUBPROF");
+        enabled = value && strcmp(value, "0");
+    }
+    return enabled;
+}
+static void host_subprof_add(_Atomic uint64_t *dst, uint64_t t0) {
+    if (t0) atomic_fetch_add(dst, now_ns() - t0);
+}
+static void host_subprof_report(uint64_t frames) {
+    if (!host_subprof_on()) return;
+    uint64_t restore = atomic_exchange(&g_hsp_restore_ns, 0);
+    uint64_t begin = atomic_exchange(&g_hsp_begin_ns, 0);
+    uint64_t index = atomic_exchange(&g_hsp_index_ns, 0);
+    uint64_t exec = atomic_exchange(&g_hsp_exec_ns, 0);
+    uint64_t commit = atomic_exchange(&g_hsp_commit_ns, 0);
+    uint64_t capture = atomic_exchange(&g_hsp_capture_ns, 0);
+    uint64_t count = atomic_exchange(&g_hsp_submit_n, 0);
+    double d = frames ? (double)frames : 1.0;
+    LOG("[nvn] 提交前后分段：恢复 %.2f ms/帧、开始 %.2f、索引 %.2f、回放 %.2f、Metal 提交 %.2f、状态保存 %.2f；共 %llu 次提交",
+        restore / 1e6 / d, begin / 1e6 / d, index / 1e6 / d, exec / 1e6 / d,
+        commit / 1e6 / d, capture / 1e6 / d, (unsigned long long)count);
+}
 extern int thread_selfcounts(int type, void *buf, size_t nbytes);   // 本线程累计 {指令, 周期}（libSystem 私有接口，Mac / iOS 都有） | This thread's cumulative {instructions, cycles} (libSystem private interface, present on both Mac and iOS)
 static uint64_t thr_instr(void) { uint64_t c[2] = {0, 0}; thread_selfcounts(1, c, sizeof c); return c[0]; }
 // 提交路径的补充读数（真机 Metal 4 指令数 −18% 而提交 CPU 时间 +49%，要分清是内核态、执行效率还是被降频）：
@@ -1048,16 +1080,29 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
     gfx_enter();
     queue_api_enter();
     uint64_t t0 = now_ns(), c0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID), i0, y0, s0 = thr_sys_ns(); thr_counts(&i0, &y0);
+    int hsp = host_subprof_on();
     ((queue_t *)q)->submits++;
+    uint64_t hp = hsp ? now_ns() : 0;
     mtl_queue_restore(&((queue_t *)q)->replay_state);
+    if (hsp) { host_subprof_add(&g_hsp_restore_ns, hp); atomic_fetch_add(&g_hsp_submit_n, 1); }
+    hp = hsp ? now_ns() : 0;
     mtl_sub_begin();
+    if (hsp) host_subprof_add(&g_hsp_begin_ns, hp);
     const dev_t_ *device=(const dev_t_ *)((queue_t *)q)->dev;
     mtl_guest_coordinates(device?device->origin:0,device?device->depth_mode:0);
+    hp = hsp ? now_ns() : 0;
     mtl_sub_index((const uint64_t *)h, n);
+    if (hsp) host_subprof_add(&g_hsp_index_ns, hp);
+    hp = hsp ? now_ns() : 0;
     for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
     mtl_exec_rest(NULL, 0);
+    if (hsp) host_subprof_add(&g_hsp_exec_ns, hp);
+    hp = hsp ? now_ns() : 0;
     mtl_sub_commit();
+    if (hsp) host_subprof_add(&g_hsp_commit_ns, hp);
+    hp = hsp ? now_ns() : 0;
     mtl_queue_capture(((queue_t *)q)->replay_state);
+    if (hsp) host_subprof_add(&g_hsp_capture_ns, hp);
     uint64_t dw = now_ns() - t0;
     atomic_fetch_add(&g_nvn_ns, dw); atomic_fetch_add(&g_sub_wall_ns, dw);
     uint64_t i1, y1; thr_counts(&i1, &y1); uint64_t dc = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - c0, di = i1 - i0;
@@ -1416,6 +1461,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     if ((g_frame + 1) % TWIN == 0) {
         extern void mtl_subprof_report(uint64_t frames);
         mtl_subprof_report(TWIN);
+        host_subprof_report(TWIN);
     }
     if (nvn_real[0] || nvn_real[1]) {   // DM_NVN_PROF：录制期 = 除提交外全部已实现函数耗时；提交期 = QueueSubmitCommands | DM_NVN_PROF: record phase = time of all implemented functions except submit; submit phase = QueueSubmitCommands
         static unsigned isub = ~0u; static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
