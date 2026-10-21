@@ -9,7 +9,8 @@
 #include "front.h"
 #include "dm_input.h"
 #include "dm_i18n.h"
-#include "../../gfx/nvn/nvn_texture_selftest.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "resources.h"
 #include "boot_probe.h"
 // Virtual gamepad ported from seedds/nxnative (see dm_pad.m): 2D / 3D layouts, sticks, D-pad, L3 / R3.
 extern UIView *dm_gamepad_view(CGRect frame);
@@ -23,6 +24,7 @@ extern void dm_haptics_ios_init(void);
 static CAMetalLayer *metalLayer;
 static UIViewController *controller;
 static int started;
+static NSURL *activeExternalRoot;
 // 只读系统状态，按两秒缓存供宿主计时日志取用；不改变系统功耗或游戏画质。
 // Cache read-only system state every two seconds for host timing logs; do not change power policy or game quality.
 static _Atomic int powerThermal = -1;
@@ -90,119 +92,197 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 + (Class)layerClass { return CAMetalLayer.class; }
 @end
 
-@interface P5RController : UIViewController
+// 原生启动界面：只呈现资源、设置和开始游戏；装饰不拦截游戏输入。
+// Native launcher: expose resources, settings and Start Game only; decoration never intercepts game input.
+@interface P5RBackdrop : UIView @end
+@implementation P5RBackdrop
+- (void)drawRect:(CGRect)rect {
+    (void)rect;CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+    [[UIColor colorWithWhite:.045 alpha:1] setFill];UIRectFill(self.bounds);
+    UIBezierPath *panel=[UIBezierPath bezierPath];[panel moveToPoint:CGPointMake(w*.76,0)];
+    [panel addLineToPoint:CGPointMake(w,0)];[panel addLineToPoint:CGPointMake(w,h)];
+    [panel addLineToPoint:CGPointMake(w*.5,h)];[panel closePath];
+    [[UIColor colorWithRed:.38 green:.025 blue:.055 alpha:1] setFill];[panel fill];
+    UIBezierPath *stripe=[UIBezierPath bezierPath];[stripe moveToPoint:CGPointMake(w*.76-12,0)];
+    [stripe addLineToPoint:CGPointMake(w*.76-4,0)];[stripe addLineToPoint:CGPointMake(w*.5-4,h)];
+    [stripe addLineToPoint:CGPointMake(w*.5-12,h)];[stripe closePath];
+    [[UIColor colorWithRed:.93 green:.06 blue:.13 alpha:1] setFill];[stripe fill];
+}
+@end
+
+@interface P5RController : UIViewController <UIDocumentPickerDelegate>
 @property UILabel *status;
 @property UIButton *launch;
-@property UIButton *gpuTest;
-@property UILabel *gpuStatus;
-@property UIStackView *menu;
-@property BOOL testingGpu;
-@property UIButton *bootProbe;
-@property BOOL probingBoot;
-@property NSString *probeDirectory;
-@property double probePollTime;
+@property UIButton *settingsButton;
+@property UIButton *resourceButton;
+@property UIView *launcherView;
 @property CADisplayLink *poll;
 @property NSDictionary *package;
+@property NSDictionary *identity;
 @property UIView *touchControls;
 @property UISegmentedControl *renderMode;
 @property UILabel *renderHint;
-@property UIScrollView *launcherScroll;
+@property NSURL *resourceURL;
+@property BOOL resourceLease;
+@property NSDictionary<NSString *,NSURL *> *resourcePaths;
+@property BOOL checkingResources;
+- (void)launchResolvedGuest;
+- (void)validateURL:(NSURL *)url save:(BOOL)save launch:(BOOL)launch;
 @end
 @implementation P5RController
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
+- (UIButton *)button:(const char *)key action:(SEL)action {
+    UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];button.translatesAutoresizingMaskIntoConstraints=NO;
+    [button setTitle:text(key) forState:UIControlStateNormal];[button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    button.titleLabel.font=[UIFont boldSystemFontOfSize:17];
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];return button;
+}
 - (void)viewDidLoad {
-    [super viewDidLoad]; self.view.backgroundColor = UIColor.blackColor;
-    P5RMetalView *canvas = [P5RMetalView new]; canvas.frame = self.view.bounds;
-    canvas.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    metalLayer = (CAMetalLayer *)canvas.layer; metalLayer.device = MTLCreateSystemDefaultDevice();
-    metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm; metalLayer.framebufferOnly = YES;
-    [self.view addSubview:canvas];
-    self.touchControls=dm_gamepad_view(self.view.bounds);
-    self.touchControls.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    [super viewDidLoad];self.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
+    self.view.backgroundColor=UIColor.blackColor;
+    P5RMetalView *canvas=[P5RMetalView new];canvas.frame=self.view.bounds;
+    canvas.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    metalLayer=(CAMetalLayer *)canvas.layer;metalLayer.device=MTLCreateSystemDefaultDevice();
+    metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.framebufferOnly=YES;[self.view addSubview:canvas];
+    self.touchControls=dm_gamepad_view(self.view.bounds);self.touchControls.autoresizingMask=canvas.autoresizingMask;
     self.touchControls.hidden=YES;[self.view addSubview:self.touchControls];
-    self.status = [UILabel new]; self.status.textColor = UIColor.whiteColor; self.status.numberOfLines = 0;
-    self.status.textAlignment = NSTextAlignmentCenter; self.status.translatesAutoresizingMaskIntoConstraints = NO;
-    self.launch = [UIButton buttonWithType:UIButtonTypeSystem]; self.launch.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.launch setTitle:text("dmP5RLaunch") forState:UIControlStateNormal];
-    [self.launch addTarget:self action:@selector(startGuest) forControlEvents:UIControlEventTouchUpInside];
-    self.gpuTest = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.gpuTest setTitle:text("dmP5RGpuTest") forState:UIControlStateNormal];
-    [self.gpuTest addTarget:self action:@selector(testGpu) forControlEvents:UIControlEventTouchUpInside];
-    self.gpuStatus = [UILabel new]; self.gpuStatus.textColor = UIColor.lightGrayColor;
-    self.gpuStatus.font = [UIFont systemFontOfSize:13]; self.gpuStatus.numberOfLines = 0;
-    self.gpuStatus.textAlignment = NSTextAlignmentCenter;
-    self.bootProbe = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.bootProbe setTitle:text("dmP5RPreSubmitProbe") forState:UIControlStateNormal];
-    [self.bootProbe addTarget:self action:@selector(probeBoot) forControlEvents:UIControlEventTouchUpInside];
-    self.renderMode = [[UISegmentedControl alloc] initWithItems:@[text("dmP5RQuality"),text("dmP5RPerformance")]];
-    self.renderMode.backgroundColor=[UIColor colorWithWhite:1 alpha:.14];self.renderMode.selectedSegmentTintColor=UIColor.whiteColor;
+    P5RBackdrop *menu=[P5RBackdrop new];menu.frame=self.view.bounds;menu.autoresizingMask=canvas.autoresizingMask;
+    menu.contentMode=UIViewContentModeRedraw;self.launcherView=menu;[self.view addSubview:menu];
+    UILabel *title=[UILabel new];title.translatesAutoresizingMaskIntoConstraints=NO;title.text=text("dmP5RMenuTitle");
+    title.font=[UIFont systemFontOfSize:46 weight:UIFontWeightBlack];title.textColor=UIColor.whiteColor;
+    title.adjustsFontSizeToFitWidth=YES;title.minimumScaleFactor=.6;[menu addSubview:title];
+    UILabel *subtitle=[UILabel new];subtitle.translatesAutoresizingMaskIntoConstraints=NO;subtitle.text=text("dmP5RMenuSubtitle");
+    subtitle.font=[UIFont systemFontOfSize:15];subtitle.textColor=UIColor.lightGrayColor;[menu addSubview:subtitle];
+    self.launch=[self button:"dmP5RLaunch" action:@selector(startGuest)];self.launch.backgroundColor=[UIColor colorWithRed:.91 green:.035 blue:.11 alpha:1];
+    self.launch.layer.cornerRadius=10;[menu addSubview:self.launch];
+    self.settingsButton=[self button:"dmP5RSettings" action:@selector(showSettings)];[menu addSubview:self.settingsButton];
+    self.resourceButton=[self button:"dmP5RChooseResources" action:@selector(pickResourceFolder)];
+    [self.resourceButton setTitleColor:[UIColor colorWithRed:1 green:.35 blue:.4 alpha:1] forState:UIControlStateNormal];
+    self.status=[UILabel new];self.status.textColor=UIColor.lightGrayColor;self.status.numberOfLines=0;self.status.font=[UIFont systemFontOfSize:15];
+    UILabel *resourceTitle=[UILabel new];resourceTitle.text=text("dmP5RResourcesTitle");resourceTitle.textColor=UIColor.whiteColor;
+    resourceTitle.font=[UIFont boldSystemFontOfSize:19];
+    UIStackView *resources=[[UIStackView alloc] initWithArrangedSubviews:@[resourceTitle,self.status,self.resourceButton]];
+    resources.axis=UILayoutConstraintAxisVertical;resources.spacing=12;resources.alignment=UIStackViewAlignmentLeading;
+    resources.translatesAutoresizingMaskIntoConstraints=NO;
+    UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;[menu addSubview:scroll];[scroll addSubview:resources];
+    UILayoutGuide *safe=menu.safeAreaLayoutGuide;
+    NSLayoutConstraint *panelWidth=[scroll.widthAnchor constraintEqualToConstant:520];panelWidth.priority=UILayoutPriorityDefaultHigh;
+    NSLayoutConstraint *startWidth=[self.launch.widthAnchor constraintEqualToConstant:220];startWidth.priority=UILayoutPriorityDefaultHigh;
+    [NSLayoutConstraint activateConstraints:@[
+        [title.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:24],[title.topAnchor constraintEqualToAnchor:safe.topAnchor constant:16],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:safe.trailingAnchor constant:-24],
+        [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],[subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:4],
+        [subtitle.trailingAnchor constraintLessThanOrEqualToAnchor:safe.trailingAnchor constant:-24],
+        [self.launch.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-24],
+        [self.launch.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-16],[self.launch.heightAnchor constraintEqualToConstant:56],startWidth,
+        [self.launch.widthAnchor constraintLessThanOrEqualToAnchor:safe.widthAnchor multiplier:.48],
+        [self.settingsButton.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:24],
+        [self.settingsButton.centerYAnchor constraintEqualToAnchor:self.launch.centerYAnchor],[self.settingsButton.heightAnchor constraintGreaterThanOrEqualToConstant:44],
+        [self.settingsButton.trailingAnchor constraintLessThanOrEqualToAnchor:self.launch.leadingAnchor constant:-16],
+        [scroll.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],[scroll.trailingAnchor constraintLessThanOrEqualToAnchor:safe.trailingAnchor constant:-24],panelWidth,
+        [scroll.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:22],[scroll.bottomAnchor constraintEqualToAnchor:self.launch.topAnchor constant:-16],
+        [resources.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+        [resources.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+        [resources.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+        [resources.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+        [resources.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
+        [self.resourceButton.heightAnchor constraintGreaterThanOrEqualToConstant:44]]];
+    self.renderMode=[[UISegmentedControl alloc] initWithItems:@[text("dmP5RQuality"),text("dmP5RPerformance")]];
+    self.renderMode.selectedSegmentTintColor=[UIColor colorWithRed:.85 green:.025 blue:.1 alpha:1];
     [self.renderMode setTitleTextAttributes:@{NSForegroundColorAttributeName:UIColor.whiteColor} forState:UIControlStateNormal];
-    [self.renderMode setTitleTextAttributes:@{NSForegroundColorAttributeName:UIColor.blackColor} forState:UIControlStateSelected];
-    NSInteger saved=[NSUserDefaults.standardUserDefaults integerForKey:@"p5r.renderPreset"];
-    self.renderMode.selectedSegmentIndex=saved==1?1:0;
+    [self.renderMode setTitleTextAttributes:@{NSForegroundColorAttributeName:UIColor.whiteColor} forState:UIControlStateSelected];
+    self.renderMode.selectedSegmentIndex=[NSUserDefaults.standardUserDefaults integerForKey:@"p5r.renderPreset"]==1?1:0;
     self.renderMode.accessibilityLabel=text("dmP5RRenderMode");
     [self.renderMode addTarget:self action:@selector(renderModeChanged) forControlEvents:UIControlEventValueChanged];
-    self.renderHint=[UILabel new];self.renderHint.font=[UIFont systemFontOfSize:13];
-    self.renderHint.textColor=UIColor.lightGrayColor;self.renderHint.numberOfLines=0;self.renderHint.textAlignment=NSTextAlignmentCenter;
+    self.renderHint=[UILabel new];self.renderHint.textColor=UIColor.lightGrayColor;self.renderHint.font=[UIFont systemFontOfSize:15];self.renderHint.numberOfLines=0;
     [self renderModeChanged];
-    self.menu = [[UIStackView alloc] initWithArrangedSubviews:@[self.status,self.renderMode,self.renderHint,self.launch,self.gpuTest,self.bootProbe,self.gpuStatus]];
-    self.menu.axis = UILayoutConstraintAxisVertical; self.menu.spacing = 8;
-    UIScrollView *scroll=[UIScrollView new];self.launcherScroll=scroll;scroll.translatesAutoresizingMaskIntoConstraints=NO;[self.view addSubview:scroll];
-    UIView *content=[UIView new];content.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:content];
-    self.menu.translatesAutoresizingMaskIntoConstraints = NO; [content addSubview:self.menu];
-    NSLayoutConstraint *preferredWidth=[self.menu.widthAnchor constraintEqualToConstant:600];preferredWidth.priority=UILayoutPriorityDefaultHigh;
-    NSLayoutConstraint *preferredHeight=[content.heightAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.heightAnchor];preferredHeight.priority=UILayoutPriorityDefaultLow;
-    [NSLayoutConstraint activateConstraints:@[
-        [scroll.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:16],
-        [scroll.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
-        [scroll.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
-        [scroll.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-8],
-        [content.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
-        [content.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
-        [content.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
-        [content.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
-        [content.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
-        [content.heightAnchor constraintGreaterThanOrEqualToAnchor:scroll.frameLayoutGuide.heightAnchor],preferredHeight,
-        [self.menu.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
-        [self.menu.centerYAnchor constraintEqualToAnchor:content.centerYAnchor],
-        [self.menu.widthAnchor constraintLessThanOrEqualToAnchor:content.widthAnchor],preferredWidth,
-        [self.menu.topAnchor constraintGreaterThanOrEqualToAnchor:content.topAnchor constant:8],
-        [self.menu.bottomAnchor constraintLessThanOrEqualToAnchor:content.bottomAnchor constant:-8],
-        [self.renderMode.heightAnchor constraintGreaterThanOrEqualToConstant:36],
-        [self.launch.heightAnchor constraintGreaterThanOrEqualToConstant:44],
-        [self.bootProbe.heightAnchor constraintGreaterThanOrEqualToConstant:44],
-        [self.gpuTest.heightAnchor constraintGreaterThanOrEqualToConstant:44]]];
-    NSString *path = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/p5r-package.json"];
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    self.package = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-    BOOL ready = [self.package[@"runtime_ready"] isEqual:@YES];
-    self.status.text = text(ready ? "dmP5RReady" : guardedCandidate(self.package) ? "dmP5RCandidate" : self.package ? "dmP5RGraphicsPending" : "dmP5RShell");
-    self.launch.enabled = canLaunch(self.package);
-    self.bootProbe.enabled = [self.package[@"game_content_included"] isEqual:@YES];
-    self.poll = [CADisplayLink displayLinkWithTarget:self selector:@selector(pollController)];
-    [self.poll addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    NSURL *dm=[NSBundle.mainBundle.resourceURL URLByAppendingPathComponent:@"dm"];
+    self.package=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[dm URLByAppendingPathComponent:@"p5r-package.json"]]?:[NSData data] options:0 error:nil];
+    self.identity=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:[dm URLByAppendingPathComponent:@"p5r-shell.json"]]?:[NSData data] options:0 error:nil];
+    NSData *bookmark=[NSUserDefaults.standardUserDefaults dataForKey:@"p5r.resourceFolder"];
+    BOOL stale=NO;NSURL *saved=bookmark?[NSURL URLByResolvingBookmarkData:bookmark options:NSURLBookmarkResolutionWithoutUI relativeToURL:nil bookmarkDataIsStale:&stale error:nil]:nil;
+    NSURL *documents=[NSURL fileURLWithPath:NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject isDirectory:YES];
+    if(bookmark && !saved) {self.status.text=text("dmP5RResourcesAccess");self.launch.enabled=NO;}
+    else [self validateURL:saved?:documents save:bookmark!=nil launch:NO];
+    self.poll=[CADisplayLink displayLinkWithTarget:self selector:@selector(pollController)];[self.poll addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 - (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews]; CGSize size = self.view.bounds.size;
-    metalLayer.drawableSize = CGSizeMake(size.width * UIScreen.mainScreen.scale, size.height * UIScreen.mainScreen.scale);
+    [super viewDidLayoutSubviews];CGSize size=self.view.bounds.size;
+    metalLayer.drawableSize=CGSizeMake(size.width*UIScreen.mainScreen.scale,size.height*UIScreen.mainScreen.scale);
 }
 - (void)renderModeChanged {
-    if(started || self.testingGpu)return;
-    BOOL performance=self.renderMode.selectedSegmentIndex==1;
+    if(started)return;BOOL performance=self.renderMode.selectedSegmentIndex==1;
     [NSUserDefaults.standardUserDefaults setInteger:performance?1:0 forKey:@"p5r.renderPreset"];
     self.renderHint.text=text(performance?"dmP5RPerformanceHint":"dmP5RQualityHint");
 }
+- (void)showSettings {
+    if(started || self.checkingResources)return;
+    UIViewController *settings=[UIViewController new];settings.title=text("dmP5RSettings");settings.view.backgroundColor=[UIColor colorWithWhite:.08 alpha:1];
+    settings.preferredContentSize=CGSizeMake(500,300);
+    settings.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:text("dmP5RDone") style:UIBarButtonItemStyleDone target:self action:@selector(closeSettings)];
+    UILabel *label=[UILabel new];label.text=text("dmP5RRenderMode");label.textColor=UIColor.whiteColor;label.font=[UIFont boldSystemFontOfSize:20];
+    UILabel *note=[UILabel new];note.text=text("dmP5RSettingsHint");note.textColor=UIColor.lightGrayColor;note.numberOfLines=0;note.font=[UIFont systemFontOfSize:14];
+    UIStackView *stack=[[UIStackView alloc] initWithArrangedSubviews:@[label,self.renderMode,self.renderHint,note]];
+    stack.axis=UILayoutConstraintAxisVertical;stack.spacing=20;stack.translatesAutoresizingMaskIntoConstraints=NO;[settings.view addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:settings.view.safeAreaLayoutGuide.leadingAnchor constant:24],
+        [stack.trailingAnchor constraintEqualToAnchor:settings.view.safeAreaLayoutGuide.trailingAnchor constant:-24],
+        [stack.topAnchor constraintEqualToAnchor:settings.view.safeAreaLayoutGuide.topAnchor constant:24],
+        [stack.bottomAnchor constraintLessThanOrEqualToAnchor:settings.view.safeAreaLayoutGuide.bottomAnchor constant:-16],
+        [self.renderMode.heightAnchor constraintGreaterThanOrEqualToConstant:40]]];
+    UINavigationController *navigation=[[UINavigationController alloc] initWithRootViewController:settings];
+    navigation.modalPresentationStyle=UIModalPresentationFormSheet;[self presentViewController:navigation animated:YES completion:nil];
+}
+- (void)closeSettings {[self dismissViewControllerAnimated:YES completion:nil];}
+- (void)pickResourceFolder {
+    if(started || self.checkingResources)return;
+    UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
+    picker.delegate=self;picker.allowsMultipleSelection=NO;picker.directoryURL=self.resourceURL;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+- (void)documentPicker:(UIDocumentPickerViewController *)picker didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)picker;if(urls.firstObject)[self validateURL:urls.firstObject save:YES launch:NO];
+}
+- (void)validateURL:(NSURL *)url save:(BOOL)save launch:(BOOL)launch {
+    if(started || self.checkingResources || !url)return;
+    self.checkingResources=YES;self.launch.enabled=self.settingsButton.enabled=self.resourceButton.enabled=NO;
+    self.status.text=text("dmP5RResourcesChecking");
+    BOOL lease=[url startAccessingSecurityScopedResource];
+    NSURL *documents=[NSURL fileURLWithPath:NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject isDirectory:YES];
+    BOOL legacy=[url.URLByResolvingSymlinksInPath.path isEqual:documents.URLByResolvingSymlinksInPath.path];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{ @autoreleasepool {
+        __block NSString *errorKey=@"dmP5RResourcesAccess";__block NSDictionary *paths=nil;
+        NSError *coordinationError=nil;NSFileCoordinator *coordinator=[[NSFileCoordinator alloc] initWithFilePresenter:nil];
+        [coordinator coordinateReadingItemAtURL:url options:NSFileCoordinatorReadingWithoutChanges error:&coordinationError byAccessor:^(NSURL *coordinated) {
+            paths=p5r_resources(coordinated,self.identity[@"shader_chain"],self.package[@"guest_sha256"],
+                [NSBundle.mainBundle.resourceURL URLByAppendingPathComponent:@"dm"],legacy,&errorKey);
+        }];
+        if(coordinationError){paths=nil;errorKey=@"dmP5RResourcesAccess";}
+        NSData *bookmark=paths&&save?[url bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark includingResourceValuesForKeys:nil relativeToURL:nil error:nil]:nil;
+        if(paths && save && !bookmark){paths=nil;errorKey=@"dmP5RResourcesAccess";}
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.checkingResources=NO;self.settingsButton.enabled=self.resourceButton.enabled=YES;
+            if(paths) {
+                if(self.resourceLease)[self.resourceURL stopAccessingSecurityScopedResource];
+                self.resourceURL=url;self.resourceLease=lease;self.resourcePaths=paths;
+                if(bookmark)[NSUserDefaults.standardUserDefaults setObject:bookmark forKey:@"p5r.resourceFolder"];
+                self.status.text=[NSString stringWithFormat:text("dmP5RResourcesReady"),legacy?text("dmP5RResourcesLocal"):url.lastPathComponent];
+            } else {
+                if(lease)[url stopAccessingSecurityScopedResource];
+                self.status.text=text((errorKey?:@"dmP5RResourcesIncomplete").UTF8String);
+                if(launch)self.resourcePaths=nil;
+                else if(self.resourcePaths)self.status.text=[NSString stringWithFormat:text("dmP5RResourcesKept"),self.status.text,self.resourceURL.lastPathComponent];
+            }
+            BOOL component=[NSFileManager.defaultManager fileExistsAtPath:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/Guest.framework/Guest"]];
+            self.launch.enabled=self.resourcePaths!=nil && component && canLaunch(self.package);
+            if(!component)self.status.text=text("dmP5RResourcesNoProgram");
+            if(launch && paths && self.launch.enabled)[self launchResolvedGuest];
+        });
+    }});
+}
 - (void)pollController {
     samplePower(NO);
-    if (self.probingBoot && CACurrentMediaTime() - self.probePollTime > .5) {
-        self.probePollTime = CACurrentMediaTime();
-        NSData *data = [NSData dataWithContentsOfFile:[self.probeDirectory stringByAppendingPathComponent:@"boot-report.json"]];
-        NSDictionary *report = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-        if (report && ![report[@"status"] isEqual:@"running"])
-            self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RBootStopped"),self.probeDirectory.lastPathComponent];
-    }
     GCExtendedGamepad *pad = GCController.controllers.firstObject.extendedGamepad;
-    BOOL hideTouch=!started || self.probingBoot || pad!=nil;
+    BOOL hideTouch=!started || pad!=nil;
     if(hideTouch && !self.touchControls.hidden) dm_gamepad_reset();
     self.touchControls.hidden=hideTouch;
     if (!pad || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) { dm_pad_set(0,0,0,0,0); return; }
@@ -216,14 +296,18 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     dm_pad_set(buttons, pad.leftThumbstick.xAxis.value * 32767, pad.leftThumbstick.yAxis.value * 32767,
                pad.rightThumbstick.xAxis.value * 32767, pad.rightThumbstick.yAxis.value * 32767);
 }
-- (void)startGuest {
-    if (started || self.testingGpu || !canLaunch(self.package)) return;
+- (void)startGuest {if(self.resourceURL)[self validateURL:self.resourceURL save:NO launch:YES];}
+- (void)launchResolvedGuest {
+    if (started || !self.resourcePaths || !canLaunch(self.package)) return;
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *romfs = [documents stringByAppendingPathComponent:@"romfs"];
+    NSString *romfs = self.resourcePaths[@"romfs"].path;
     if (![NSFileManager.defaultManager fileExistsAtPath:[romfs stringByAppendingPathComponent:@"CPK/ALL_ASIA.CPK"]]) {
-        self.status.text = text("dmP5RRomfsMissing"); return;
+        self.resourcePaths=nil;self.launch.enabled=NO;self.status.text=text("dmP5RResourcesIncomplete");return;
     }
-    started = 1; self.menu.hidden = YES;self.launcherScroll.hidden=YES;self.renderMode.enabled=NO;
+    started = 1;self.launcherView.hidden=YES;self.renderMode.enabled=NO;
+    UIApplication.sharedApplication.idleTimerDisabled=YES;
+    NSString *homePrefix=[[[NSURL fileURLWithPath:NSHomeDirectory()] URLByResolvingSymlinksInPath].path stringByAppendingString:@"/"];
+    activeExternalRoot=[self.resourceURL.URLByResolvingSymlinksInPath.path hasPrefix:homePrefix]?nil:self.resourceURL;
     self.touchControls.hidden=NO;
     NSString *save = [documents stringByAppendingPathComponent:@"save-p5r"], *temporary = [documents stringByAppendingPathComponent:@"temp-p5r"];
     for (NSString *directory in @[save, temporary]) [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
@@ -231,16 +315,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     if(guardedCandidate(self.package))setenv("DM_P5R_RUNTIME_MODE","guarded",1);
     else unsetenv("DM_P5R_RUNTIME_MODE");
     setenv("DM_SAVE", save.fileSystemRepresentation, 1); setenv("DM_TEMP", temporary.fileSystemRepresentation, 1);
-    setenv("DM_NVN_SHMAP", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/shader_map.tsv"].fileSystemRepresentation, 1);
-    NSData *identityData=[NSData dataWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm/p5r-shell.json"]];
-    NSDictionary *identity=identityData?[NSJSONSerialization JSONObjectWithData:identityData options:0 error:nil]:nil;
-    // Keep the large shader cache out of the signed bundle when it has been
-    // uploaded to Documents/p5r-shaders; the bundle copy remains the fallback.
-    NSString *msl=[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"msl"];
-    NSString *external=[documents stringByAppendingPathComponent:@"p5r-shaders"];
-    NSString *chain=identity[@"shader_chain"];
-    if(chain.length&&[NSFileManager.defaultManager fileExistsAtPath:[external stringByAppendingPathComponent:[@"b-" stringByAppendingString:chain]]])msl=external;
-    setenv("DM_MSL_DIR", msl.fileSystemRepresentation, 1);
+    setenv("DM_NVN_SHMAP",self.resourcePaths[@"map"].fileSystemRepresentation,1);
+    NSDictionary *identity=self.identity;
+    NSString *msl=self.resourcePaths[@"shaders"].path;
+    setenv("DM_MSL_DIR",msl.fileSystemRepresentation,1);
     // Documents/p5r-config.txt：一行一个 KEY=VALUE，给宿主诊断开关用，改完重启游戏即可生效。
     // 只接受 DM_ 前缀，且不允许改写路径 / 归档 / 配置档这些由壳自己决定的键。
     // Documents/p5r-config.txt: one KEY=VALUE per line for host diagnostics; restart the game to apply.
@@ -257,7 +335,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
             NSString *key = [[line substringToIndex:eq.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
             NSString *value = [[line substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
             if (![key hasPrefix:@"DM_"] || ![key length] || ![value length]) continue;
-            if ([@[@"DM_ROMFS",@"DM_SAVE",@"DM_TEMP",@"DM_GUEST_PROFILE",@"DM_MSL_DIR"] containsObject:key]) continue;
+            if ([@[@"DM_ROMFS",@"DM_SAVE",@"DM_TEMP",@"DM_GUEST_PROFILE",@"DM_MSL_DIR",@"DM_NVN_SHMAP"] containsObject:key]) continue;
             setenv(key.UTF8String, value.UTF8String, 1);
             if (applied.count < 16) [applied addObject:[NSString stringWithFormat:@"%@=%@", key, value]];
         }
@@ -277,84 +355,29 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     LOG("P5R render preset: %s operation_mode=%d",renderPreset?"quality":"performance",renderPreset);
     samplePower(YES);
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 8 << 20);
-    pthread_t thread; if (pthread_create(&thread, &attr, runHost, NULL)) { started = 0; self.menu.hidden = NO;self.launcherScroll.hidden=NO;self.renderMode.enabled=YES; self.status.text = text("dmP5RStartFailed"); }
+    pthread_t thread; if (pthread_create(&thread, &attr, runHost, NULL)) { started = 0; self.launcherView.hidden=NO;UIApplication.sharedApplication.idleTimerDisabled=NO;self.renderMode.enabled=YES; self.status.text = text("dmP5RStartFailed"); }
     else pthread_detach(thread);
     pthread_attr_destroy(&attr);
-}
-- (void)probeBoot {
-    if (started || self.testingGpu || ![self.package[@"game_content_included"] isEqual:@YES]) return;
-    NSString *guest = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/Guest.framework/Guest"];
-    if (![NSFileManager.defaultManager fileExistsAtPath:guest]) { self.gpuStatus.text = text("dmP5RBootMissing"); return; }
-    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
-    BOOL resourceDirectory=NO;
-    if (![NSFileManager.defaultManager fileExistsAtPath:[documents stringByAppendingPathComponent:@"romfs"] isDirectory:&resourceDirectory] || !resourceDirectory) {
-        self.gpuStatus.text = text("dmP5RStartupNeedsRomfs"); return;
-    }
-    NSString *directory = [documents stringByAppendingPathComponent:[@"p5r-boot-probe-" stringByAppendingString:NSUUID.UUID.UUIDString]];
-    if (!dm_boot_probe_begin_pre_submit(directory.fileSystemRepresentation)) { self.gpuStatus.text = text("dmP5RBootReportFailed"); return; }
-    started = 1; self.probingBoot = YES; self.probeDirectory = directory;
-    self.renderMode.enabled=NO;
-    self.launch.enabled = self.gpuTest.enabled = self.bootProbe.enabled = NO;
-    self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RPreSubmitRunning"),directory.lastPathComponent];
-    int log = open([directory stringByAppendingPathComponent:@"runtime.log"].fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL,0600);
-    if (log < 0) { dm_boot_probe_failure("cannot create runtime.log"); return; }
-    int redirected = dup2(log,STDERR_FILENO); close(log);
-    if (redirected < 0) { dm_boot_probe_failure("cannot redirect runtime.log"); return; }
-    setenv("DM_GUEST_PROFILE","p5r",1); setenv("DM_BOOTPROF","1",1); setenv("DM_IMPORTS","1",1);
-    setenv("DM_FS","1",1);
-    if (chdir(directory.fileSystemRepresentation)) { dm_boot_probe_failure("cannot enter isolated diagnostic directory"); return; }
-    setenv("DM_ROMFS",[documents stringByAppendingPathComponent:@"romfs"].fileSystemRepresentation,1);
-    BOOL isDirectory=NO;
-    BOOL romfs=[NSFileManager.defaultManager fileExistsAtPath:[documents stringByAppendingPathComponent:@"romfs"] isDirectory:&isDirectory] && isDirectory;
-    dm_boot_probe_note("romfs_root",romfs ? "directory exists; contents unverified" : "directory is missing");
-    for (NSString *name in @[@"save",@"temp"]) {
-        NSString *path = [directory stringByAppendingPathComponent:name];
-        if (![NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:NO attributes:nil error:nil]) {
-            dm_boot_probe_failure("cannot create isolated save/temp directories"); return;
-        }
-        setenv([name isEqual:@"save"] ? "DM_SAVE":"DM_TEMP",path.fileSystemRepresentation,1);
-    }
-    pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr,8<<20);
-    pthread_t thread; int error = pthread_create(&thread,&attr,runHost,NULL); pthread_attr_destroy(&attr);
-    if (error) dm_boot_probe_failure("cannot create diagnostic host thread");
-    else pthread_detach(thread);
-}
-- (void)testGpu {
-    if (started || self.testingGpu) return;
-    self.testingGpu = YES; self.launch.enabled = self.gpuTest.enabled = NO;
-    self.renderMode.enabled=NO;
-    self.bootProbe.enabled = NO;
-    self.gpuStatus.text = text("dmP5RGpuRunning");
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
-        int result = nvn_texture_selftest();
-        BOOL passed3 = result == 0 || result == NVN_TEXTURE_SELFTEST_METAL4_UNSUPPORTED;
-        NSDictionary *report = @{@"schema_version":@1, @"synthetic_only":@YES, @"result_code":@(result),
-            @"metal3_passed":@(passed3), @"metal4_passed":@(result == 0),
-            @"metal4_skipped":@(result == NVN_TEXTURE_SELFTEST_METAL4_UNSUPPORTED),
-            @"cases_passed":@(result == 0 ? 96 : passed3 ? 48 : 0), @"game_graphics_verified":@NO,
-            @"time":@([NSDate.date timeIntervalSince1970]), @"os_version":NSProcessInfo.processInfo.operatingSystemVersionString};
-        NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
-        NSString *path = [documents stringByAppendingPathComponent:@"p5r-gpu-selftest.json"];
-        NSError *error = nil;
-        NSData *data = [NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:&error];
-        BOOL saved = data && [data writeToFile:path options:NSDataWritingAtomic error:&error];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.testingGpu = NO; self.gpuTest.enabled = YES;
-            self.renderMode.enabled=YES;
-            self.bootProbe.enabled = [self.package[@"game_content_included"] isEqual:@YES];
-            self.launch.enabled = canLaunch(self.package);
-            if (!saved) self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RGpuSaveFailed"),result];
-            else if (result == 0) self.gpuStatus.text = text("dmP5RGpuPassed");
-            else if (result == NVN_TEXTURE_SELFTEST_METAL4_UNSUPPORTED) self.gpuStatus.text = text("dmP5RGpuPartial");
-            else if (result == NVN_TEXTURE_SELFTEST_NO_DEVICE) self.gpuStatus.text = text("dmP5RGpuNoDevice");
-            else self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RGpuFailed"),result];
-        });
-    });
 }
 static void *runHost(void *unused) {
     (void)unused; @autoreleasepool {
         char *args[] = {"p5r-host", strdup([NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dm"].fileSystemRepresentation), "main", "sdk", "subsdk0", NULL};
-        dm_main(5, args); free(args[1]);
+        char **arguments=args;
+        if(activeExternalRoot) {
+            NSError *error=nil;NSFileCoordinator *coordinator=[[NSFileCoordinator alloc] initWithFilePresenter:nil];
+            [coordinator coordinateReadingItemAtURL:activeExternalRoot options:NSFileCoordinatorReadingWithoutChanges error:&error byAccessor:^(NSURL *url) {
+                (void)url;dm_main(5,arguments);
+            }];
+            if(error) {
+                LOG("P5R resource coordination failed: %s",error.localizedDescription.UTF8String);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    started=0;UIApplication.sharedApplication.idleTimerDisabled=NO;
+                    P5RController *owner=(P5RController *)controller;owner.launcherView.hidden=NO;
+                    owner.touchControls.hidden=YES;owner.renderMode.enabled=YES;owner.status.text=text("dmP5RResourcesAccess");
+                });
+            }
+        } else dm_main(5,arguments);
+        free(args[1]);
     } return NULL;
 }
 @end

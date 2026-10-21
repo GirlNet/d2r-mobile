@@ -90,6 +90,8 @@ jobs:
       - name: Link and package the complete game-free P5R host
         run: |
           set -euo pipefail
+          xcrun clang -fobjc-arc -fblocks -framework Foundation dm/ios/p5r/resources.m dm/ios/p5r/t_resources.m -o "$RUNNER_TEMP/p5r-resources-test"
+          "$RUNNER_TEMP/p5r-resources-test"
           xcrun clang -DDM_P5R_ONLY=1 dm/host/tests/t_guest_bootstrap.c dm/host/guest_bootstrap.c -o "$RUNNER_TEMP/p5r-profile"
           "$RUNNER_TEMP/p5r-profile" p5r
           python3 -m unittest discover -s dm/tools -p test_p5r_pack.py -v
