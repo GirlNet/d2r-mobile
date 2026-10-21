@@ -6,11 +6,12 @@ static uint64_t g_color_feedback_epoch, g_color_feedback_copies;
 
 static id<MTLTexture> color_feedback_root(id<MTLTexture> texture,NSUInteger *level,NSUInteger *slice) {
     *level=*slice=0;
-    while(texture.parentTexture) {
-        *level+=texture.parentRelativeLevel;*slice+=texture.parentRelativeSlice;
-        texture=texture.parentTexture;
+    id<MTLTexture> current=texture;
+    while(current.parentTexture) {
+        *level+=current.parentRelativeLevel;*slice+=current.parentRelativeSlice;
+        current=current.parentTexture;
     }
-    return texture;
+    return current;
 }
 static NSUInteger color_feedback_slices(id<MTLTexture> texture) {
     return texture.arrayLength*((texture.textureType==MTLTextureTypeCube || texture.textureType==MTLTextureTypeCubeArray)?6:1);
