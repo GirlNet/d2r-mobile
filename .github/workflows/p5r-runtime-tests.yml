@@ -48,6 +48,9 @@ on:
       - 'dm/i18n/**'
 permissions:
   contents: read
+concurrency:
+  group: p5r-runtime-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   ios-shell:
     # The iPhone executable is explicitly cross-compiled with -arch arm64.

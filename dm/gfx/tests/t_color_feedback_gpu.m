@@ -15,15 +15,16 @@ uint64_t now_ns(void){return bp_now();}
 
 static id<MTLLibrary> library;
 static unsigned case_count;
-static float quantize(float value,int half){return half?value:roundf(value*255)/255;}
-static void initial(float result[4],unsigned x,unsigned y,int clear,int half) {
+static float quantize(float value,int encoding,int channel){float range=encoding==2?(channel==3?3:1023):255;return encoding==1?value:roundf(value*range)/range;}
+static void initial(float result[4],unsigned x,unsigned y,int clear,int encoding) {
     const float background[]={.25,.5,.75,.125};
     float pattern[]={(x%8+1)/16.f,(y%4+1)/8.f,.25,.5};
-    for(int k=0;k<4;k++)result[k]=quantize(clear?background[k]:pattern[k],half);
+    for(int k=0;k<4;k++)result[k]=quantize(clear?background[k]:pattern[k],encoding,k);
 }
 static int read_pixels(id<MTLTexture> texture,unsigned selected_level,unsigned selected_slice,
                        int swizzle,int clear,int separate) {
     int half=texture.pixelFormat==MTLPixelFormatRGBA16Float,bgra=texture.pixelFormat==MTLPixelFormatBGRA8Unorm;
+    int packed=texture.pixelFormat==MTLPixelFormatRGB10A2Unorm,encoding=packed?2:half?1:0;
     unsigned bpp=half?8:4;
     for(unsigned layer=0;layer<texture.arrayLength;layer++)for(unsigned level=0;level<texture.mipmapLevelCount;level++) {
         unsigned width=MAX(texture.width>>level,1u),height=MAX(texture.height>>level,1u);
@@ -36,14 +37,15 @@ static int read_pixels(id<MTLTexture> texture,unsigned selected_level,unsigned s
             destinationBytesPerImage:(NSUInteger)pitch*height];
         [encoder endEncoding];[cb commit];[cb waitUntilCompleted];CHECK(cb.status==MTLCommandBufferStatusCompleted);
         for(unsigned y=0;y<height;y++)for(unsigned x=0;x<width;x++) {
-            float expected[4];for(int k=0;k<4;k++)expected[k]=quantize(.875,half);
+            float expected[4];for(int k=0;k<4;k++)expected[k]=quantize(.875,encoding,k);
             if(layer==selected_slice && level==selected_level) {
-                initial(expected,(x+(separate?1:3))%width,y,clear,half);
+                initial(expected,(x+(separate?1:3))%width,y,clear,encoding);
                 if(swizzle){float swap[4];memcpy(swap,expected,sizeof swap);for(int k=0;k<4;k++)expected[k]=swap[3-k];}
             }
             const uint8_t *bytes=(const uint8_t *)output.contents+y*pitch+x*bpp;
             for(int k=0;k<4;k++) {
-                float actual=half?(float)((const __fp16 *)bytes)[k]:bytes[bgra&&k<3?2-k:k]/255.f;
+                uint32_t word=0;if(packed)memcpy(&word,bytes,4);
+                float actual=packed?((word>>(k*10))&(k==3?3:1023))/(k==3?3.f:1023.f):half?(float)((const __fp16 *)bytes)[k]:bytes[bgra&&k<3?2-k:k]/255.f;
                 if(!isfinite(actual)||fabsf(actual-expected[k])>.002f) {
                     fprintf(stderr,"case%u layer%u level%u pixel%u,%u c%d got%g expected%g\n",case_count,layer,level,x,y,k,actual,expected[k]);return 1;
                 }
@@ -130,10 +132,11 @@ int main(void){@autoreleasepool{
     NSError *error=nil;MTLCompileOptions *options=[MTLCompileOptions new];options.fastMathEnabled=NO;
     library=[g_dev newLibraryWithSource:source options:options error:&error];if(!library)fprintf(stderr,"%s\n",error.localizedDescription.UTF8String);CHECK(library);
     CHECK(!one_case(NVN_FORMAT_RGBA8,MTLPixelFormatRGBA8Unorm,32,16,0,0,0,0,0));
-    CHECK(!one_case(NVN_FORMAT_RGBA16F,MTLPixelFormatRGBA16Float,1440,810,0,0,0,0,0));
+    CHECK(!one_case(NVN_FORMAT_RGB10A2,MTLPixelFormatRGB10A2Unorm,1440,810,0,0,0,0,0));
+    CHECK(!one_case(NVN_FORMAT_RGBA16F,MTLPixelFormatRGBA16Float,32,16,0,0,0,0,0));
     CHECK(!one_case(NVN_FORMAT_RGBA16F,MTLPixelFormatRGBA16Float,32,16,1,1,0,0,0));
     CHECK(!one_case(NVN_FORMAT_BGRA8,MTLPixelFormatBGRA8Unorm,32,16,0,0,1,0,0));
     CHECK(!one_case(NVN_FORMAT_RGBA8,MTLPixelFormatRGBA8Unorm,32,16,0,0,0,1,0));
     CHECK(!one_case(NVN_FORMAT_RGBA8,MTLPixelFormatRGBA8Unorm,32,16,0,0,0,0,1));
-    puts("COLOR FEEDBACK GPU OK: six public draw cases, repeated background offsets, HDR/alpha, mip/layer/swizzle, pending clears, duplicate binding isolation, nonalias fast path and bounded scratch reuse");return 0;
+    puts("COLOR FEEDBACK GPU OK: seven public draw cases, repeated background offsets, observed RGB10A2 shape, HDR/alpha, mip/layer/swizzle, pending clears, duplicate binding isolation, nonalias fast path and bounded scratch reuse");return 0;
 }}
