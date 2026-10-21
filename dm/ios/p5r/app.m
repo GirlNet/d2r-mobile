@@ -104,6 +104,9 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 @property CADisplayLink *poll;
 @property NSDictionary *package;
 @property UIView *touchControls;
+@property UISegmentedControl *renderMode;
+@property UILabel *renderHint;
+@property UIScrollView *launcherScroll;
 @end
 @implementation P5RController
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
@@ -131,13 +134,38 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     self.bootProbe = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.bootProbe setTitle:text("dmP5RPreSubmitProbe") forState:UIControlStateNormal];
     [self.bootProbe addTarget:self action:@selector(probeBoot) forControlEvents:UIControlEventTouchUpInside];
-    self.menu = [[UIStackView alloc] initWithArrangedSubviews:@[self.status,self.launch,self.gpuTest,self.bootProbe,self.gpuStatus]];
-    self.menu.axis = UILayoutConstraintAxisVertical; self.menu.spacing = 12;
-    self.menu.translatesAutoresizingMaskIntoConstraints = NO; [self.view addSubview:self.menu];
+    self.renderMode = [[UISegmentedControl alloc] initWithItems:@[text("dmP5RQuality"),text("dmP5RPerformance")]];
+    NSInteger saved=[NSUserDefaults.standardUserDefaults integerForKey:@"p5r.renderPreset"];
+    self.renderMode.selectedSegmentIndex=saved==1?1:0;
+    self.renderMode.accessibilityLabel=text("dmP5RRenderMode");
+    [self.renderMode addTarget:self action:@selector(renderModeChanged) forControlEvents:UIControlEventValueChanged];
+    self.renderHint=[UILabel new];self.renderHint.font=[UIFont systemFontOfSize:13];
+    self.renderHint.textColor=UIColor.lightGrayColor;self.renderHint.numberOfLines=0;self.renderHint.textAlignment=NSTextAlignmentCenter;
+    [self renderModeChanged];
+    self.menu = [[UIStackView alloc] initWithArrangedSubviews:@[self.status,self.renderMode,self.renderHint,self.launch,self.gpuTest,self.bootProbe,self.gpuStatus]];
+    self.menu.axis = UILayoutConstraintAxisVertical; self.menu.spacing = 8;
+    UIScrollView *scroll=[UIScrollView new];self.launcherScroll=scroll;scroll.translatesAutoresizingMaskIntoConstraints=NO;[self.view addSubview:scroll];
+    UIView *content=[UIView new];content.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:content];
+    self.menu.translatesAutoresizingMaskIntoConstraints = NO; [content addSubview:self.menu];
+    NSLayoutConstraint *preferredWidth=[self.menu.widthAnchor constraintEqualToConstant:600];preferredWidth.priority=UILayoutPriorityDefaultHigh;
+    NSLayoutConstraint *preferredHeight=[content.heightAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.heightAnchor];preferredHeight.priority=UILayoutPriorityDefaultLow;
     [NSLayoutConstraint activateConstraints:@[
-        [self.menu.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.menu.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
-        [self.menu.widthAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.widthAnchor constant:-40],
+        [scroll.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:16],
+        [scroll.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
+        [scroll.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
+        [scroll.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-8],
+        [content.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+        [content.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+        [content.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+        [content.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+        [content.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
+        [content.heightAnchor constraintGreaterThanOrEqualToAnchor:scroll.frameLayoutGuide.heightAnchor],preferredHeight,
+        [self.menu.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
+        [self.menu.centerYAnchor constraintEqualToAnchor:content.centerYAnchor],
+        [self.menu.widthAnchor constraintLessThanOrEqualToAnchor:content.widthAnchor],preferredWidth,
+        [self.menu.topAnchor constraintGreaterThanOrEqualToAnchor:content.topAnchor constant:8],
+        [self.menu.bottomAnchor constraintLessThanOrEqualToAnchor:content.bottomAnchor constant:-8],
+        [self.renderMode.heightAnchor constraintGreaterThanOrEqualToConstant:36],
         [self.launch.heightAnchor constraintGreaterThanOrEqualToConstant:44],
         [self.bootProbe.heightAnchor constraintGreaterThanOrEqualToConstant:44],
         [self.gpuTest.heightAnchor constraintGreaterThanOrEqualToConstant:44]]];
@@ -154,6 +182,12 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews]; CGSize size = self.view.bounds.size;
     metalLayer.drawableSize = CGSizeMake(size.width * UIScreen.mainScreen.scale, size.height * UIScreen.mainScreen.scale);
+}
+- (void)renderModeChanged {
+    if(started || self.testingGpu)return;
+    BOOL performance=self.renderMode.selectedSegmentIndex==1;
+    [NSUserDefaults.standardUserDefaults setInteger:performance?1:0 forKey:@"p5r.renderPreset"];
+    self.renderHint.text=text(performance?"dmP5RPerformanceHint":"dmP5RQualityHint");
 }
 - (void)pollController {
     samplePower(NO);
@@ -186,7 +220,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     if (![NSFileManager.defaultManager fileExistsAtPath:[romfs stringByAppendingPathComponent:@"CPK/ALL_ASIA.CPK"]]) {
         self.status.text = text("dmP5RRomfsMissing"); return;
     }
-    started = 1; self.menu.hidden = YES;
+    started = 1; self.menu.hidden = YES;self.launcherScroll.hidden=YES;self.renderMode.enabled=NO;
     self.touchControls.hidden=NO;
     NSString *save = [documents stringByAppendingPathComponent:@"save-p5r"], *temporary = [documents stringByAppendingPathComponent:@"temp-p5r"];
     for (NSString *directory in @[save, temporary]) [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
@@ -226,6 +260,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         }
         if (applied.count) LOG("P5R config: %s", ([applied componentsJoinedByString:@" "]).UTF8String);
       } }
+    // 启动菜单是本次画质选择的来源；覆盖旧诊断文件，并同步可能已查询过的运行模式缓存。
+    // The launch menu owns this launch's quality choice; override stale diagnostics and update any previously queried operation-mode cache.
+    int renderPreset=self.renderMode.selectedSegmentIndex==1?0:1;
+    setenv("DM_OPMODE",renderPreset?"1":"0",1);dm_set_opmode(renderPreset);
     { extern void nvn_prof_apply(void); nvn_prof_apply(); }   // 配置读完后才能决定是否套计时包装 | Decide on the timing wrappers only after the config is read
     chdir(documents.fileSystemRepresentation);
     freopen([documents stringByAppendingPathComponent:@"p5r-runtime.log"].fileSystemRepresentation, "a", stderr);
@@ -233,9 +271,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     LOG("P5R shader directory=%s",msl.fileSystemRepresentation);
     LOG("P5R normal launch build=%s shader_chain=%s mode=%s",[identity[@"source_fingerprint"] UTF8String]?:"unknown",
         [identity[@"shader_chain"] UTF8String]?:"unknown",guardedCandidate(self.package)?"guarded":"ready");
+    LOG("P5R render preset: %s operation_mode=%d",renderPreset?"quality":"performance",renderPreset);
     samplePower(YES);
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 8 << 20);
-    pthread_t thread; if (pthread_create(&thread, &attr, runHost, NULL)) { started = 0; self.menu.hidden = NO; self.status.text = text("dmP5RStartFailed"); }
+    pthread_t thread; if (pthread_create(&thread, &attr, runHost, NULL)) { started = 0; self.menu.hidden = NO;self.launcherScroll.hidden=NO;self.renderMode.enabled=YES; self.status.text = text("dmP5RStartFailed"); }
     else pthread_detach(thread);
     pthread_attr_destroy(&attr);
 }
@@ -251,6 +290,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     NSString *directory = [documents stringByAppendingPathComponent:[@"p5r-boot-probe-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     if (!dm_boot_probe_begin_pre_submit(directory.fileSystemRepresentation)) { self.gpuStatus.text = text("dmP5RBootReportFailed"); return; }
     started = 1; self.probingBoot = YES; self.probeDirectory = directory;
+    self.renderMode.enabled=NO;
     self.launch.enabled = self.gpuTest.enabled = self.bootProbe.enabled = NO;
     self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RPreSubmitRunning"),directory.lastPathComponent];
     int log = open([directory stringByAppendingPathComponent:@"runtime.log"].fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL,0600);
@@ -279,6 +319,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 - (void)testGpu {
     if (started || self.testingGpu) return;
     self.testingGpu = YES; self.launch.enabled = self.gpuTest.enabled = NO;
+    self.renderMode.enabled=NO;
     self.bootProbe.enabled = NO;
     self.gpuStatus.text = text("dmP5RGpuRunning");
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
@@ -296,6 +337,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         BOOL saved = data && [data writeToFile:path options:NSDataWritingAtomic error:&error];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.testingGpu = NO; self.gpuTest.enabled = YES;
+            self.renderMode.enabled=YES;
             self.bootProbe.enabled = [self.package[@"game_content_included"] isEqual:@YES];
             self.launch.enabled = canLaunch(self.package);
             if (!saved) self.gpuStatus.text = [NSString stringWithFormat:text("dmP5RGpuSaveFailed"),result];

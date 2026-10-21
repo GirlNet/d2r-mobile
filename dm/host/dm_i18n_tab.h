@@ -379,4 +379,9 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmP5RGpuSetupRunning", "正在初始化图形后端，完成后停止，不提交游戏画面。最长 30 秒，超时会退出 App。文稿目录：%@。", "Initializing the graphics backend; stop after setup without submitting game graphics. Up to 30 seconds; timeout closes the app. Documents folder: %@." },
     { "dmP5RPreSubmitProbe", "提交前诊断", "Probe Before Submission" },
     { "dmP5RPreSubmitRunning", "继续资源初始化和命令录制，在首次游戏 GPU 提交前停止。最长 30 秒，超时会退出 App。文稿目录：%@。", "Continuing resource setup and command recording; stop before the first game GPU submission. Up to 30 seconds; timeout closes the app. Documents folder: %@." },
+    { "dmP5RRenderMode", "画面模式", "Graphics mode" },
+    { "dmP5RQuality", "画质", "Quality" },
+    { "dmP5RPerformance", "性能", "Performance" },
+    { "dmP5RQualityHint", "优先画面清晰度。", "Prioritize image clarity." },
+    { "dmP5RPerformanceHint", "降低渲染分辨率，优先帧率。", "Lower rendering resolution to prioritize frame rate." },
 };
