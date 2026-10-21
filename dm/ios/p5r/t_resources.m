@@ -48,7 +48,7 @@ int main(void) { @autoreleasepool {
         if(test==9)stringFile(root,reflection,@"{\"profile\":\"other\",\"chain\":\"0123456789ab\"}");
         if(test>=10)assert([fm removeItemAtURL:[root URLByAppendingPathComponent:@"p5r-resources.json"] error:nil]);
         NSString *error=nil;
-        NSDictionary *result=p5r_resources(root,chain,@"synthetic",[root URLByAppendingPathComponent:@"dm"],test==11,&error);
+        NSDictionary<NSString *,NSURL *> *result=p5r_resources(root,chain,@"synthetic",[root URLByAppendingPathComponent:@"dm"],test==11,&error);
         BOOL valid=test==0 || test==11;
         assert((result!=nil)==valid);assert((error==nil)==valid);
         if(valid)assert([result[@"romfs"].path isEqual:[root.path stringByAppendingPathComponent:@"romfs"]]);
