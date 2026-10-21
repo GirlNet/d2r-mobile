@@ -18,10 +18,30 @@ extern void dm_haptics_stop(void);
 extern void dm_haptics_ios_init(void);
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdatomic.h>
 
 static CAMetalLayer *metalLayer;
 static UIViewController *controller;
 static int started;
+// 只读系统状态，按两秒缓存供宿主计时日志取用；不改变系统功耗或游戏画质。
+// Cache read-only system state every two seconds for host timing logs; do not change power policy or game quality.
+static _Atomic int powerThermal = -1;
+static _Atomic double powerBrightness = -1;
+static double powerNextSample;
+int dm_thermal_now(void) { return atomic_load_explicit(&powerThermal,memory_order_relaxed); }
+double dm_brightness_now(void) { return atomic_load_explicit(&powerBrightness,memory_order_relaxed); }
+static void samplePower(BOOL force) {
+    double now=CACurrentMediaTime();if(!force && now<powerNextSample)return;powerNextSample=now+2;
+    NSProcessInfo *process=NSProcessInfo.processInfo;int thermal=(int)process.thermalState;
+    static int previousLow=-1;int low=process.lowPowerModeEnabled;
+    int previousThermal=atomic_exchange_explicit(&powerThermal,thermal,memory_order_relaxed);
+    double brightness=UIScreen.mainScreen.brightness;
+    atomic_store_explicit(&powerBrightness,brightness,memory_order_relaxed);
+    if(started && (force || previousThermal!=thermal || previousLow!=low))
+        LOG("P5R power: thermal=%d low_power=%d brightness=%.2f active=%d",thermal,low,brightness,
+            UIApplication.sharedApplication.applicationState==UIApplicationStateActive);
+    previousLow=low;
+}
 static void *runHost(void *unused);
 int dm_main(int argc, char **argv);
 static NSString *text(const char *key) { return @(dm_ui(key)); }
@@ -136,6 +156,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     metalLayer.drawableSize = CGSizeMake(size.width * UIScreen.mainScreen.scale, size.height * UIScreen.mainScreen.scale);
 }
 - (void)pollController {
+    samplePower(NO);
     if (self.probingBoot && CACurrentMediaTime() - self.probePollTime > .5) {
         self.probePollTime = CACurrentMediaTime();
         NSData *data = [NSData dataWithContentsOfFile:[self.probeDirectory stringByAppendingPathComponent:@"boot-report.json"]];
@@ -212,6 +233,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     LOG("P5R shader directory=%s",msl.fileSystemRepresentation);
     LOG("P5R normal launch build=%s shader_chain=%s mode=%s",[identity[@"source_fingerprint"] UTF8String]?:"unknown",
         [identity[@"shader_chain"] UTF8String]?:"unknown",guardedCandidate(self.package)?"guarded":"ready");
+    samplePower(YES);
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 8 << 20);
     pthread_t thread; if (pthread_create(&thread, &attr, runHost, NULL)) { started = 0; self.menu.hidden = NO; self.status.text = text("dmP5RStartFailed"); }
     else pthread_detach(thread);
