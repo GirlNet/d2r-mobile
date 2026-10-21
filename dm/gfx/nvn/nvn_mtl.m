@@ -4485,6 +4485,7 @@ static int draw_samples_rt(NvProg *pr) {   // 采样附件保持原ser级保守g
             for (int j = 0; j < nr; j++) if (ser && ser == rs[j]) return 1; } }
     return 0;
 }
+#include "nvn_color_feedback.inc"
 // 整通道对深度 / 模板的需求（位：1 深度 2 模板；3 = 两项都要或证不了）。从开通道的这次绘制起，按真实回放顺序扫到通道结束：
 // 挂上的清除与本次绘制的状态先计入；之后的绘制按其深度模板状态累计；中途清除、嵌套过深等证不了的一律按两项都要
 // The whole render pass's need for depth / stencil (bits: 1 depth 2 stencil; 3 = both needed or cannot be proven). Starting from the draw that opens the render pass, scan in real replay order to the end of the render pass:
@@ -5762,6 +5763,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         // 打开编码器前先解析当前绑定；缓存的参数块不能证明客体贴图句柄仍然有效。
         prepare_shader_textures(pr->sh[0],0,vertex_textures);
         prepare_shader_textures(pr->sh[1],1,fragment_textures);
+        prepare_color_feedback(pr,vertex_textures,fragment_textures);
     }
     subprof_record(&g_subprof_preopen_ns, &g_subprof_preopen_n, prof_preopen0);
 #ifdef NVN_RT_RANGE_TEST

@@ -81,6 +81,9 @@ t_linear_glyph_gpu: t_linear_glyph_gpu.m nvn_gpu_test_device.h ../../host/crash.
 t_linear_float_gpu: t_linear_float_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_linear_float_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 
+t_color_feedback_gpu: t_color_feedback_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_color_feedback_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
 t_queue_concurrency_gpu: t_queue_concurrency_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_queue_concurrency_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 
@@ -135,6 +138,7 @@ t_pfv: t_pfv.m ../../host/crash.c $(GFX) $(GFX_H)
 # Dependencies one per line in alphabetical order (so that adding one test does not conflict on the whole line); the order of the commands below is unchanged
 run: \
 	t_builtin \
+	t_color_feedback_gpu \
 	t_cover \
 	t_defer_chain \
 	t_deswz_gpu \
@@ -158,6 +162,7 @@ run: \
 	t_xv \
 	t_zskip
 	./t_nvn
+	MTL_DEBUG_LAYER=1 ./t_color_feedback_gpu
 	./t_dirty_slots
 	./t_dirty_race
 	./t_builtin
