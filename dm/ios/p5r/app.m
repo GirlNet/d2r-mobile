@@ -135,6 +135,9 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     [self.bootProbe setTitle:text("dmP5RPreSubmitProbe") forState:UIControlStateNormal];
     [self.bootProbe addTarget:self action:@selector(probeBoot) forControlEvents:UIControlEventTouchUpInside];
     self.renderMode = [[UISegmentedControl alloc] initWithItems:@[text("dmP5RQuality"),text("dmP5RPerformance")]];
+    self.renderMode.backgroundColor=[UIColor colorWithWhite:1 alpha:.14];self.renderMode.selectedSegmentTintColor=UIColor.whiteColor;
+    [self.renderMode setTitleTextAttributes:@{NSForegroundColorAttributeName:UIColor.whiteColor} forState:UIControlStateNormal];
+    [self.renderMode setTitleTextAttributes:@{NSForegroundColorAttributeName:UIColor.blackColor} forState:UIControlStateSelected];
     NSInteger saved=[NSUserDefaults.standardUserDefaults integerForKey:@"p5r.renderPreset"];
     self.renderMode.selectedSegmentIndex=saved==1?1:0;
     self.renderMode.accessibilityLabel=text("dmP5RRenderMode");
