@@ -47,7 +47,7 @@ def run(command, log):
     return result.returncode
 
 
-def build(output,metal_backend=3):
+def build(output,metal_backend=4):
     if metal_backend not in (3,4):raise ValueError('Metal backend must be 3 or 4')
     output = output.resolve()
     if output.is_relative_to(REPO): raise ValueError('Build output must be outside the repository')
@@ -140,7 +140,7 @@ def build(output,metal_backend=3):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Link and package the game-free P5R iOS host on macOS.')
     parser.add_argument('output', type=Path)
-    parser.add_argument('--metal-backend',type=int,choices=(3,4),default=3,help='Default Metal 3 matches cloud GPU execution; Metal 4 remains opt-in')
+    parser.add_argument('--metal-backend',type=int,choices=(3,4),default=4,help='Use Metal 4 by default; Metal 3 remains available for comparisons')
     args = parser.parse_args()
     try: build(args.output,args.metal_backend)
     except (ValueError, OSError, RuntimeError) as error: parser.exit(1, str(error) + '\n')
