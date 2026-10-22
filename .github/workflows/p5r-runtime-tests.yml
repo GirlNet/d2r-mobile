@@ -348,13 +348,16 @@ jobs:
           import os,subprocess
           env=dict(os.environ,MTL_DEBUG_LAYER='1')
           for binary in ('t_queue_concurrency_gpu','t_queue_concurrency_gpu_m4'):
-              result=subprocess.run(['dm/gfx/tests/'+binary],capture_output=True,text=True,env=env,timeout=120)
-              print(result.stdout,result.stderr)
-              if result.returncode in (77,78) and binary.endswith('_m4'):
-                  print('::warning::Metal 4 concurrent queue execution unavailable')
-                  continue
-              if result.returncode or 'QUEUE CONCURRENCY GPU OK:' not in result.stdout:
-                  raise SystemExit('Concurrent queue regression failed: '+binary)
+              for options in ([],['--legacy-visibility']):
+                  result=subprocess.run(['dm/gfx/tests/'+binary,*options],capture_output=True,text=True,env=env,timeout=120)
+                  print(result.stdout,result.stderr)
+                  if result.returncode in (77,78) and binary.endswith('_m4'):
+                      print('::warning::Metal 4 concurrent queue execution unavailable')
+                      break
+                  if result.returncode or 'QUEUE CONCURRENCY GPU OK:' not in result.stdout or 'VISIBILITY PREFIX GPU OK:' not in result.stdout:
+                      raise SystemExit('Concurrent queue regression failed: '+binary)
+                  if not options and 'ASYNC VISIBILITY SUBMIT OK:' not in result.stdout:
+                      raise SystemExit('Visibility submit must return before the GPU is unblocked')
           result=subprocess.run(['dm/gfx/tests/t_queue_concurrency_gpu','--recursive-api'],capture_output=True,text=True,timeout=10)
           if result.returncode>=0 or 'Recursive NVN queue API' not in result.stderr:
               raise SystemExit('Recursive queue API must reject promptly, without deadlock')

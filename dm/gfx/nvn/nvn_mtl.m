@@ -551,7 +551,13 @@ typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t ad
 // and a report hands the slot table together with its buffer (retained) to the completion callback to sum and write back; after a report a new slot is used, so later draws are not counted into the reported value.
 // (Previously always wrote 0: occlusion query = 'fully occluded', campfires / light sources got culled - the character select screen calls ResetCounter 21 times per frame)
 typedef struct { void *buf; uint32_t slot; } vis_slot;
-typedef struct { uint64_t base; int n; vis_slot s[]; } vis_list;
+// 跨提交的累计值只写一次；队列和报告持有它，最后使用它的 GPU 工作完成后再撤驻留。
+// Cross-submit totals are written once, retained by queues/reports and retired after their last GPU use.
+@interface NvVisPrefix : NSObject { @public id<MTLBuffer> buf; } @end
+@implementation NvVisPrefix
+- (void)dealloc { defer_obj_release(buf); }
+@end
+typedef struct { uint64_t base; void *prefix; int n; vis_slot s[]; } vis_list;
 #define VIS_SLOTS 8192
 typedef struct { __strong id<MTLBuffer> buf; uint64_t fence; } vis_buf;
 static vis_buf g_vis_ring[4]; static int g_vis_ring_n, g_vis_ring_i = -1;
@@ -560,17 +566,27 @@ static int vis_in_ring(id<MTLBuffer> b) { for (int i = 0; i < g_vis_ring_n; i++)
 static int g_vis_on, g_vis_counting, g_vis_cur = -1; static uint64_t g_vis_cur_pass;
 static vis_slot *g_vs; static int g_nvs, g_vscap;      // 自上次清零以来的槽 | Slots since the last reset
 static uint64_t g_vis_base;
+static NvVisPrefix *g_vis_prefix;
+static int p5r_async_visibility_on(void) {
+    if(dm_guest_d2r())return 0;
+    static int enabled=-1;
+    if(enabled<0){const char *value=getenv("DM_P5R_ASYNC_VISIBILITY");enabled=!(value && !strcmp(value,"0"));}
+    return enabled;
+}
+static void vis_encode_prefix(void);
 static uint64_t g_cnt_report[32], g_cnt_reset[32];       // 各计数器类型的报告 / 清零次数（诊断） | Report / reset counts per counter type (diagnostics)
-static void vis_clear(void) { for (int i = 0; i < g_nvs; i++) CFRelease(g_vs[i].buf); g_nvs = 0; g_vis_cur = -1; g_vis_base=0; }
+static void vis_clear(void) { for (int i = 0; i < g_nvs; i++) CFRelease(g_vs[i].buf); g_nvs = 0; g_vis_cur = -1; g_vis_base=0; g_vis_prefix=nil; }
 // Only after waiting for all submitted work and CPU counter callbacks. Preserve
 // accumulated samples before a conditional-render split reuses visibility slots.
 static void vis_fold_completed(void) {
     uint64_t total=g_vis_base;
+    if(g_vis_prefix)total+=*(const uint64_t *)g_vis_prefix->buf.contents;
     for(int i=0;i<g_nvs;i++)total+=((const uint64_t *)((__bridge id<MTLBuffer>)g_vs[i].buf).contents)[g_vs[i].slot];
     vis_clear();g_vis_base=total;
 }
 static vis_list *vis_snapshot(void) {
     vis_list *l = malloc(sizeof *l + g_nvs * sizeof(vis_slot)); l->n = g_nvs;l->base=g_vis_base;
+    l->prefix=g_vis_prefix?(void *)CFBridgingRetain(g_vis_prefix):NULL;
     for (int i = 0; i < g_nvs; i++) { l->s[i] = g_vs[i]; CFRetain(g_vs[i].buf); }
     return l;
 }
@@ -921,6 +937,7 @@ uint64_t mtl_sub_commit(void) {
     defer_fallback();   // 推迟合并通道：提交结束仍有未回放的 P 绘制（正常路径不会到这里） | Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    if(p5r_async_visibility_on() && g_nvs)vis_encode_prefix();
     up_flush();
     uint64_t fence = ++g_fence;
     if (g_vis_ring_i >= 0) g_vis_ring[g_vis_ring_i].fence = fence;
@@ -942,6 +959,7 @@ uint64_t mtl_sub_commit(void) {
             if (ops[i].kind == 1) { if (ops[i].mode == 1) *ops[i].val += ops[i].v; else *ops[i].val = ops[i].v; }
             else if (ops[i].kind == 3) {   // 通过采样数：自清零以来各槽之和 | Samples passed: the sum of all slots since the reset
                 vis_list *l = ops[i].vis; uint64_t sum = l->base;
+                if(l->prefix){NvVisPrefix *prefix=(__bridge NvVisPrefix *)l->prefix;sum+=*(const uint64_t *)prefix->buf.contents;CFRelease(l->prefix);}
                 for (int k = 0; k < l->n; k++) { sum += ((const uint64_t *)((__bridge id<MTLBuffer>)l->s[k].buf).contents)[l->s[k].slot]; CFRelease(l->s[k].buf); }
                 free(l); uint64_t rec[2] = {sum, gpu_ticks()}; memcpy((void *)ops[i].addr, rec, sizeof rec);
             }
@@ -2945,6 +2963,8 @@ static size_t arena_alloc(size_t n, id<MTLBuffer> *buf) {
     }
     size_t off = g_cur_arena->used; g_cur_arena->used += n; *buf = g_cur_arena->buf; return off;
 }
+
+#include "nvn_visibility_prefix.inc"
 
 // ---------- 绘制状态 ----------
 // ---------- Draw state ----------

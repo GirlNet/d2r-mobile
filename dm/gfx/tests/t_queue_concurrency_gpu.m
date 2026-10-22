@@ -25,6 +25,30 @@ static void *submit_worker(void *arg){@autoreleasepool{
     }
     P(nvnQueueFinish)(w->queue);atomic_store(&w->returned,1);return NULL;
 }}
+// GPU 被外部事件挡住时，带遮挡计数的提交也必须能返回；退出前无条件解除事件并回收线程。
+// A visibility-counting submit must return while an external event blocks the GPU; always unblock and join before exit.
+typedef struct { NVNqueue *queue;NVNcommandHandle handle;_Atomic int returned; } gated_submit;
+static void *gated_submit_worker(void *arg){@autoreleasepool{
+    gated_submit *w=arg;P(nvnQueueSubmitCommands)(w->queue,1,&w->handle);atomic_store(&w->returned,1);return NULL;
+}}
+static int submit_behind_gate(NVNqueue *queue,NVNcommandHandle handle) {
+    id<MTLSharedEvent> gate=[g_dev newSharedEvent];CHECK(gate);
+#if DM_NVN_M3
+    id<MTLCommandBuffer> command=[g_q commandBuffer];[command encodeWaitForEvent:gate value:1];[command commit];
+#else
+    [g_q4 waitForEvent:gate value:1];
+#endif
+    gated_submit w={.queue=queue,.handle=handle};pthread_t thread;
+    int started=!pthread_create(&thread,NULL,gated_submit_worker,&w);
+    int returned=0;
+    if(started) {
+        for(int i=0;i<5000;i++){returned=atomic_load(&w.returned);if(returned)break;usleep(1000);}
+    }
+    gate.signaledValue=1;
+    if(started)pthread_join(thread,NULL);
+    CHECK(started);CHECK(returned);
+    puts("ASYNC VISIBILITY SUBMIT OK: public submit returned before blocked GPU was released");return 0;
+}
 static int concurrent_submit(void) {
     size_t size=1024*1024;uint8_t *memory=NULL;CHECK(!posix_memalign((void **)&memory,getpagesize(),size));memset(memory,0xa7,size);
     pool_t pool={.magic=MAGIC('P','O','O','L'),.flags=0x22,.mem=memory,.size=size};mtl_pool_add(memory,size);
@@ -125,6 +149,29 @@ static int queue_state_pixels(void) {
         P(nvnCommandBufferPopDebugGroupId)(&cb[i],7);NVNcommandHandle h=P(nvnCommandBufferEndRecording)(&cb[i]);P(nvnQueueSubmitCommands)(&queues[i],1,&h);P(nvnQueueFinish)(&queues[i]);
         queue_api_enter();mtl_queue_restore(&((queue_t *)&queues[i])->replay_state);CHECK(!g_debug_groups.count);queue_api_leave();
     }
+    // 不在每次提交后 Finish：跨两个队列、反复重用四块槽缓冲，覆盖只报告、报告后继续绘制及各自清零。
+    // Do not Finish after every submit: alternate queues and reuse four slot buffers, including prefix-only reports, later draws and independent resets.
+    enum { COUNTER_ROUNDS=18 };
+    uint64_t totals[2]={32,32},expected[2][COUNTER_ROUNDS][2];
+    for(int round=0;round<COUNTER_ROUNDS;round++)for(int i=0;i<2;i++) {
+        P(nvnCommandBufferBeginRecording)(&cb[i]);
+        if(round==(i?10:7)){P(nvnCommandBufferResetCounter)(&cb[i],NVN_COUNTER_TYPE_SAMPLES_PASSED);totals[i]=0;}
+        if(round%3){P(nvnCommandBufferDrawArrays)(&cb[i],NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);totals[i]+=16;}
+        uintptr_t report=(uintptr_t)(memory+1024+i*1024+round*32);
+        P(nvnCommandBufferReportCounter)(&cb[i],NVN_COUNTER_TYPE_SAMPLES_PASSED,report);expected[i][round][0]=totals[i];
+        if(round%4){P(nvnCommandBufferDrawArrays)(&cb[i],NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);totals[i]+=16;}
+        P(nvnCommandBufferReportCounter)(&cb[i],NVN_COUNTER_TYPE_SAMPLES_PASSED,report+16);expected[i][round][1]=totals[i];
+        NVNcommandHandle h=P(nvnCommandBufferEndRecording)(&cb[i]);
+        if(round==1 && i==0 && p5r_async_visibility_on())CHECK(!submit_behind_gate(&queues[i],h));
+        else P(nvnQueueSubmitCommands)(&queues[i],1,&h);
+    }
+    for(int i=0;i<2;i++)P(nvnQueueFinish)(&queues[i]);
+    for(int i=0;i<2;i++)for(int round=0;round<COUNTER_ROUNDS;round++)for(int report=0;report<2;report++) {
+        CHECK(*(uint64_t *)(memory+1024+i*1024+round*32+report*16)==expected[i][round][report]);
+        CHECK(*(uint64_t *)(memory+1032+i*1024+round*32+report*16)!=UINT64_C(0xa7a7a7a7a7a7a7a7));
+    }
+    for(int i=0;i<65536;i++)if(!(i<32 || (i>=64 && i<96) || (i>=1024 && i<1024+COUNTER_ROUNDS*32) || (i>=2048 && i<2048+COUNTER_ROUNDS*32)))CHECK(memory[i]==0xa7);
+    puts("VISIBILITY PREFIX GPU OK: 72 exact reports, independent resets, immutable snapshots and repeated ring reuse");
     for(int i=0;i<2;i++) {
         CHECK(*(uint64_t *)(memory+i*64)==16 && *(uint64_t *)(memory+i*64+16)==32);
         id<MTLBuffer> output=[g_dev newBufferWithLength:1024 options:MTLResourceStorageModeShared];memset(output.contents,0xa7,1024);
@@ -138,6 +185,7 @@ static int queue_state_pixels(void) {
 }
 int main(int argc,char **argv){@autoreleasepool{
     if(argc==2 && !strcmp(argv[1],"--recursive-api")){queue_api_enter();queue_api_enter();return 1;}
+    if(argc==2 && !strcmp(argv[1],"--legacy-visibility"))setenv("DM_P5R_ASYNC_VISIBILITY","0",1);
     int available=nvn_gpu_test_device();if(available)return available;
     CHECK(dm_guest_profile_select("p5r"));mtl_init();gpa=h_nvnBootstrapLoader("nvnDeviceGetProcAddress");
     CHECK(!concurrent_submit());CHECK(!queue_state_pixels());
