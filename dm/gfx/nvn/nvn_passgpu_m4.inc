@@ -23,7 +23,8 @@ typedef struct {
 
 // 调试器只切换 enabled；先等待一分钟避开附加后的短时加速，再自动捕获 120 帧。
 // The debugger only toggles enabled; wait a minute past attach's transient boost, then automatically capture 120 frames.
-static int g_pg4_enabled, g_pg4_delay_ms=60000, g_pg4_frame_limit=120;
+static volatile int g_pg4_enabled;
+static int g_pg4_delay_ms=60000, g_pg4_frame_limit=120;
 static uint64_t g_pg4_deadline, g_pg4_first_frame, g_pg4_capture;
 static FILE *g_pg4_file;
 static char g_pg4_path[4096];
