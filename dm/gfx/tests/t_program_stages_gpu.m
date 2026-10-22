@@ -52,8 +52,8 @@ int main(int argc,char **argv){@autoreleasepool{
     void *memory=NULL;CHECK(!posix_memalign(&memory,getpagesize(),131072));mtl_pool_add(memory,131072);
     pool_t pool={.magic=MAGIC('P','O','O','L'),.mem=memory,.size=131072};NVNcommandBuffer cb;
     CHECK(h_nvnCommandBufferInitialize(&cb,NULL));h_nvnCommandBufferAddCommandMemory(&cb,(const NVNmemoryPool *)&pool,65536,65536);
-    const unsigned expected[]={0,1,1,2,1,2,0,0,0,2,1};
-    for(unsigned scenario=0;scenario<11;scenario++) {
+    const unsigned expected[]={0,1,1,2,1,2,0,0,0,2,1,2};
+    for(unsigned scenario=0;scenario<12;scenario++) {
         memset(memory,0xa7,65536);tex_t target={.serial=1910100+scenario};
         target.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8,.width=8,.height=4,.depth=1,.levels=1,.samples=1};
         h_nvnCommandBufferBeginRecording(&cb);const NVNtexture *targets[]={(const NVNtexture *)&target};
@@ -79,6 +79,10 @@ int main(int argc,char **argv){@autoreleasepool{
                 // composition was cached; resolution must use the new serial.
                 mtl_prog_release(&programs[2]);programs[2].serial=1910200;
                 {NvProg *replacement=[NvProg new];replacement->sh[1]=shaders[3];serial_put(programs[2].serial,replacement);}break;
+            case 11:
+                // 同一客体对象和序号替换宿主记录，登记代号必须使组合缓存失效。
+                // Replace the host record at the same guest object and serial; the registry generation must invalidate the composition cache.
+                {NvProg *replacement=[NvProg new];replacement->sh[1]=shaders[4];serial_put(programs[2].serial,replacement);}break;
         }
         h_nvnCommandBufferDrawArrays(&cb,NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);
         if(scenario!=8)h_nvnCommandBufferDispatchCompute(&cb,1,1,1);
@@ -92,5 +96,5 @@ int main(int argc,char **argv){@autoreleasepool{
         CHECK((before->sh[5]!=nil)==(scenario!=8));mtl_tex_release(&target);
     }
     for(unsigned i=0;i<8;i++)mtl_prog_release(&programs[i]);h_nvnCommandBufferFinalize(&cb);mtl_pool_del(memory);free(memory);
-    puts("PROGRAM STAGES GPU OK: eleven masked graphics/compute cases, selective unbind, source replacement, retained compositions, pixel/buffer and row guards");return 0;
+    puts("PROGRAM STAGES GPU OK: twelve masked graphics/compute cases, selective unbind, serial/registry replacement, retained compositions, pixel/buffer and row guards");return 0;
 }}

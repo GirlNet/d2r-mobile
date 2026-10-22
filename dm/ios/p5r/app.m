@@ -98,6 +98,26 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 @implementation P5RBackdrop
 - (void)drawRect:(CGRect)rect {
     (void)rect;CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+    // 按设备选择本地背景，居中等比铺满；左侧与底部遮罩保证菜单可读。
+    // Choose local artwork by device and fill proportionally; shade the left and bottom for readable controls.
+    NSString *name=UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPad?@"MenuBackground-iPad":@"MenuBackground-iPhone";
+    UIImage *image=[UIImage imageNamed:name];
+    if(image && image.size.width>0 && image.size.height>0) {
+        CGFloat scale=MAX(w/image.size.width,h/image.size.height);
+        CGSize size=CGSizeMake(image.size.width*scale,image.size.height*scale);
+        [image drawInRect:CGRectMake((w-size.width)/2,(h-size.height)/2,size.width,size.height)];
+        CGContextRef context=UIGraphicsGetCurrentContext();CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+        CGFloat locations[]={0,.48,1};CGFloat left[]={0,0,0,.72,0,0,0,.35,0,0,0,0};
+        CGGradientRef gradient=CGGradientCreateWithColorComponents(space,left,locations,3);
+        CGContextDrawLinearGradient(context,gradient,CGPointZero,CGPointMake(w*.78,0),kCGGradientDrawsAfterEndLocation);
+        CGGradientRelease(gradient);
+        CGFloat bottom[]={0,0,0,0,0,0,0,.6};
+        gradient=CGGradientCreateWithColorComponents(space,bottom,NULL,2);
+        CGContextDrawLinearGradient(context,gradient,CGPointMake(0,h*.68),CGPointMake(0,h),kCGGradientDrawsAfterEndLocation);
+        CGGradientRelease(gradient);CGColorSpaceRelease(space);return;
+    }
+    // 公共宿主不带本地图片时仍可显示菜单。
+    // Keep the menu usable when a public shell has no local artwork.
     [[UIColor colorWithWhite:.045 alpha:1] setFill];UIRectFill(self.bounds);
     UIBezierPath *panel=[UIBezierPath bezierPath];[panel moveToPoint:CGPointMake(w*.76,0)];
     [panel addLineToPoint:CGPointMake(w,0)];[panel addLineToPoint:CGPointMake(w,h)];

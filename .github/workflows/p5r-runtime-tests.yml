@@ -380,6 +380,8 @@ jobs:
       - name: Verify masked program stages with graphics and compute readback
         run: |
           set -euo pipefail
+          make -C dm/gfx/tests t_program_cache
+          dm/gfx/tests/t_program_cache
           make -C dm/gfx/tests t_program_stages_gpu
           python3 - <<'PY'
           import os,subprocess

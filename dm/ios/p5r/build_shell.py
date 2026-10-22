@@ -49,6 +49,13 @@ def run(command, log):
 
 def build(output,metal_backend=4):
     if metal_backend not in (3,4):raise ValueError('Metal backend must be 3 or 4')
+    # 背景由用户在本地提供；两种设备的图片必须成对存在，不进入公共仓库。
+    # Users supply backgrounds locally; require a complete device pair and keep the images out of the public repository.
+    background_dir = REPO / 'dm/ios/p5r/backgrounds'
+    backgrounds = [background_dir / name for name in ('MenuBackground-iPhone.png', 'MenuBackground-iPad.png')]
+    if any(p.exists() for p in backgrounds) and not all(p.is_file() for p in backgrounds):
+        raise ValueError('Provide both iPhone and iPad menu backgrounds')
+    backgrounds = [p for p in backgrounds if p.is_file()]
     output = output.resolve()
     if output.is_relative_to(REPO): raise ValueError('Build output must be outside the repository')
     output.mkdir(parents=True, exist_ok=False)
@@ -73,6 +80,7 @@ def build(output,metal_backend=4):
     configuration=dict(metal_backend='Metal '+str(metal_backend),architecture='arm64',minimum_ios='26.0',optimization='O1',
                        vp9_decoder='libvpx-'+build_vp9.VERSION, vp9_source_sha256=build_vp9.SOURCE_SHA256)
     report = dict(profile='p5r', game_content_included=False, signed=False, runtime_ready=False,
+                  menu_backgrounds=[dict(name=p.name,sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in backgrounds],
                   sources=[str(p[0].relative_to(REPO)) for p in plan], failed_sources=failed,
                   fingerprint_sources=[str(p.relative_to(REPO)) for p in fingerprint_files],
                   build_configuration=configuration,
@@ -121,6 +129,8 @@ def build(output,metal_backend=4):
                 UISupportedInterfaceOrientations=['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight'])
     for icon in sorted((REPO / 'dm/ios/p5r/icons').glob('*.png')):
         shutil.copyfile(icon, app / icon.name)
+    for background in backgrounds:
+        shutil.copyfile(background, app / background.name)
     (app / 'Info.plist').write_bytes(plistlib.dumps(info))
     (app / 'dm/p5r-shell.json').write_text(json.dumps(dict(schema_version=1, profile='p5r', game_content_included=False,guarded_runtime_contract_version=1,
         source_fingerprint_schema=2,build_configuration=configuration,

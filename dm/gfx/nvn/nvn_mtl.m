@@ -22,6 +22,7 @@
 #include "nvn_mtl.h"
 #include "nvn_sampler_mtl.h"
 #include "nvn_texture_sampling.h"
+#include "nvn_program_cache.h"
 // 编译期开关 DM_NVN_M3=1：图形后端走老接口（普通命令队列 / 命令缓冲 / 渲染与计算与拷贝编码器，逐槽绑定缓冲，对参数块引用的资源逐个声明），
 // 目标 macOS 15 / iOS 18。缺省 0 = Metal 4（macOS 26 / iOS 26）。两支共用同一份回放逻辑，分叉处都在 #if DM_NVN_M3 里
 // Compile-time switch DM_NVN_M3=1: the graphics backend uses the older API (ordinary command queue / command buffers / render, compute and copy encoders, buffers bound per slot, each resource referenced by an argument block declared individually),
@@ -2742,6 +2743,20 @@ static int program_binding_apply(program_bindings *bindings,const p_bind_program
     return nvn_program_bind(bindings,command->prog,(uint32_t)command->stages);
 }
 static __unsafe_unretained NvProg *programs_get(const program_bindings *bindings) {
+    // 重复绘制先复用完整组合，避免分阶段查表加锁；预判也使用同一组失效条件。
+    // Reuse complete compositions before per-stage locked lookups; lookahead follows the same invalidation rules.
+    static nvn_program_cache cache;
+    nvn_program_cache_key input={0};
+    int cache_on=!dm_guest_d2r();
+    if(cache_on) {
+        input.generation=g_ser_gen;
+        for(unsigned stage=0;stage<6;stage++) {
+            const prog_t *source=bindings->stage[stage];
+            input.source[stage]=(uintptr_t)source;input.serial[stage]=source?source->serial:0;
+        }
+        const void *cached=nvn_program_cache_find(&cache,&input);
+        if(cached)return (__bridge NvProg *)cached;
+    }
     NvShader *selected[6]={nil};uintptr_t key[6];int any=0;
     for(unsigned stage=0;stage<6;stage++) {
         NvProg *program=bindings->stage[stage]?prog_get(bindings->stage[stage]):nil;
@@ -2753,7 +2768,10 @@ static __unsafe_unretained NvProg *programs_get(const program_bindings *bindings
     // an earlier draw still holds its result. Key by the resolved shaders so
     // shader replacement at an unchanged NVN program address is also observed.
     static uintptr_t last_key[6];static NvProg *last;
-    if(last && !memcmp(last_key,key,sizeof key))return last;
+    if(last && !memcmp(last_key,key,sizeof key)) {
+        if(cache_on && input.generation==g_ser_gen)nvn_program_cache_put(&cache,&input,(__bridge void *)last);
+        return last;
+    }
     static NSMutableDictionary<NSData *,NvProg *> *compositions;
     if(!compositions)compositions=[NSMutableDictionary dictionary];
     NSData *identity=[NSData dataWithBytes:key length:sizeof key];
@@ -2762,6 +2780,9 @@ static __unsafe_unretained NvProg *programs_get(const program_bindings *bindings
         result=[NvProg new];for(unsigned stage=0;stage<6;stage++)result->sh[stage]=selected[stage];
         compositions[identity]=result;
     }
+    // 组合字典强持有结果；解析中登记表发生变化时不缓存，下一次重新解析。
+    // The composition dictionary owns results; skip caching if the registry changed during resolution.
+    if(cache_on && input.generation==g_ser_gen)nvn_program_cache_put(&cache,&input,(__bridge void *)result);
     memcpy(last_key,key,sizeof key);last=result;return result;
 }
 

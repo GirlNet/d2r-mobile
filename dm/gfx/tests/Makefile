@@ -106,6 +106,8 @@ t_cover: t_cover.c ../nvn/nvn_cover.h
 	clang -O1 -Wall -o $@ t_cover.c
 t_pace: t_pace.c ../nvn/nvn_pace.h
 	clang -O1 -Wall -o $@ t_pace.c
+t_program_cache: t_program_cache.c ../nvn/nvn_program_cache.h
+	clang -O1 -Wall -Wextra -Werror -o $@ t_program_cache.c
 t_fuse_check: t_fuse_check.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_fuse_check.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_present_crop: t_present_crop.m ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
@@ -151,6 +153,7 @@ run: \
 	t_pace \
 	t_pfv \
 	t_present_crop \
+	t_program_cache \
 	t_pso_skey \
 	t_refl \
 	t_reorder_chain \
@@ -170,6 +173,7 @@ run: \
 	./t_pace
 	./t_refl
 	./t_hmap
+	./t_program_cache
 	./t_cover
 	./t_fuse_check
 	./t_present_crop
