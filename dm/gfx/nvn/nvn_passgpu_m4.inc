@@ -13,7 +13,8 @@ typedef struct {
     id<MTL4CounterHeap> heap;
     pg4_record *records;
     unsigned count;
-    uint64_t capture;
+    uint64_t capture, submission;
+    int truncated;
 }
 @end
 @implementation NvPassGpuBatch
@@ -54,14 +55,14 @@ static void pg4_sub_begin(void) {
             MLOG("[passgpu4] cannot open output; capture disabled");g_pg4_enabled=0;return;
         }
         fprintf(g_pg4_file,"# Raw GPU ticks; spans can overlap and are not additive. Validate tick units against cb_ms.\n");
-        fprintf(g_pg4_file,"capture\tframe\tpass\tkind\tw\th\tcolor\tdepth\tdraws\tlabel\tstart0\tstart1\tend0\tend1\tvalid\tcb_ms\n");
+        fprintf(g_pg4_file,"capture\tframe\tpass\tkind\tw\th\tcolor\tdepth\tdraws\tlabel\tstart0\tstart1\tend0\tend1\tvalid\tcb_ms\tsubmit\n");
         MLOG("[passgpu4] raw timestamps -> %s",g_pg4_path);
     }
     NvPassGpuBatch *batch=[NvPassGpuBatch new];
     MTL4CounterHeapDescriptor *descriptor=[MTL4CounterHeapDescriptor new];
     descriptor.type=MTL4CounterHeapTypeTimestamp;descriptor.count=PG4_MAX_ENCODERS*4;
     NSError *error=nil;batch->heap=[g_dev newCounterHeapWithDescriptor:descriptor error:&error];
-    batch->records=calloc(PG4_MAX_ENCODERS,sizeof(pg4_record));batch->capture=g_pg4_capture;
+    batch->records=calloc(PG4_MAX_ENCODERS,sizeof(pg4_record));batch->capture=g_pg4_capture;batch->submission=g_fence+1;
     if(!batch->heap || !batch->records) {
         MLOG("[passgpu4] counter allocation unavailable: %s",error.localizedDescription.UTF8String);
         g_pg4_enabled=0;return;
@@ -80,7 +81,8 @@ static void pg4_timestamp(id encoder,pg4_record *record,int end) {
     }
 }
 static void pg4_begin(id encoder,char kind,RPD *descriptor) {
-    if(!g_pg4_batch || !encoder || g_pg4_batch->count==PG4_MAX_ENCODERS)return;
+    if(!g_pg4_batch || !encoder)return;
+    if(g_pg4_batch->count==PG4_MAX_ENCODERS){g_pg4_batch->truncated=1;return;}
     g_pg4_open=g_pg4_batch->count++;
     pg4_record *record=&g_pg4_batch->records[g_pg4_open];
     record->frame=atomic_load(&g_cur_frame);record->pass=g_stat_pass+(kind=='R');
@@ -114,17 +116,18 @@ static void pg4_commit(MTL4CommitOptions *options) {
             const MTL4TimestampHeapEntry *entries=data.bytes;
             int complete=data.length>=(size_t)batch->count*4*sizeof(*entries);
             pthread_mutex_lock(&g_pg4_file_mu);
+            if(batch->truncated)fprintf(g_pg4_file,"# truncated capture=%llu submit=%llu\n",(unsigned long long)batch->capture,(unsigned long long)batch->submission);
             for(unsigned i=0;i<batch->count;i++) {
                 const pg4_record *record=&batch->records[i];uint64_t ticks[4]={0};
                 if(complete)for(int j=0;j<4;j++)ticks[j]=entries[record->slot+j].timestamp;
                 int valid=ticks[0] && ticks[0]!=UINT64_MAX && ticks[1] && ticks[1]!=UINT64_MAX;
                 if(record->kind=='R')valid=valid && ticks[2]>=ticks[0] && ticks[2]!=UINT64_MAX && ticks[3]>=ticks[1] && ticks[3]!=UINT64_MAX;
                 else valid=valid && ticks[1]>=ticks[0];
-                fprintf(g_pg4_file,"%llu\t%llu\t%llu\t%c\t%u\t%u\t%u\t%u\t%u\t%s\t%llu\t%llu\t%llu\t%llu\t%d\t%.6f\n",
+                fprintf(g_pg4_file,"%llu\t%llu\t%llu\t%c\t%u\t%u\t%u\t%u\t%u\t%s\t%llu\t%llu\t%llu\t%llu\t%d\t%.6f\t%llu\n",
                     (unsigned long long)batch->capture,(unsigned long long)record->frame,(unsigned long long)record->pass,record->kind,
                     record->width,record->height,record->color,record->depth,record->draws,record->label,
                     (unsigned long long)ticks[0],(unsigned long long)ticks[1],(unsigned long long)ticks[2],(unsigned long long)ticks[3],valid,
-                    (feedback.GPUEndTime-feedback.GPUStartTime)*1000.0);
+                    (feedback.GPUEndTime-feedback.GPUStartTime)*1000.0,(unsigned long long)batch->submission);
             }
             fflush(g_pg4_file);pthread_mutex_unlock(&g_pg4_file_mu);
         }

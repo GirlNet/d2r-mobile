@@ -35,8 +35,8 @@ int main(void){@autoreleasepool{
     int rows=0,valid_render=0,valid_compute=0,valid_copy=0;
     for(NSString *line in [text componentsSeparatedByString:@"\n"]) {
         if(!line.length || [line hasPrefix:@"#"] || [line hasPrefix:@"capture"])continue;
-        NSArray<NSString *> *parts=[line componentsSeparatedByString:@"\t"];CHECK(parts.count==16);rows++;
-        CHECK(parts[1].longLongValue==400 && parts[15].doubleValue>=0);
+        NSArray<NSString *> *parts=[line componentsSeparatedByString:@"\t"];CHECK(parts.count==17);rows++;
+        CHECK(parts[1].longLongValue==400 && parts[15].doubleValue>=0 && parts[16].longLongValue>0);
         if(parts[14].intValue) {
             if([parts[3] isEqualToString:@"R"]){valid_render++;CHECK(parts[4].intValue==8 && parts[5].intValue==4);}
             if([parts[3] isEqualToString:@"C"])valid_compute++;
