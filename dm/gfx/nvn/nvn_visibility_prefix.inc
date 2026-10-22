@@ -29,6 +29,7 @@ static void vis_encode_prefix(void) {
         for(int i=first;i<end;i++)((uint32_t *)((uint8_t *)indices.contents+io))[i-first]=g_vs[i].slot;
         uint64_t values[]={base,(uint64_t)(end-first)};memcpy((uint8_t *)parameters.contents+po,values,sizeof values);
         CENC encoder=pg_compute();enc_c_pso(encoder,pipeline);
+        pg4_note("visibility-prefix");
         enc_c_args(encoder,samples.gpuAddress,0);enc_c_args(encoder,previous.gpuAddress,1);
         enc_c_args(encoder,next->buf.gpuAddress,2);enc_c_args(encoder,indices.gpuAddress+io,3);enc_c_args(encoder,parameters.gpuAddress+po,4);
         enc_c_dispatch(encoder,MTLSizeMake(1,1,1),MTLSizeMake(1,1,1));enc_c_end(encoder);

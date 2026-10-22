@@ -363,6 +363,20 @@ jobs:
               raise SystemExit('Recursive queue API must reject promptly, without deadlock')
           print('QUEUE API RECURSION REJECTION OK')
           PY
+      - name: Verify optional bounded Metal 4 GPU timestamps preserve public command output
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_passgpu_m4
+          python3 - <<'PY'
+          import os,subprocess
+          result=subprocess.run(['dm/gfx/tests/t_passgpu_m4'],capture_output=True,text=True,
+                                env=dict(os.environ,MTL_DEBUG_LAYER='1'),timeout=120)
+          print(result.stdout,result.stderr)
+          if result.returncode in (77,78,79):
+              print('::warning::Metal 4 timestamp execution unavailable; compilation and separate pixel regressions still required')
+          elif result.returncode or 'PASSGPU4 GPU OK:' not in result.stdout:
+              raise SystemExit('Metal 4 timestamp regression failed')
+          PY
       - name: Verify conditional draws, clears and query ordering on Metal 3
         run: |
           make -C dm/gfx/tests t_conditional_render_gpu
