@@ -12,9 +12,11 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "resources.h"
 #include "boot_probe.h"
-// Virtual gamepad ported from seedds/nxnative (see dm_pad.m): 2D / 3D layouts, sticks, D-pad, L3 / R3.
+// 移植自 nxnative 的虚拟手柄：左摇杆、按钮和相对滑动视角；显示节拍负责清除停手后的镜头输入。
+// Virtual pad adapted from nxnative: left stick, buttons and relative camera swipes; the display tick clears idle camera input.
 extern UIView *dm_gamepad_view(CGRect frame);
 extern void dm_gamepad_reset(void);
+extern void dm_gamepad_frame(double time);
 extern void dm_haptics_stop(void);
 extern void dm_haptics_ios_init(void);
 #include <fcntl.h>
@@ -302,10 +304,12 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 - (void)pollController {
     samplePower(NO);
     GCExtendedGamepad *pad = GCController.controllers.firstObject.extendedGamepad;
-    BOOL hideTouch=!started || pad!=nil;
+    BOOL active=UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
+    BOOL hideTouch=!started || pad!=nil || !active;
     if(hideTouch && !self.touchControls.hidden) dm_gamepad_reset();
     self.touchControls.hidden=hideTouch;
-    if (!pad || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) { dm_pad_set(0,0,0,0,0); return; }
+    if(!hideTouch)dm_gamepad_frame(CACurrentMediaTime());
+    if (!pad || !active) { dm_pad_set(0,0,0,0,0); return; }
     uint64_t buttons = 0;
     // 系统字段按位置命名；这里按 Switch 位置输出，右 A、下 B、上 X、左 Y。
     // System fields name positions; publish Switch positions: right A, bottom B, top X, left Y.

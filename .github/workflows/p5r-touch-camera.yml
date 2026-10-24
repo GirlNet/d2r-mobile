@@ -1,0 +1,49 @@
+# 只验证通用触控源码并构建无游戏内容的宿主；不上传游戏资源。
+# Verify generic touch input and build a game-free host without uploading game assets.
+name: P5R touch camera input
+on:
+  push:
+    branches: ['codex/p5r-runtime']
+    paths:
+      - '.github/workflows/p5r-touch-camera.yml'
+      - 'dm/ios/p5r/camera_swipe.h'
+      - 'dm/ios/p5r/t_camera_swipe.c'
+      - 'dm/ios/p5r/dm_pad.m'
+      - 'dm/ios/p5r/app.m'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: p5r-touch-camera-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  input-and-ios-shell:
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify relative swipes across event rates and multiple fingers
+        run: |
+          set -euo pipefail
+          xcrun clang -std=c11 -O1 -Wall -Wextra -Werror dm/ios/p5r/t_camera_swipe.c -lm -o "$RUNNER_TEMP/p5r-camera-swipe"
+          "$RUNNER_TEMP/p5r-camera-swipe"
+      - name: Verify user-facing text and shader cache identity
+        run: |
+          set -euo pipefail
+          python3 dm/i18n/scan_literals.py
+          python3 dm/ios/tools/dm_i18n.py --check
+          python3 dm/gfx/tools/dmsh_chain.py --header
+      - name: Compile and package the complete iOS host with Metal 4
+        run: python3 dm/ios/p5r/build_shell.py "$RUNNER_TEMP/p5r-shell" --metal-backend 4
+      - name: Retain unsigned shell and build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p5r-ios-shell
+          path: |
+            ${{ runner.temp }}/p5r-shell/*.ipa
+            ${{ runner.temp }}/p5r-shell/build-report.json
+            ${{ runner.temp }}/p5r-shell/logs
+          retention-days: 7

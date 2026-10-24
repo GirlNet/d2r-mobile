@@ -1,26 +1,28 @@
-// Ported from seedds/nxnative (dm/ios/Sources/DmGamepad.m, MIT). P5R uses the 3D layout by default:
-// it needs the D-pad and the right stick (camera) in addition to the 2D keys.
-// Virtual gamepad (Nintendo button positions) + physical controllers (GameController). Both are merged and handed to the host through dm_input_set (hle_hid.c, bit layout in dm_input.h).
-//   Two layouts; one tap on the layout button at the top centre (labelled with the current layout, "2D" / "3D") switches them, and the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (DM_GAME_PAD_FULL).
-//   2D (simple): top corners ZL above L (one column), ZR above R likewise, teardrops with the tip toward the screen corner; − and + side by side at the top centre; the left stick in the bottom-left corner (fixed ring, tilt measured from the ring centre, small dead zone);
-//     the A (right) B (bottom) X (top) Y (left) diamond in the bottom-right corner, sliding a finger between keys switches keys. Each bottom corner holds a single control, so it sits close in (reaching halfway into the side safe-area inset).
-//   3D (full, Pro Controller style): everything in 2D (left stick and diamond keep their place and size), plus a D-pad (inward of and below the left stick, 8-way), a right stick (inward of and below the diamond, a smaller ring)
-//     and L3 / R3 (small round keys in the top row, inward of ZL / ZR). Breath of the Wild crouches with L3 and uses the scope with R3; 3D World and Breath of the Wild turn the camera with the right stick.
-//   Touch-down ownership: locked keys first (shoulders, − / +, the layout button, L3 / R3), then whichever of the diamond, the D-pad and the two sticks has the smallest distance / grab radius (the left stick's grab circle borders the D-pad).
-//   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
-//   Touches no control takes go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode).
-//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
+// 改编自 seedds/nxnative 的 DmGamepad.m（MIT）：虚拟输入通过 dm_input_set 发布，实体手柄由壳独立读取。
+// Adapted from seedds/nxnative DmGamepad.m (MIT): virtual input publishes through dm_input_set; the shell reads physical controllers separately.
+// 两种布局均保留左摇杆与 Nintendo 位置按钮；完整布局另有方向键和 L3／R3，顶部按钮切换并记住布局。
+// Both layouts retain the left stick and Nintendo-position buttons; the full layout adds the D-pad and L3/R3, with the top button toggling and saving the layout.
+// 按钮与摇杆采用独立形状层，实体手柄接入时隐藏并释放虚拟输入。
+// Buttons and the stick use separate shape layers; connecting a physical controller hides and releases virtual input.
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <GameController/GameController.h>
 #import <CoreText/CoreText.h>
 #include <pthread.h>
 #include "dm_input.h"
+#include "camera_swipe.h"
 
-// P5R: start in the full (3D) layout — D-pad and right stick are needed in game.
+// P5R：右半屏空白处相对滑动控制镜头，按钮先占有触摸；右摇杆圈不再显示。
+// P5R: relative swipes on empty space in the right half control the camera; buttons claim touches first and the right-stick ring stays hidden.
+
+// P5R 默认完整布局，包含方向键与摇杆按下键。
+// P5R defaults to the full layout, including the D-pad and stick-click buttons.
 #define DM_GAME_PAD_FULL 1
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
-enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
+// 触摸拥有的控件；镜头只允许单指占有，未占用触摸保留原游戏触摸槽。
+// A touch's owning control; the camera permits one owner, and unclaimed touches retain the existing game-touch slots.
+enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME, C_CAMERA };
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_touch_btn;
@@ -56,6 +58,7 @@ static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 1 = 3D, 0 = 2D
 
 @interface DmGamepad : UIView
+- (void)updateCamera:(double)time;
 @end
 static __weak DmGamepad *g_view;
 
@@ -72,6 +75,9 @@ static __weak DmGamepad *g_view;
     CALayer *_controls;                            // holds every control layer: hidden while a physical controller is connected (the view itself stays, for game touches)
     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
+    P5RCameraSwipe _camera;                        // 单根镜头手指的相对运动 | Relative movement of the single camera finger
+    int32_t _cameraX, _cameraY;
+    CGRect _inputBounds; UIEdgeInsets _inputInsets; // 尺寸变化时释放旧坐标系触摸 | Release old-coordinate touches when the layout changes
 }
 
 static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn;
@@ -124,7 +130,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
 - (void)applyLayout {   // show / hide the controls for the current layout
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     for (int b = 0; b < B_N; b++) _key[b].hidden = fullOnly(b) && !_full;
-    _ring[1].hidden = _knob[1].hidden = !_full;
+    _ring[1].hidden = _knob[1].hidden = YES;
     _swapLabel.string = _full ? @"3D" : @"2D";
     [CATransaction commit];
 }
@@ -205,12 +211,14 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         else if (c == C_DPAD) dpad |= [self dpadAt:[t locationInView:self]];
         else if (c == C_SWAP) swap = YES; }
     int32_t ax[4] = {0};
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 1; i++) {
         CGPoint o = [self knobOffset:i]; CGFloat R = [self stickR:i], d = hypot(o.x, o.y), dz = R * K_DEAD;
         if (d <= dz) continue;
         CGFloat m = fmin((d - dz) / (R * K_FULL - dz), 1) / d;   // outside the dead zone: 0 rising to full at the full-tilt radius
         ax[i * 2] = (int32_t)lrint(o.x * m * 32767); ax[i * 2 + 1] = (int32_t)lrint(-o.y * m * 32767);   // host: up is positive; rounded so full tilt is exactly 32767
     }
+    p5r_camera_axes(&_camera,CACurrentMediaTime(),&ax[2],&ax[3]);
+    _cameraX=ax[2];_cameraY=ax[3];
     BOOL changed = face != _faceBits || dpad != _dpadBits || btn != _btnBits || swap != _swapHeld;
     _faceBits = face; _dpadBits = dpad; _btnBits = btn; _swapHeld = swap;
     pthread_mutex_lock(&g_mu);
@@ -220,6 +228,12 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     BOOL sticks = _stick[0] || _stick[1];
     if (changed || sticks || _sticksShown) [self refresh];   // also refresh on the stick release so the knob returns to the centre
     _sticksShown = sticks;
+}
+// 复用壳已有的显示节拍；仅在滑动输出改变或超时归零时发布，不另开刷新计时器。
+// Reuse the shell's existing display tick; publish only when swipe output changes or expires, without another refresh timer.
+- (void)updateCamera:(double)time {
+    int32_t x,y;p5r_camera_axes(&_camera,time,&x,&y);
+    if(x!=_cameraX || y!=_cameraY)[self recompute];
 }
 // Touches no control takes (all of them while a physical controller is connected) go to the game's touch screen, normalized on the 16:9 picture that front_ios.m
 // centres in the screen: Super Mario Galaxy's pointer in handheld mode (profile op_mode). The host reports them only in handheld mode, as on the Switch (hle_hid.c touch_read)
@@ -238,15 +252,19 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         CGPoint p = [t locationInView:self]; int hit = [self btnAt:p];
         if (hit >= 0) { [_owner setObject:@(C_BTN | (uint64_t)hit << 8) forKey:t]; continue; }
         if ([self inSwap:p]) { [_owner setObject:@(C_SWAP) forKey:t]; continue; }
-        // diamond, D-pad, the two sticks: take the one with the smallest distance / grab radius, if it is <= 1
+        // 按钮、方向键与左摇杆先于空白处滑动接收触摸；所有权保持到抬手或取消。
+        // Buttons, the D-pad and the left stick take priority over empty-space swipes; ownership persists until release or cancellation.
         CGFloat best = 1; int kind = C_NONE, idx = 0;
         CGFloat f = dist(p, self.faceCenter) / (self.faceGap + self.faceR * 1.6); if (f <= best) { best = f; kind = C_FACE; }
         if (_full) { CGFloat d = dist(p, self.dpadCenter) / (self.dpadR * K_DPAD_GRAB); if (d < best) { best = d; kind = C_DPAD; } }
-        for (int i = 0; i < (_full ? 2 : 1); i++) if (!_stick[i]) {
+        for (int i = 0; i < 1; i++) if (!_stick[i]) {
             CGFloat s = dist(p, [self stickHome:i]) / ([self stickR:i] * K_STICK_GRAB); if (s < best) { best = s; kind = C_STICK; idx = i; } }
         if (kind == C_FACE) { [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; }
         else if (kind == C_DPAD) [_owner setObject:@(C_DPAD) forKey:t];
         else if (kind == C_STICK) { [_owner setObject:@(C_STICK | (uint64_t)idx << 8) forKey:t]; _stick[idx] = t; _stickNow[idx] = p; }
+        else if (CGRectContainsPoint(self.safe,p) && p.x>=CGRectGetMidX(self.safe) &&
+                 p5r_camera_begin(&_camera,(uintptr_t)(__bridge void *)t,p.x,p.y,CACurrentMediaTime(),self.bounds.size.height))
+            [_owner setObject:@(C_CAMERA) forKey:t];
         else game |= [self gameBegin:t];
     }
     if (game) [self pushGame];
@@ -258,6 +276,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
         if (c == C_FACE) [_faceOf setObject:@([self faceAt:p]) forKey:t];
         else if (c == C_STICK) _stickNow[v >> 8] = p;
+        else if (c == C_CAMERA) p5r_camera_move(&_camera,(uintptr_t)(__bridge void *)t,p.x,p.y,CACurrentMediaTime());
         else if (c == C_GAME) game = YES;
     }
     if (game) [self pushGame];
@@ -269,6 +288,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue;
         if (ended && (v & 0xff) == C_SWAP && [self inSwap:[t locationInView:self]]) swap = YES;   // layout button: counts only when released on the button
         if ((v & 0xff) == C_GAME && (v >> 8) < 16) { _game[v >> 8] = nil; game = YES; }
+        if ((v & 0xff) == C_CAMERA) p5r_camera_end(&_camera,(uintptr_t)(__bridge void *)t);
         [_owner removeObjectForKey:t]; [_faceOf removeObjectForKey:t]; for (int i = 0; i < 2; i++) if (t == _stick[i]) _stick[i] = nil;
     }
     if (game) [self pushGame];
@@ -277,7 +297,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
-- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; [self pushGame]; [self recompute]; }
+- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; p5r_camera_reset(&_camera); for (int i = 0; i < 16; i++) _game[i] = nil; [self pushGame]; [self recompute]; }
 
 // ---- Shapes ----
 static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
@@ -311,6 +331,9 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+    if(!CGRectEqualToRect(_inputBounds,self.bounds) || !UIEdgeInsetsEqualToEdgeInsets(_inputInsets,self.safeAreaInsets)) {
+        [self reset];_inputBounds=self.bounds;_inputInsets=self.safeAreaInsets;
+    }
     CGFloat u = self.u;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     _controls.frame = self.layer.bounds;
@@ -364,6 +387,7 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 @end
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
+void dm_gamepad_frame(double time) { [g_view updateCamera:time]; }
 // The old P5R overlay exposed -resetInput; keep the same name for the shell's calls.
 @interface DmGamepad (P5RShell)
 - (void)resetInput;
