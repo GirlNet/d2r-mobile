@@ -3,10 +3,16 @@
 // swkbd unit test (takes seconds): lay out a ShowKeyboardArg by hand following the SDK layout, have swkbd_show write back the String, and all expected bytes are computed by hand.
 // Build and run: cd dm/host/tests && clang -O1 -I.. -o /tmp/t_swkbd t_swkbd.c ../hle_swkbd.c && /tmp/t_swkbd
 #include "../hle.h"
+#include "../guest_bootstrap.h"
 #include <stdio.h>
+#ifdef _WIN32
+static int setenv(const char *key,const char *value,int overwrite) { return !overwrite&&getenv(key)?0:_putenv_s(key,value); }
+static int unsetenv(const char *key) { return _putenv_s(key,""); }
+#endif
 
 Result swkbd_show(void *out, const void *arg, int (*input)(const char *, const char *, const char *, const char *, int, char *, int));
-void dm_ui_text_entered(const char *text) { (void)text; }   // 真实现在 dm_cursor.c（起名页输完自动接受） | the real implementation is in dm_cursor.c (the naming page auto-accepts once input is finished)
+static unsigned d2r_notified;
+void dm_ui_text_entered(const char *text) { (void)text;d2r_notified++; }   // the real implementation is in dm_cursor.c
 int front_text_input(const char *t, const char *s, const char *g, const char *i, int m, char *o, int c) { (void)t; (void)s; (void)g; (void)i; (void)m; (void)o; (void)c; return -1; }
 
 static int fails, checks;
@@ -41,7 +47,14 @@ static int bytes_eq(const uint8_t *want, size_t n) {   // 前 n 字节等于期�
 
 void guest_clock_freeze_for(int reason, int on) { (void)reason; (void)on; }   // 真实现在 hle_os.c；单测不关心时钟 | the real implementation is in hle_os.c; the unit test does not care about the clock
 int main(void) {
+#ifdef DM_P5R_ONLY
+    CHECK(dm_guest_profile_select("p5r"),"select the real P5R profile");
+#else
+    CHECK(dm_guest_profile_select("d2r"),"select the real D2R profile");
+#endif
     unsetenv("DM_KBD");
+
+
     static const uint16_t hero[] = {'H', 'e', 'r', 'o'};
 
     printf("1 确定、UTF-8 输出（游戏实际用法）\n");
@@ -90,6 +103,27 @@ int main(void) {
     static const uint8_t w7[] = {'K', 'b', 'd', 0};
     CHECK(r == 0 && bytes_eq(w7, sizeof w7) && g_called == 0, "DM_KBD 路径不符（调用输入框 %d 次）", g_called);
     unsetenv("DM_KBD");
+
+    // Tiny/odd UTF-16 buffers must not underflow or split a surrogate pair.
+    uint8_t guarded[16];uint8_t *original_pointer=str.p;uint64_t original_capacity=str.n;
+    for(unsigned cap=0;cap<=9;cap++) {
+        memset(guarded,0xa5,sizeof guarded);str.p=guarded+2;str.n=cap;
+        mkarg(0,20,hero,4);g_ret=1;g_reply="\xF0\x9F\x98\x80";
+        CHECK(swkbd_show(&str,arg,stub)==0,"tiny UTF-16 return cap=%u",cap);
+        CHECK(guarded[0]==0xa5&&guarded[1]==0xa5,"tiny prefix cap=%u",cap);
+        for(unsigned i=cap+2;i<sizeof guarded;i++)CHECK(guarded[i]==0xa5,"tiny suffix cap=%u i=%u",cap,i);
+        for(unsigned i=0;i<cap;i++) {
+            static const uint8_t pair[]={0x3d,0xd8,0,0xde};
+            uint8_t expected=cap>=6&&i<4?pair[i]:0;
+            CHECK(guarded[2+i]==expected,"tiny UTF-16 byte cap=%u i=%u",cap,i);
+        }
+    }
+    str.p=original_pointer;str.n=original_capacity;
+#ifdef DM_P5R_ONLY
+    CHECK(d2r_notified==0,"P5R input must not call D2R UI notifications");
+#else
+    CHECK(d2r_notified>0,"D2R retains UI text notifications");
+#endif
 
     printf("%s：%d/%d\n", fails ? "红" : "全过", checks - fails, checks);
     return fails != 0;

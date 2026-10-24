@@ -32,14 +32,31 @@ void guest_clock_freeze_for(int reason, int on);   // 按原因冻结（1 后台
 
 // 强制接管：即使 SDK 模块里有定义，装载时所有对该符号的引用（JUMP_SLOT/GLOB_DAT/ABS64）一律解析到宿主实现。
 // 只用于服务层 nn::（fs/oe/aoc/pctl… 的服务客户端）；SDK 的 libc++、nn::os 内部不进这张表。
-// 每条必须写接管理由；表里有、但没有任何模块引用的条目，装载时报红中止（清单写错要响亮）。
+// 每条必须写接管理由；D2R 域中必需表未被引用的条目会中止，可选重载表及其它游戏域允许没有引用。
 // Forced takeover: even if the SDK module has a definition, all references to that symbol at load time (JUMP_SLOT/GLOB_DAT/ABS64) are resolved to the host implementation.
 // Used only for the service-layer nn:: (service clients of fs/oe/aoc/pctl...); the SDK's libc++ and nn::os internals do not go into this table.
-// Every entry must state the reason for the takeover; an entry in the table that no module references makes loading report a failure and abort (a wrong list must fail loudly).
+// Every entry must state the reason; unreferenced required entries abort in the D2R profile, while optional overloads and other game profiles may have no references.
 typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
+// Both forced tables share one symbol namespace: reject duplicates at compile/link
+// time, including entries in different source files, before shipping a host.
+#define HLE_FORCE_UNIQUE(mangled, cname)                                                          \
+    __asm__(".section __TEXT,__const\n"                                                         \
+            ".globl dm_force_unique_" mangled "\n"                                            \
+            ".private_extern dm_force_unique_" mangled "\n"                                   \
+            ".no_dead_strip dm_force_unique_" mangled "\n"                                    \
+            "dm_force_unique_" mangled ":\n.byte 0\n.text\n");
 #define HLE_FORCE(mangled, why, ret, cname, ...)                                                   \
+    HLE_FORCE_UNIQUE(mangled, cname)                                                              \
     static ret cname(__VA_ARGS__);                                                                \
     __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
+    static ret cname(__VA_ARGS__)
+
+// 新 SDK 的可选重载仍强制接管，旧游戏没有引用时不视为清单错误；保持原 swforce 记录布局。
+// Optional overloads in other SDK versions are still forcibly taken over, but absence in older games is not an error; preserves swforce record layout.
+#define HLE_FORCE_OPTIONAL(mangled, why, ret, cname, ...)                                         \
+    HLE_FORCE_UNIQUE(mangled, cname)                                                              \
+    static ret cname(__VA_ARGS__);                                                               \
+    __attribute__((used, section("__DATA,swforceopt"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
     static ret cname(__VA_ARGS__)
 
 // 运行模式（0 掌机 / 1 主机）：hle_oe.c 持有，hid 的手柄样式跟它走；前端可在运行中切换
@@ -50,6 +67,7 @@ ssize_t dm_data_pread(int fd, void *buf, size_t n, off_t off);   // 资源档案
 void dm_data_note_fd(int fd, const char *hostpath);
 int dm_overlay_file(const char *rel, char *out, size_t n);   // 覆盖层里的文件：DM_ROMFS_OVERLAY 可以有多层（冒号分隔，前面的优先），逐层找 <层>/<rel>，找到写进 out 返回 1（hle_fs.c） | File in the overlay: DM_ROMFS_OVERLAY may have several layers (colon-separated, earlier ones take priority); look for <layer>/<rel> layer by layer, and on a hit write it to out and return 1 (hle_fs.c)
 void dm_set_opmode(int m);          // 变化时按游戏打开的开关推送通知 30 / 31 | On change, push notification 30 / 31 according to the switches the game has turned on
+void dm_oe_initialize(void);        // Initialize the process active-time epoch once, before OE queries.
 // 焦点（1 前台 / 2 失焦 / 3 后台）：前端在生命周期变化时调，变化即推送通知 15
 // Focus (1 foreground / 2 focus lost / 3 background): called by the front end on lifecycle changes; a change pushes notification 15
 void dm_focus_set(int st);

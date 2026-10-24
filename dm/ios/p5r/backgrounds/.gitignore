@@ -1,0 +1,3 @@
+# 用户提供的菜单背景只在本地打包，不提交图片。
+# Package user-provided menu artwork locally; do not commit images.
+*.png

@@ -13,7 +13,7 @@ static void rr_copy(id<MTLTexture> a,id<MTLTexture> b) {
 }
 static void rr_begin(void) {
     if(g_rr_checking||g_rr_active||!rt_range_on()||!getenv("DM_NVN_RT_RANGE_CHECK")||!passdump()||g_fz.active||!R.has_rt||R.rt.n!=1||!R.rt.depth||R.clear_c[0]||R.clear_d||R.clear_s)return;
-    NvProg *p=prog_get(S.prog);if(!rt_range_pr_ro(p)||strcmp(p->sh[1]->key,"6d19a794f1206668_b")||!S.ds.dt||S.ds.dw||S.ds.st)return;
+    NvProg *p=programs_get(&S.programs);if(!rt_range_pr_ro(p)||strcmp(p->sh[1]->key,"6d19a794f1206668_b")||!S.ds.dt||S.ds.dw||S.ds.st)return;
     p_set_rt b=R.rt;b.cview[0].nlevels=1;if(!rt_range_shape(&R.rt,&b)||R.rt.cview[0].base_level||R.rt.dview.base_level)return;
     id<MTLTexture> color=tex_mtl(R.rt.color[0]),depth=tex_mtl(R.rt.depth);
     if(color.pixelFormat!=MTLPixelFormatRG11B10Float||depth.pixelFormat!=MTLPixelFormatDepth32Float_Stencil8||color.width!=depth.width||color.height!=depth.height||color.sampleCount!=1||depth.sampleCount!=1)return;

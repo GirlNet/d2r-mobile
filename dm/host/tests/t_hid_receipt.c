@@ -4,6 +4,7 @@
 #define HLE_HID_SOURCE "../hle_hid.c"
 #endif
 #include HLE_HID_SOURCE
+#include "../guest_bootstrap.h"
 module_t g_mod[MAX_MOD]; int g_nmod;
 #include <unistd.h>
 #include <sys/wait.h>
@@ -16,7 +17,8 @@ uint64_t now_ns(void) { return clock_ns; }
 uint64_t guest_ns(void) { return clock_ns; }
 static int opmode=1;
 int dm_opmode(void) { return opmode; }
-int touch_fill(void *p, uint64_t n) { (void)p;(void)n;return 0; }
+static void *last_touch; static uint64_t last_touch_time;
+int touch_fill(void *p, uint64_t n) { last_touch=p;last_touch_time=n;memset(p,0,sizeof(TouchState16));((TouchState16 *)p)->sampling=123;return 1; }
 void dm_touch_set(const dm_touch *p,int n) { (void)p;(void)n; }
 void uimsg_subscribe(void (*f)(const char *,const char *,const char *)) { (void)f; }
 static int checks,fails;
@@ -30,6 +32,24 @@ static int load(const char *path,Row *rows,int *limit) {
  }fclose(f);return n;
 }
 static void exercise(int which) {
+ if(which==5) {
+  CK(dm_guest_profile_select("p5r"));NpadState state;uint32_t id=0;
+  uint32_t motion[4]={0x12345678,0xabcdef01,0xa5a5a5a5,0x5a5a5a5a};
+  CK(h_hid_GetSixAxisHandles(motion,4,&id,STYLE_FULLKEY)==0);
+  CK(motion[0]==0x12345678&&motion[1]==0xabcdef01&&motion[2]==0xa5a5a5a5&&motion[3]==0x5a5a5a5a);
+  CK(h_hid_GetSixAxisHandles((void *)1,0,(void *)1,UINT32_MAX)==0);
+  dm_input_set(DM_BTN_A|DM_BTN_ZL,1200,-900,0,0);dm_pad_set(DM_BTN_B,0,0,-2300,700);
+  h_hid_GetFullKey(&state,&id);CK(state.attributes==1);
+  CK(state.buttons==(DM_BTN_A|DM_BTN_B|DM_BTN_ZL));CK(state.lx==1200&&state.ly==-900&&state.rx==-2300&&state.ry==700);
+  dm_input_release_all();dm_input_set(DM_BTN_X,0,0,0,0);dm_input_set(0,0,0,0,0);
+  dm_pad_set(DM_BTN_Y,0,0,0,0);dm_pad_set(0,0,0,0,0);
+  h_hid_GetFullKey(&state,&id);CK(state.buttons==(DM_BTN_X|DM_BTN_Y));
+  h_hid_GetFullKey(&state,&id);CK(!state.buttons);
+  dm_input_set(DM_BTN_A,100,200,300,400);dm_pad_set(DM_BTN_B,500,600,700,800);dm_input_release_all();
+  h_hid_GetFullKey(&state,&id);CK(!state.buttons&&!state.lx&&!state.ly&&!state.rx&&!state.ry);
+  int32_t x=1,y=1;dm_input_sampled_right(&x,&y);CK(!x&&!y);
+  printf("HID_RECEIPT P5R touch/pad/short-press/focus checks=%d failures=%d\n",checks,fails);fflush(stdout);_exit(fails?1:0);
+ }
  char path[256];snprintf(path,sizeof path,"%s/hid-receipt-%d.jsonl",getenv("TMPDIR")?getenv("TMPDIR"):"/tmp",getpid());unlink(path);
  unsetenv("DM_KEYS");unsetenv("DM_HID_RECEIPT_LOG");if(which)setenv("DM_HID_RECEIPT_LOG",path,1);if(which==2)setenv("DM_KEYS","A@0+10",1);
  NpadState s;uint32_t id=0;Row *rows=calloc(1024,sizeof *rows);int limit=0,n;
@@ -54,6 +74,17 @@ static void exercise(int which) {
   if(!which)CK(n==-1);
   else {CK(n==5);CK(limit==0);if(n==5){CK(rows[0].sampling==1&&rows[0].time==clock_ns&&rows[0].buttons==0);CK(rows[1].sampling==2&&rows[1].buttons==DM_BTN_B&&rows[1].lx==32767&&rows[1].ry==-12);CK(rows[2].sampling==4&&rows[2].buttons==0&&rows[2].lx==0);CK(rows[3].id==0x20&&rows[3].style==STYLE_HANDHELD&&rows[3].attrs==1&&rows[3].lx==-32767);CK(rows[4].id==0&&rows[4].style==STYLE_FULLKEY&&rows[4].attrs==0&&rows[4].sampling==6);}}
  }
+ if (!which) {
+  struct { uint64_t before; NpadState s; uint64_t after; } guard={.before=0x12345678,.after=0x87654321};
+  id=0;opmode=1;h_hid_SetJoyHold(1);h_hid_SetJoyDual(&id);
+  dm_input_set(DM_BTN_A,1,2,3,4);h_hid_GetJoyDual(&guard.s,&id);
+  CK(!guard.s.attributes&&!guard.s.buttons&&!guard.s.lx&&!guard.s.rx);
+  CK(guard.before==0x12345678&&guard.after==0x87654321);
+  h_hid_GetFullKey(&guard.s,&id);CK(guard.s.attributes==1&&guard.s.buttons==DM_BTN_A&&guard.s.lx==1&&guard.s.ry==4);
+  // The single-snapshot entry must reach the same touch source with the same output pointer.
+  TouchState16 touch;memset(&touch,0,sizeof touch);h_hid_GetTouchOne(&touch);
+  CK(last_touch==&touch&&last_touch_time==clock_ns&&touch.sampling==123&&touch.count==0);
+ }
  free(rows);unlink(path);printf("HID_RECEIPT case=%d checks=%d failures=%d\n",which,checks,fails);fflush(stdout);_exit(fails?1:0);
 }
-int main(void){int fail=0;for(int i=0;i<5;i++){pid_t p=fork();if(!p)exercise(i);int s;waitpid(p,&s,0);fail+=!WIFEXITED(s)||WEXITSTATUS(s)!=0;}printf("HID_RECEIPT %s cases=5 failures=%d\n",fail?"FAIL":"PASS",fail);return !!fail;}
+int main(void){int fail=0;for(int i=0;i<6;i++){pid_t p=fork();if(!p)exercise(i);int s;waitpid(p,&s,0);fail+=!WIFEXITED(s)||WEXITSTATUS(s)!=0;}printf("HID_RECEIPT %s cases=6 failures=%d\n",fail?"FAIL":"PASS",fail);return !!fail;}

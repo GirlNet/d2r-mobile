@@ -16,7 +16,7 @@ static int fail, count;
 
 static void check_color(int blue, const prog_t *pg, tex_t t[4]) {
     uint64_t same = g_fzc_same, diff = g_fzc_diff;
-    state_reset(); S.prog = pg;
+    state_reset(); nvn_program_bind(&S.programs,pg,3);
     memset(&R, 0, sizeof R); R.has_rt = 1; R.rt.n = 4;
     for (int i = 0; i < 4; i++) R.rt.color[i] = &t[i];
     R.clear_c[3] = 1; R.cc[3] = MTLClearColorMake(!blue, 0, blue, 1);

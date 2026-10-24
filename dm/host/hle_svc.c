@@ -4,6 +4,7 @@
 // Register convention: inputs w1.. / outputs w0=Result, x1=value (GetInfo / SetHeapSize), consistent with the public Horizon ABI.
 #include "dm.h"
 #include "hle.h"
+#include "boot_probe.h"
 #include <stdatomic.h>
 #include <sys/mman.h>
 #include <errno.h>
@@ -76,6 +77,7 @@ static size_t image_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++)
 static module_t *mod_named(const char *n) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, n)) return &g_mod[i]; return NULL; }
 static _Atomic unsigned long long g_gheap_last[3];
 int dm_guest_heap_stat(unsigned long long *total_mb, unsigned long long *free_mb, unsigned long long *maxblk_kb) {
+    if (!dm_guest_d2r()) return 0;
     module_t *mm = mod_named("main"), *ms = mod_named("sdk"); if (!mm || !ms || !g_heap_cur) return 0;
     uint8_t *al = mm->base + 0x32137a0; if (!al[0]) return 0;   // 首字节 = 已初始化（sdk+0x2f9898 写） | First byte = initialized (written by sdk+0x2f9898)
     uint64_t fr = ((uint64_t (*)(void *))(ms->base + 0x2f9d78))(al), mx = ((uint64_t (*)(void *))(ms->base + 0x2f9dbc))(al);
@@ -86,8 +88,16 @@ int dm_guest_heap_stat(unsigned long long *total_mb, unsigned long long *free_mb
 // The last main-heap readout (total MB, free MB, largest allocatable block KB; all 0 if never read). Callable from any thread - does not enter the allocator (the iOS shell uses it on the main thread for the memory-warning log line)
 void dm_guest_heap_last(unsigned long long v[3]) { for (int i = 0; i < 3; i++) v[i] = atomic_load(&g_gheap_last[i]); }
 HLE_FORCE("_ZN2nn3mem17StandardAllocator8AllocateEmm", "照原版分配，只在返回空时报红（原版调用方多处不判空）", void *, hle_stdalloc_allocate, void *self, size_t size, size_t align) {
-    static void *(*orig)(void *, size_t, size_t); if (!orig) { module_t *ms = mod_named("sdk"); orig = (void *(*)(void *, size_t, size_t))(ms->base + 0x2f9974); }
-    void *p = orig(self, size, align);
+    // 原实现按已装模块的导出名查找，不能跨 SDK 版本复用 D2R 偏移；多线程首次调用用原子缓存。
+    // Find the original implementation by its loaded-module export, never a D2R offset in another SDK; cache atomically for concurrent first calls.
+    static _Atomic uintptr_t original;
+    uintptr_t entry = atomic_load(&original);
+    if (!entry) {
+        entry = (uintptr_t)guest_sym("_ZN2nn3mem17StandardAllocator8AllocateEmm");
+        if (!entry || entry == (uintptr_t)hle_stdalloc_allocate) die("StandardAllocator::Allocate original export missing or recursive");
+        atomic_store(&original,entry);
+    }
+    void *p = ((void *(*)(void *, size_t, size_t))entry)(self, size, align);
     if (!p && size) { static _Atomic int n; if (atomic_fetch_add(&n, 1) < 8) LOG("【红】游戏堆分配返回空：申请 %zu 字节（对齐 %zu），分配器 %p；上次读数 主堆 %llu MB、余量 %llu MB、最大可分配块 %llu KB", size, align, self,
         (unsigned long long)g_gheap_last[0], (unsigned long long)g_gheap_last[1], (unsigned long long)g_gheap_last[2]); }
     return p;
@@ -125,6 +135,7 @@ static void map_del(int i) { pthread_mutex_lock(&g_map_lock); g_map[i] = g_map[-
 int svc_thread(int num, uint64_t *regs);   // hle_thread.c：线程与同步类 | hle_thread.c: thread and synchronization kind
 
 uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+    if (num >= 0x80 && !dm_guest_d2r()) die("P5R has no registered private host SVC: %#x", num);
     { void hlecount_svc(int); hlecount_svc(num); }   // DM_HLECOUNT：svc 按号计数 | DM_HLECOUNT: svc counts by number
     mem_init();
     if (svc_thread(num, regs)) return regs[0];
@@ -246,6 +257,17 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         regs[0] = 0; regs[1] = v; return 0;
     }
     default:
+        if(!dm_guest_d2r() && !dm_boot_probe_active()) {
+            LOG("P5R unsupported SVC checkpoint: number=%#x original=%#llx",num,orig_addr);
+            dm_backtrace(regs[29]);
+            die("P5R unsupported kernel call SVC %#x x0=%#llx x1=%#llx x2=%#llx lr=%#llx",num,regs[0],regs[1],regs[2],regs[30]);
+        }
+        // 启动诊断不能把未知内核操作当成功；保留原现场并在操作前停驻。
+        // Startup probes must not treat unknown kernel operations as success; preserve the checkpoint and park before the operation.
+        if (dm_boot_probe_active()) {
+            char detail[32]; snprintf(detail,sizeof detail,"SVC %#x",num);
+            dm_boot_probe_block("unimplemented_svc",detail);
+        }
         if (!g_seen[num & 0xff]) { g_seen[num & 0xff] = 1; LOG("SVC %#x x0=%#llx x1=%#llx x2=%#llx (占位返回成功)", num, regs[0], regs[1], regs[2]); }
         regs[0] = 0; return 0;
     }

@@ -9,6 +9,7 @@
 #include <stddef.h>
 
 void mtl_init(void);
+void mtl_guest_coordinates(unsigned origin, unsigned depth);
 void bf_want_note(const char *key);
 
 // 内存池：[mem, mem+size) 外扩到页边界建零拷贝缓冲；按 GPU 地址（= CPU 地址）反查缓冲与偏移
@@ -30,6 +31,11 @@ void mtl_res_snapshot(mtl_res_count *out);
 // 一次提交：begin → 若干操作 → commit（返回本次提交完成时的栅栏值）
 // One submit: begin -> several operations -> commit (returns the fence value at which this submit completes)
 void mtl_sub_begin(void);
+// Public NVN queue calls serialize replay. Persistent state belongs to each
+// queue; internal commit/restart points remain inside the same queue scope.
+void mtl_queue_restore(void **state);
+void mtl_queue_capture(void *state);
+void mtl_queue_release(void *state);
 void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n);               // GPU 时序上的缓冲拷贝 | Buffer copy in GPU ordering
 void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v);   // 完成后写事件值（0 写 / 1 加） | Write the event value after completion (0 write / 1 add)
 void mtl_sub_counter(uint64_t addr, uint32_t type);                       // 完成后写计数器记录 | Write the counter record after completion
@@ -37,6 +43,7 @@ uint64_t mtl_sub_commit(void);
 
 uint64_t mtl_last_fence(void);                       // 最近一次提交的栅栏值（0 = 从未提交） | Fence value of the most recent submit (0 = never submitted)
 int mtl_wait(uint64_t fence, uint64_t timeout_ns);   // GPU 完成到 fence 返回 1，超时 0 | Returns 1 when the GPU has completed up to fence, 0 on timeout
+void mtl_queue_wait(uint64_t fence);                // Schedule a shared-event GPU dependency without a CPU wait.
 void mtl_finish(void);                               // 等所有已提交的命令完成 | Wait for all submitted commands to complete
 void mtl_drain(void);                                // 等队列上全部命令（含出图）完成：提交空命令缓冲并等它 | Wait for all commands on the queue (including presents) to complete: submit an empty command buffer and wait for it
 void mtl_xv_window_tex(uint64_t serial);   // 登记窗口（交换链）贴图：跨提交有效性账本永不收它 | Register a window (swapchain) texture: the cross-submit validity ledger never collects it

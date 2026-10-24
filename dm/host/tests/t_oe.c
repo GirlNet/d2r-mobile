@@ -6,9 +6,12 @@
 #define HLE_OE_SOURCE "../hle_oe.c"
 #endif
 #include HLE_OE_SOURCE
+#include "../hle_sdkinit.c"
 #include <signal.h>
 #include <sys/wait.h>
-uint64_t now_ns(void) { return 0; }
+static _Atomic uint64_t test_wall_ns, test_guest_ns;
+uint64_t now_ns(void) { return atomic_load(&test_wall_ns); }
+uint64_t guest_ns(void) { return atomic_load(&test_guest_ns); }
 // 3D 渲染比例（scale3d_tick）的外部依赖：单测里没有模块表与图形层，桩成「没有 main 模块」→ 该函数直接返回
 // External dependencies of the 3D render scale (scale3d_tick): the unit test has no module table or graphics layer, so they are stubbed as "no main module" -> the function returns immediately
 module_t g_mod[MAX_MOD]; int g_nmod;
@@ -25,6 +28,52 @@ static int checks, fails;
 static void reset(void) { g_mqh = g_mqn = 0; g_focus = 1; g_opmode = 1; g_ntf_opmode = g_ntf_perfmode = 0; }
 static int pop_is(uint32_t want) { uint32_t m = 999; return h_oe_TryPopMsg(&m) && m == want; }
 static int empty(void) { uint32_t m = 999; return !h_oe_TryPopMsg(&m) && m == 999; }
+static void *active_time_queries(void *arg) {
+    (void)arg;
+    int64_t last = 0;
+    for (int i = 0; i < 1000; i++) {
+        atomic_fetch_add(&test_guest_ns, 1);
+        int64_t now = h_oe_GetProgramTotalActiveTime();
+        if (now < last) return (void *)1;
+        last = now;
+    }
+    return NULL;
+}
+static void test_active_time(void) {
+    atomic_store(&test_guest_ns, 10000000000ULL);
+    CHECK(h_oe_GetProgramTotalActiveTime() == 0, "active time: query before Initialize safely establishes epoch");
+    atomic_store(&test_guest_ns, 12500000000ULL);
+    CHECK(h_oe_GetProgramTotalActiveTime() == 2500000000LL, "active time: TimeSpan returns elapsed nanoseconds in 64 bits");
+    h_oe_Initialize(); h_oe_Initialize();
+    CHECK(h_oe_GetProgramTotalActiveTime() == 2500000000LL, "active time: repeated OE initialization preserves process epoch");
+    atomic_store(&test_wall_ns, 60000000000ULL);
+    CHECK(h_oe_GetProgramTotalActiveTime() == 2500000000LL, "active time: suspended guest clock excludes advancing wall time");
+    atomic_store(&test_guest_ns, 13250000000ULL);
+    CHECK(h_oe_GetProgramTotalActiveTime() == 3250000000LL, "active time: resume counts only the next active interval");
+    dm_focus_set(2); atomic_store(&test_guest_ns, 14000000000ULL); dm_focus_set(1);
+    CHECK(h_oe_GetProgramTotalActiveTime() == 4000000000LL, "active time: focus notifications do not reset or double-count the clock");
+    atomic_store(&test_guest_ns, 9000000000ULL);
+    CHECK(h_oe_GetProgramTotalActiveTime() == 4000000000LL, "active time: clock regression cannot underflow or reduce elapsed time");
+    atomic_store(&test_guest_ns, 14000000000ULL);
+    pthread_t threads[8]; unsigned started = 0; int workers_ok = 1;
+    while (started < 8 && !pthread_create(&threads[started], NULL, active_time_queries, NULL)) started++;
+    for (unsigned i = 0; i < started; i++) {
+        void *result = NULL;
+        if (pthread_join(threads[i], &result) || result) workers_ok = 0;
+    }
+    CHECK(started == 8 && workers_ok && h_oe_GetProgramTotalActiveTime() == 4000008000LL, "active time: concurrent queries are monotonic and preserve exact elapsed time");
+    atomic_store(&test_guest_ns, UINT64_MAX);
+    CHECK(h_oe_GetProgramTotalActiveTime() == INT64_MAX, "active time: oversized elapsed time saturates signed TimeSpan");
+    CHECK(hle_force_h_oe_GetProgramTotalActiveTime.fn == (void *)h_oe_GetProgramTotalActiveTime &&
+          !strcmp(hle_force_h_oe_GetProgramTotalActiveTime.name, "_ZN2nn2oe25GetProgramTotalActiveTimeEv"),
+          "active time: exact SDK entry is registered for forced host resolution");
+    // A fresh process with an explicit Initialize must start there, not at its first query.
+    g_active_time_initialized = 0; g_active_time_last = 0;
+    atomic_store(&test_guest_ns, 50000000000ULL); h_oe_Initialize();
+    atomic_store(&test_guest_ns, 55000000000ULL);
+    CHECK(h_oe_GetProgramTotalActiveTime() == 5000000000LL, "active time: explicit initialization counts time before the first query");
+    atomic_store(&test_wall_ns, 0); atomic_store(&test_guest_ns, 0); reset();
+}
 static int child_kind;
 static void abort_exit(int sig) { (void)sig; dprintf(2, "【红】t_oe child kind=%d：10 秒看门狗超时\n", child_kind); _exit(97); } // 子进程旧版die可核，避免产生崩溃报告或core | the old-version die in the child process can be checked, avoiding a crash report or core
 static void *focus_burst(void *p) { (void)p; for (int i = 0; i < 17; i++) { dm_focus_set(2); dm_focus_set(1); } return NULL; }
@@ -128,7 +177,24 @@ static void test_scale3d(void) {
     printf("  （实玩第二段回放：慢帧均匀散开换级 %d 次，挤在一起换级 %d 次；旧控制器真机上 12 次）\n", a, b);
     CHECK(a == 0 && b == 0, "动态比例：实玩第二段的慢帧序列（帧率 59+）不论散开还是挤在一起都不换级");
 }
+// 保持一个外层临界区，再并发进出内层；最终计数须精确恢复，通知队列不受影响。
+// Hold an outer section while threads enter/leave inner sections; restore the exact depth without changing notifications.
+static void *exit_sections(void *arg) {
+    (void)arg;
+    for (int i=0;i<1000;i++) { h_oe_EnterExit(); h_oe_LeaveExit(); }
+    return NULL;
+}
 int main(void) {
+    test_active_time();
+    CHECK(g_exit_depth==0,"退出临界区初始深度为零");
+    h_oe_EnterExit(); h_oe_EnterExit();
+    CHECK(g_exit_depth==2,"退出临界区允许嵌套");
+    h_oe_LeaveExit(); CHECK(g_exit_depth==1,"内层退出保留外层");
+    pthread_t exits[8]; unsigned started=0; int exit_ok=1;
+    while (started<8 && !pthread_create(&exits[started],NULL,exit_sections,NULL)) started++;
+    for (unsigned i=0;i<started;i++) exit_ok &= !pthread_join(exits[i],NULL);
+    CHECK(started==8 && exit_ok && g_exit_depth==1,"并发临界区进出保留精确外层深度");
+    h_oe_LeaveExit(); CHECK(g_exit_depth==0 && empty(),"最终退出清零且不制造系统通知");
     test_scale3d();
     unsetenv("DM_OE_SCRIPT"); reset();
     CHECK(empty(), "初始空队列：返回false且不改输出");

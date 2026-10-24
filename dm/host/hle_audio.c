@@ -6,7 +6,10 @@
 // Host: real audio output = CoreAudio AudioUnit (Mac DefaultOutput / iOS RemoteIO); silent sink = consumes buffers in real time (no sound, pacing matches the real device).
 //       iOS defaults to real audio output (the product must have sound), tests that want silence set DM_AUDIO=0 explicitly; Mac defaults to the silent sink (replay / gate checks are silent), DM_AUDIO=1 for real audio output.
 // The contents of AudioOut / AudioOutBuffer / AudioOutParameter are read and written only through the interfaces below; the host defines its own internal layout and only writes the front part of the structs.
+// 六声道 PCM 在出声端明确合成立体声，保留中置人声；客体队列、缓冲释放及播放帧计数仍按原六声道字节推进。
+// Explicitly fold six-channel PCM into stereo at the output, preserving center dialogue; guest queues, buffer releases and played-frame counts still advance by the original six-channel bytes.
 #include "hle.h"
+#include "audio_mix.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <TargetConditionals.h>
 #include <dispatch/dispatch.h>
@@ -26,6 +29,7 @@ typedef struct {
     gbuf *q[QMAX]; _Atomic uint32_t q_head, q_tail;       // 待播：游戏侧写，出声端读 | Pending: written by the game side, read by the output side
     gbuf *rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // 已释放：出声端写，游戏侧读 | Released: written by the output side, read by the game side
     uint64_t pos;                      // 当前块已播字节 | Bytes already played of the current block
+    _Atomic uint64_t played_bytes;     // 实际消耗的 PCM 字节；跨块/回调保留半帧余数 | Consumed PCM bytes; retain partial-frame remainders across buffers/callbacks
     AudioUnit au;
     pthread_t null_th; _Atomic int null_run;
     dispatch_semaphore_t notify_sem;
@@ -73,6 +77,7 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
         uint64_t k = b->size - a->pos; if (k > n) k = n;
         memcpy(dst, (uint8_t *)b->ptr + a->pos, k);
         dst += k; n -= k; a->pos += k;
+        atomic_fetch_add_explicit(&a->played_bytes, k, memory_order_release);
         if (a->pos >= b->size) {
             uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
             uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_acquire);
@@ -90,10 +95,22 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
 static _Atomic uint64_t g_render_calls;   // 声卡回调累计（生命周期验证：恢复后须继续增长） | Cumulative sound card callbacks (lifecycle verification: must keep growing after resume)
 uint64_t dm_audio_render_calls(void) { return atomic_load_explicit(&g_render_calls, memory_order_relaxed); }
 static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *bl) {
-    (void)f; (void)ts; (void)bus; (void)frames;
+    (void)f; (void)ts; (void)bus;
     aout *a = ctx;
     atomic_fetch_add_explicit(&g_render_calls, 1, memory_order_relaxed);
-    pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
+    if(a->ch==6) {
+        int16_t scratch[256*6];
+        int16_t *destination=bl->mBuffers[0].mData;
+        uint64_t capacity=bl->mBuffers[0].mDataByteSize/4u;
+        uint64_t remaining=frames<capacity?frames:capacity;
+        memset(destination,0,bl->mBuffers[0].mDataByteSize);
+        while(remaining) {
+            size_t count=remaining>256?256:(size_t)remaining;
+            pull(a,(uint8_t *)scratch,count*6u*sizeof *scratch);
+            dm_audio_51_stereo(destination,scratch,count);
+            destination+=count*2;remaining-=count;
+        }
+    } else pull(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
     return noErr;
 }
 static void au_open(aout *a) {
@@ -106,10 +123,11 @@ static void au_open(aout *a) {
                                    .componentManufacturer = kAudioUnitManufacturer_Apple};
     AudioComponent c = AudioComponentFindNext(NULL, &d);
     if (!c || AudioComponentInstanceNew(c, &a->au)) die("AudioUnit 建不出来");
+    unsigned output_channels=a->ch==6?2u:(unsigned)a->ch;
     AudioStreamBasicDescription f = {.mSampleRate = RATE, .mFormatID = kAudioFormatLinearPCM,
                                      .mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
-                                     .mBytesPerPacket = 2u * a->ch, .mFramesPerPacket = 1, .mBytesPerFrame = 2u * a->ch,
-                                     .mChannelsPerFrame = (UInt32)a->ch, .mBitsPerChannel = 16};
+                                     .mBytesPerPacket = 2u * output_channels, .mFramesPerPacket = 1, .mBytesPerFrame = 2u * output_channels,
+                                     .mChannelsPerFrame = output_channels, .mBitsPerChannel = 16};
     AURenderCallbackStruct cb = {au_render, a};
     if (AudioUnitSetProperty(a->au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f) ||
         AudioUnitSetProperty(a->au, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb) ||
@@ -144,6 +162,7 @@ HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKN
     aout *a = calloc(1, sizeof *a);
     pthread_mutex_init(&a->m, NULL); a->event = ev; a->ch = ch;
     atomic_init(&a->state, STATE_STOPPED);
+    atomic_init(&a->played_bytes, 0);
     atomic_init(&a->q_head, 0); atomic_init(&a->q_tail, 0);
     atomic_init(&a->rel_head, 0); atomic_init(&a->rel_tail, 0);
     atomic_init(&a->null_run, 0); atomic_init(&a->notify_run, 1);
@@ -159,7 +178,31 @@ HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKN
     pthread_mutex_unlock(&g_aos_lock);
     LOG("audio::OpenAudioOut %s 声道 %d %s", name ? name : "(默认)", ch, real_audio() ? "真出声" : "静音接收端");
     if (real_audio()) au_open(a);
+    if (real_audio() && ch==6) LOG("audio 5.1 -> stereo: center, LFE and surrounds mixed; guest PCM remains 6-channel/48kHz");
     return RES_OK;
+}
+// P5R SDK 同时使用带事件和不带事件的默认设备重载，必须落到同一个宿主输出对象。
+// The P5R SDK uses default-device overloads both with and without an event; both must create the same host output object.
+HLE_FORCE_OPTIONAL("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE",
+                   "默认设备无事件重载；复用宿主音频输出", Result, h_au_OpenDefault, void *g, const uint8_t *param) {
+    return h_au_Open(g, NULL, "DeviceOut", param);
+}
+HLE_FORCE_OPTIONAL("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE",
+                   "默认设备带事件重载；复用宿主音频输出", Result, h_au_OpenDefaultEvent, void *g, void *event, const uint8_t *param) {
+    return h_au_Open(g, event, "DeviceOut", param);
+}
+HLE_FORCE_OPTIONAL("_ZN2nn5audio15GetAudioOutNameEPKNS0_8AudioOutE", "宿主默认设备名称", const char *, h_au_Name, const void *g) {
+    (void)ao(g); return "DeviceOut";
+}
+// P5R 的 subsdk0 查询此接口；原 SDK 查 Switch 服务对象，不能用于宿主创建的 AudioOut。
+// P5R's subsdk0 queries this interface; the original SDK looks up a Switch service object, incompatible with host-created AudioOut.
+HLE_FORCE_OPTIONAL("_ZN2nn5audio28GetAudioOutPlayedSampleCountEPKNS0_8AudioOutE",
+                   "宿主 PCM 播放帧计数；避开 Switch 音频服务", uint64_t, h_au_Played, const void *g) {
+    aout *a = ao(g);
+    return atomic_load_explicit(&a->played_bytes, memory_order_acquire) / (2u * (unsigned)a->ch);
+}
+HLE_FORCE_OPTIONAL("_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE", "Bind a host event for the stable default audio device; never contact auddev", Result, h_au_DeviceEvent, void *event) {
+    hle_bind_system_event(event, 0); return RES_OK;
 }
 HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "开始播放", Result, h_au_Start, void *g) {
     aout *a = ao(g);

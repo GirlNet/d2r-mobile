@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 #include <stdio.h>
 #include <string.h>
+#include "nvn_shader_control.h"
 
 // 哑贴图类型：与原 dummy_tex 同一套前缀判定（未绑贴图槽按 D3D 语义读出 0）
 // Dummy texture type: same prefix rules as the original dummy_tex (an unbound texture slot reads 0 per D3D semantics)
@@ -19,20 +20,62 @@ static void dummy_kind(NSString *t, uint8_t *tt, uint8_t *pf) {
     *pf = [t hasPrefix:@"depth"] ? NVN_DPF_DEPTH : [t containsString:@"<uint"] ? NVN_DPF_UINT : [t containsString:@"<int"] ? NVN_DPF_SINT : NVN_DPF_FLOAT;
 }
 
-int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
+static int parse_reflection(NSDictionary *j, nvn_refl *o, char *err, int errlen, int allow_candidate) {
     memset(o, 0, sizeof *o);
     #define FAIL(...) do { snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
     if (![j[@"route"] isEqual:@"B"]) FAIL("不是 B 反射（route ≠ B；A 路线 / PC 链反射已退役）");
+    BOOL candidate = allow_candidate && [j[@"execution_mode"] isEqual:@"guarded_candidate"] &&
+        [j[@"profile"] isEqual:@"p5r"];
+    if (candidate) {
+        NSDictionary *expected=@{@"version":@1,@"pipeline":@"p5r_nvn11",@"resources":@"per_binding",@"coordinates":@"normalized",@"storage":@"exact_gpu_pointer"};
+        if (![j[@"runtime_contract"] isEqual:expected] || ![j[@"diagnostic_only"] isEqual:@NO] ||
+            ![j[@"resource_facts_verified"] isEqual:@NO] || ![j[@"runtime_ready"] isEqual:@NO] ||
+            ![j[@"binding_coverage_complete"] isEqual:@YES] ||
+            ![j[@"missing_descriptors"] isKindOfClass:NSArray.class] || [j[@"missing_descriptors"] count] ||
+            ![j[@"drv_reads"] isKindOfClass:NSDictionary.class] || [j[@"drv_reads"] count])
+            FAIL("Invalid guarded P5R execution contract");
+        if ([j[@"stage"] isEqual:@"cs"] && ![j[@"compute_memory_audit"][@"memory_unused_proven"] isEqual:@YES])
+            FAIL("Guarded compute requires unused local/shared memory evidence");
+        o->guarded_candidate=1;
+    }
+    // 诊断草案具有相似绑定字段，但未经验证；保留无这些标记的旧版 D2R 反射兼容性。
+    // Diagnostic plans have similar binding fields but are unverified; retain compatibility with legacy D2R reflections lacking these markers.
+    if (!candidate && ((j[@"diagnostic_only"] && ![j[@"diagnostic_only"] isEqual:@NO]) ||
+        (j[@"resource_facts_verified"] && ![j[@"resource_facts_verified"] isEqual:@YES]) ||
+        (j[@"runtime_ready"] && ![j[@"runtime_ready"] isEqual:@YES]))) FAIL("Diagnostic or unverified reflection is not loadable");
+    if (!candidate && [j[@"profile"] isEqual:@"p5r"] &&
+        (![j[@"diagnostic_only"] isEqual:@NO] || ![j[@"resource_facts_verified"] isEqual:@YES] ||
+         ![j[@"runtime_ready"] isEqual:@YES])) FAIL("Missing verified P5R reflection markers");
     {   // Switch 原版翻译：种类与 NVN 槽号已由 dmsh_build.py 从 MSL 成员名解出 | Translated original Switch shaders: kind and NVN slot number are already parsed from the MSL member names by dmsh_build.py
         NSArray *bs = j[@"bindings"];
         if (![bs isKindOfClass:[NSArray class]]) FAIL("缺 bindings");
         if (bs.count > NVN_REFL_MAXB) FAIL("绑定 %lu 个，超上限 %d", (unsigned long)bs.count, NVN_REFL_MAXB);
         o->route_b = 1; o->abi = 0;   // spirv-cross 第 0 组 → [[buffer(0)]] | spirv-cross set 0 → [[buffer(0)]]
+        uint64_t argument_ids=0;
         for (NSDictionary *b in bs) {
             NSString *k = b[@"kind"]; nvn_rbind *r = &o->b[o->nb];
             id rg = b[@"reg"]; int reg = [rg isKindOfClass:[NSNumber class]] ? [rg intValue] : -1, aid = [b[@"arg_id"] intValue];
+            if (candidate) {
+                NSSet *allowed=[NSSet setWithArray:@[@"support",@"c1",@"cbuf",@"sbuf",@"ubo_ptr",@"tex",@"tex_combined",@"samp",@"samp_tex",@"samp_combined"]];
+                if (![allowed containsObject:k] || ![b[@"slot_mapping_verified"] isEqual:@YES] ||
+                    ![b[@"arg_id"] isKindOfClass:NSNumber.class] || [b[@"arg_id"] doubleValue]!=(double)aid || aid<0 || aid>=NVN_REFL_MAXB ||
+                    (argument_ids & (UINT64_C(1)<<aid))) FAIL("Invalid guarded binding/index");
+                argument_ids |= UINT64_C(1)<<aid;
+                if (([k isEqual:@"tex"] || [k isEqual:@"tex_combined"]) &&
+                    ![b[@"msl_type"] isEqual:@"texture2d<float>"] && ![b[@"msl_type"] isEqual:@"texturecube<float>"])
+                    FAIL("Unsupported guarded texture declaration");
+                if (reg>=0 && (([k isEqual:@"cbuf"] || [k isEqual:@"sbuf"] || [k isEqual:@"ubo_ptr"]) ? reg>=16 :
+                    ([k isEqual:@"tex"] || [k isEqual:@"samp"] || [k isEqual:@"samp_tex"]) ? reg>=128 : 0))
+                    FAIL("Guarded resource register out of range");
+            }
             r->aid = (uint16_t)aid; r->reg = reg < 0 ? 0 : (uint16_t)reg;
-            if ([k isEqualToString:@"cbuf"]) r->kind = NVN_RB_CBUF;
+            if ([k isEqualToString:@"tex_combined"] || [k isEqualToString:@"samp_combined"] || [k isEqualToString:@"tbuf_combined"]) {
+                if (reg < 0 || reg >= NVN_COMBINED_TEX_SLOTS) FAIL("Invalid combined texture slot");
+                r->reg = (uint16_t)(NVN_COMBINED_TEX_FIRST + reg);
+                if ([k isEqualToString:@"samp_combined"]) r->kind = NVN_RB_SAMPT;
+                else { r->kind = [k isEqualToString:@"tbuf_combined"] ? NVN_RB_TBUF : NVN_RB_TEX; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); }
+            }
+            else if ([k isEqualToString:@"cbuf"]) r->kind = NVN_RB_CBUF;
             else if ([k isEqualToString:@"samp"]) r->kind = NVN_RB_SAMP;
             else if ([k isEqualToString:@"samp_tex"]) r->kind = NVN_RB_SAMPT;
             else if ([k isEqualToString:@"tex"]) { r->kind = NVN_RB_TEX; dummy_kind(b[@"msl_type"], &r->dtt, &r->dpf); }
@@ -44,6 +87,7 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"c1"]) r->kind = NVN_RB_C1;
             else if ([k isEqualToString:@"drvcb"]) r->kind = [b[@"bank"] intValue] == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
             else FAIL("B 绑定种类 %s 未实现（%s）", k.UTF8String, [b[@"msl_name"] UTF8String]);
+            if (aid < 0 || aid >= NVN_REFL_MAXB) FAIL("Invalid argument buffer index");
             if ((r->kind == NVN_RB_CBUF || r->kind == NVN_RB_SAMP || r->kind == NVN_RB_SAMPT || r->kind == NVN_RB_TEX || r->kind == NVN_RB_IMG || r->kind == NVN_RB_TBUF || r->kind == NVN_RB_SBUFP || r->kind == NVN_RB_UBOP) && reg < 0)
                 FAIL("B 绑定 %s 没解出槽号", [b[@"msl_name"] UTF8String]);
             o->nb++;
@@ -90,8 +134,24 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             for (NSDictionary *u in fe[@"outputs"]) { if (o->nfo >= 4) FAIL("fetch 输出超过 4 个"); o->fo_color[o->nfo++] = (uint8_t)[u[@"color"] intValue]; }
         }
         NSArray *tg = j[@"threadgroup_size"];
-        if ([tg isKindOfClass:[NSArray class]] && tg.count == 3) for (int i = 0; i < 3; i++) o->tg[i] = (uint16_t)[tg[i] intValue];
+        if ([j[@"stage"] isEqual:@"cs"]) {
+            if (![tg isKindOfClass:[NSArray class]] || tg.count != 3) FAIL("Missing compute workgroup");
+            uint32_t group[3];
+            for (int i = 0; i < 3; i++) {
+                if (![tg[i] isKindOfClass:[NSNumber class]] || [tg[i] doubleValue] != (double)[tg[i] unsignedIntValue]) FAIL("Invalid compute workgroup field");
+                group[i] = [tg[i] unsignedIntValue];
+            }
+            if (!nvn_compute_group_valid(group)) FAIL("Invalid or unsupported compute workgroup");
+            for (int i = 0; i < 3; i++) o->tg[i] = (uint16_t)group[i];
+        } else if ([tg isKindOfClass:[NSArray class]] && tg.count == 3) for (int i = 0; i < 3; i++) o->tg[i] = (uint16_t)[tg[i] intValue];
         return 0;
     }
     #undef FAIL
+}
+
+int nvn_refl_from_json(NSDictionary *j,nvn_refl *o,char *err,int errlen) {
+    return parse_reflection(j,o,err,errlen,0);
+}
+int nvn_refl_from_json_candidate(NSDictionary *j,nvn_refl *o,char *err,int errlen) {
+    return parse_reflection(j,o,err,errlen,1);
 }
