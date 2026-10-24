@@ -1,0 +1,39 @@
+# 手动验证固定测试提交中的合成浮点内联；仅检出源代码，不包含游戏资源。
+# Manually verify synthetic float inlining at a pinned test commit, checking out source only and no game assets.
+name: P5R manual exact floating-point verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: p5r-manual-exact-math
+  cancel-in-progress: true
+jobs:
+  exact-math-inline:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1d88bc5d5b4aa10c5406925a673042c1dc30c95e
+          persist-credentials: false
+      - name: Select an available Xcode 26 SDK
+        run: |
+          sdk=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' -type d | sort | tail -1)
+          if [ -n "$sdk" ]; then echo "DEVELOPER_DIR=$sdk/Contents/Developer" >> "$GITHUB_ENV"; fi
+      - name: Compile production source loader and synthetic exact-math cases
+        run: |
+          set -euo pipefail
+          python3 dm/gfx/tools/dmsh_chain.py --header
+          make -C dm/gfx/tests t_shader_math_gpu
+      - name: Compare bit-exact compute and fragment output on an Apple GPU
+        run: |
+          set -euo pipefail
+          MTL_DEBUG_LAYER=1 dm/gfx/tests/t_shader_math_gpu | tee "$RUNNER_TEMP/p5r-exact-inline-gpu.log"
+      - name: Retain synthetic test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p5r-exact-inline-synthetic-log
+          path: ${{ runner.temp }}/p5r-exact-inline-gpu.log
+          retention-days: 7
