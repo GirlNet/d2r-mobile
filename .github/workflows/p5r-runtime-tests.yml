@@ -139,6 +139,11 @@ jobs:
           set -euo pipefail
           make -C dm/gfx/tests t_color_feedback_gpu
           MTL_DEBUG_LAYER=1 dm/gfx/tests/t_color_feedback_gpu
+      - name: Verify exact floating-point helper inlining through production source compilation
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_shader_math_gpu
+          MTL_DEBUG_LAYER=1 dm/gfx/tests/t_shader_math_gpu
   macos-components:
     runs-on: macos-26
     timeout-minutes: 15
