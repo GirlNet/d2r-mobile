@@ -2,6 +2,7 @@
 # Validate synthetic float inlining directly on the development branch, independently of PR merge results and without game content.
 name: P5R exact floating-point helpers
 on:
+  workflow_dispatch:
   push:
     branches: ['codex/p5r-runtime']
     paths:
