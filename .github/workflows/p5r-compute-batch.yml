@@ -1,0 +1,75 @@
+# 只验证通用缓冲任务批处理和构建无游戏内容的宿主。
+# Verify generic buffer-work batching and build a game-free host.
+name: P5R compute batching
+on:
+  push:
+    branches: ['codex/p5r-runtime']
+    paths:
+      - '.github/workflows/p5r-compute-batch.yml'
+      - 'dm/gfx/nvn/nvn_compute_batch.inc'
+      - 'dm/gfx/nvn/nvn_mtl.m'
+      - 'dm/gfx/tests/t_compute_batch_gpu.m'
+      - 'dm/gfx/tests/Makefile'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: p5r-compute-batch-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gpu-ordering:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify dependent work and texture fallback on both backends
+        run: |
+          set -euo pipefail
+          python3 dm/gfx/tools/dmsh_chain.py --header
+          make -C dm/gfx/tests t_compute_batch_gpu t_compute_batch_gpu_m4 t_resource_binding_gpu t_resource_binding_gpu_m4 t_command_sequence_gpu t_command_sequence_gpu_m4
+          python3 - <<'PY'
+          import json,os,subprocess
+          results=[]
+          for name,marker in (('t_compute_batch_gpu','COMPUTE BATCH GPU OK:'),('t_resource_binding_gpu','RESOURCE BINDING GPU OK:'),('t_command_sequence_gpu','COMMAND SEQUENCE GPU OK:')):
+              for suffix in ('','_m4'):
+                  binary=name+suffix
+                  r=subprocess.run(['dm/gfx/tests/'+binary],capture_output=True,text=True,env=dict(os.environ,MTL_DEBUG_LAYER='1'))
+                  print(r.stdout,r.stderr,flush=True)
+                  skipped=r.returncode in (77,78)
+                  results.append(dict(binary=binary,exit_code=r.returncode,executed=not skipped,passed=not skipped and r.returncode==0 and marker in r.stdout))
+                  if skipped: print('::warning::GPU execution unavailable: '+binary)
+                  elif not results[-1]['passed']: raise SystemExit('GPU regression failed: '+binary)
+          with open('compute-batch-results.json','w') as f:json.dump(results,f,indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compute-batch-results
+          path: compute-batch-results.json
+          retention-days: 7
+  ios-shell:
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify text and shader cache identity
+        run: |
+          set -euo pipefail
+          python3 dm/i18n/scan_literals.py
+          python3 dm/ios/tools/dm_i18n.py --check
+          python3 dm/gfx/tools/dmsh_chain.py --header
+      - name: Compile and package the complete iOS Metal 4 host
+        run: python3 dm/ios/p5r/build_shell.py "$RUNNER_TEMP/p5r-shell" --metal-backend 4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: p5r-ios-shell
+          path: |
+            ${{ runner.temp }}/p5r-shell/*.ipa
+            ${{ runner.temp }}/p5r-shell/build-report.json
+            ${{ runner.temp }}/p5r-shell/logs
+          retention-days: 7

@@ -735,10 +735,11 @@ static inline void m4_end(id e) {
     [e endEncoding];
 }
 #endif
+#include "nvn_compute_batch.inc"
 #if DM_NVN_M3
 static inline RENC enc_r_begin(RPD *d) { return [g_cb renderCommandEncoderWithDescriptor:d]; }
 #else
-static inline RENC enc_r_begin(RPD *d) { RENC e = [g_cb renderCommandEncoderWithDescriptor:d]; [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; pg4_begin(e,'R',d); return e; }
+static inline RENC enc_r_begin(RPD *d) { compute_batch_stop(); RENC e = [g_cb renderCommandEncoderWithDescriptor:d]; [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; pg4_begin(e,'R',d); return e; }
 #endif
 static inline void enc_r_end(id e) { m4_end(e); }
 static inline void enc_r_pso(RENC e, id<MTLRenderPipelineState> p) { [e setRenderPipelineState:p]; }
@@ -770,10 +771,10 @@ static inline void enc_r_draw_indexed(RENC e, MTLPrimitiveType p, NSUInteger n, 
 #if DM_NVN_M3
 static inline CENC enc_c_begin(MTLComputePassDescriptor *d) { return d ? [g_cb computeCommandEncoderWithDescriptor:d] : [g_cb computeCommandEncoder]; }
 #else
-static inline CENC enc_c_begin(MTLComputePassDescriptor *d) { (void)d; CENC e = [g_cb computeCommandEncoder]; [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [e setArgumentTable:g_ct]; pg4_begin(e,'C',nil); return e; }
+static inline CENC enc_c_begin(MTLComputePassDescriptor *d) { (void)d; CENC e = compute_batch_get(); if (e) return e; e = [g_cb computeCommandEncoder]; [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [e setArgumentTable:g_ct]; pg4_begin(e,'C',nil); return e; }
 #endif
 static inline id<MTLComputeCommandEncoder> enc_c_begin_concurrent(id<MTLCommandBuffer> cb) { return [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]; }
-static inline void enc_c_end(id e) { m4_end(e); }
+static inline void enc_c_end(id e) { if (!compute_batch_shared(e)) m4_end(e); }
 static inline void enc_c_pso(id e, id<MTLComputePipelineState> p) { [e setComputePipelineState:p]; }
 #if DM_NVN_M3
 static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) { NSUInteger off; id<MTLBuffer> b = m3_buf(gpu, &off); if (gpu && !b) { { static int n_; if (!n_++) MLOG("【红】" "老接口计算绑定：显卡地址 %#llx 不在任何登记过的缓冲里（槽 %lu）", (unsigned long long)gpu, (unsigned long)i); } return; } [(id<MTLComputeCommandEncoder>)e setBuffer:b offset:off atIndex:i]; }
@@ -784,9 +785,9 @@ static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { [e dispatchThrea
 #if DM_NVN_M3
 static inline id enc_b_begin(id cb) { return [cb blitCommandEncoder]; }
 #else
-static inline id enc_b_begin(id cb) { id e=[cb respondsToSelector:@selector(beginCommandBufferWithAllocator:)] ? [cb computeCommandEncoder] : [cb blitCommandEncoder]; if(on_sub_thread() && cb==g_cb)pg4_begin(e,'B',nil); return e; }
+static inline id enc_b_begin(id cb) { id e = cb == g_cb && on_sub_thread() ? compute_batch_get() : nil; if (e) return e; e=[cb respondsToSelector:@selector(beginCommandBufferWithAllocator:)] ? [cb computeCommandEncoder] : [cb blitCommandEncoder]; if(on_sub_thread() && cb==g_cb)pg4_begin(e,'B',nil); return e; }
 #endif
-static inline void enc_b_end(id e) { m4_end(e); }
+static inline void enc_b_end(id e) { if (!compute_batch_shared(e)) m4_end(e); }
 static inline void enc_b_copy_buffer(id e, id<MTLBuffer> s, NSUInteger so, id<MTLBuffer> d, NSUInteger doff, NSUInteger n) { [e copyFromBuffer:s sourceOffset:so toBuffer:d destinationOffset:doff size:n]; }
 static inline void enc_b_copy_buffer_texture(id e, id<MTLBuffer> s, NSUInteger so, NSUInteger row, NSUInteger img, MTLSize z, id<MTLTexture> d, NSUInteger sl, NSUInteger lv, MTLOrigin o) { [e copyFromBuffer:s sourceOffset:so sourceBytesPerRow:row sourceBytesPerImage:img sourceSize:z toTexture:d destinationSlice:sl destinationLevel:lv destinationOrigin:o]; }
 static inline void enc_b_copy_texture_buffer(id e, id<MTLTexture> s, NSUInteger sl, NSUInteger lv, MTLOrigin o, MTLSize z, id<MTLBuffer> d, NSUInteger doff, NSUInteger row, NSUInteger img) { [e copyFromTexture:s sourceSlice:sl sourceLevel:lv sourceOrigin:o sourceSize:z toBuffer:d destinationOffset:doff destinationBytesPerRow:row destinationBytesPerImage:img]; }
@@ -795,7 +796,7 @@ static void blit_note(void);   // 逐通道转储：拷贝 / 缓冲更新结束�
 #if DM_NVN_M3
 static BENC blit(void) { blit_note(); rp_end(); if (!g_blit) { ser_gate(); g_blit = enc_b_begin(g_cb); } return g_blit; }
 #else
-static BENC blit(void) { blit_note(); rp_end(); if (!g_blit) { ser_gate(); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; } return g_blit; }
+static BENC blit(void) { blit_note(); rp_end(); if (!g_blit) { ser_gate(); g_blit = enc_b_begin(g_cb); if (!compute_batch_shared(g_blit)) [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; } return g_blit; }
 #endif
 
 void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
@@ -947,9 +948,11 @@ static const char *cctx_snap(void);   // 这次提交里有什么（出错时打
 uint64_t mtl_sub_commit(void) {
     dm_boot_probe_block("guest_gpu_submission","mtl_sub_commit");
     if(!g_cb || !on_sub_thread())MDIE("Metal commit without ownership of the active submit");
+    compute_batch_stop();
     defer_fallback();   // 推迟合并通道：提交结束仍有未回放的 P 绘制（正常路径不会到这里） | Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    compute_batch_stop();
     if(p5r_async_visibility_on() && g_nvs)vis_encode_prefix();
     up_flush();
     uint64_t fence = ++g_fence;
@@ -6213,6 +6216,7 @@ static void dispatch(const p_dispatch *dp) {
     if (!program) { RED_ONCE(27, "派发前没有绑定程序"); return; }
     NvShader *cs = program->sh[5];
     if (!cs) { RED_ONCE(28, "派发的程序没有计算着色器（或未映射）"); return; }
+    if (cs->builtin || !compute_batch_buffer_only(&cs->rf)) compute_batch_stop();
     const void *k = (__bridge const void *)cs;
     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
     if (!ps) {
@@ -6848,6 +6852,7 @@ void mtl_exec(const uint8_t *p) {
     int trace = dump_all && passdump();   // 普通模式不逐操作查帧范围，完整命令位置仅用于指定诊断帧 | Normal mode does not check the frame range per operation; the full command position is only used for the designated diagnostic frames
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
+        compute_batch_op(h.op);
         g_exec_cur = p;   // 写回前瞻的扫描起点：结束通道的那条操作（含） | Scan start point of the store lookahead: the operation that ends the render pass (inclusive)
         if (p == g_defer_pend) { for (int gi = 0; gi < 4; gi++) if (g_defer_slots[gi].active && g_defer_slots[gi].p_end_op == p) g_defer_slots[gi].in_p = 0; g_defer_pend = NULL; }
         sdx_seq(p);

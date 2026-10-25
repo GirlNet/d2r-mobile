@@ -324,6 +324,21 @@ jobs:
                   if result.returncode:
                       raise SystemExit(result.returncode)
           PY
+      - name: Verify buffer compute batching and exact baseline parity
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_compute_batch_gpu t_compute_batch_gpu_m4
+          python3 - <<'PY'
+          import os,subprocess
+          for suffix in ('','_m4'):
+              r=subprocess.run(['dm/gfx/tests/t_compute_batch_gpu'+suffix],capture_output=True,text=True,env=dict(os.environ,MTL_DEBUG_LAYER='1'))
+              print(r.stdout,r.stderr)
+              if r.returncode in (77,78):
+                  print('::warning::Compute batching GPU execution unavailable for '+(suffix or 'Metal 3'))
+                  continue
+              if r.returncode or 'COMPUTE BATCH GPU OK:' not in r.stdout:
+                  raise SystemExit('Compute batch GPU regression failed')
+          PY
       - name: Verify continuous command families, synchronization and instance IDs
         run: |
           set -euo pipefail
