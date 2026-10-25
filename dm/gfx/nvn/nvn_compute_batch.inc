@@ -11,7 +11,9 @@ static int g_compute_batch_scope;
 static int compute_batch_on(void) {
     if (g_p5r_compute_batch < 0) {
         const char *v = getenv("DM_P5R_COMPUTE_BATCH");
-        g_p5r_compute_batch = !v || atoi(v) != 0;
+        // 长时间真机对照未证实收益；默认保持原路径，仅显式开启用于实验。
+        // Sustained device comparisons did not establish a benefit; keep the original path unless explicitly testing.
+        g_p5r_compute_batch = v && atoi(v) != 0;
     }
     return !dm_guest_d2r() && g_p5r_compute_batch && on_sub_thread();
 }
