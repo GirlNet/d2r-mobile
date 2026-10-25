@@ -1,7 +1,9 @@
 // P5R Metal 4：合并相邻的纯缓冲任务；依据统一计算编码器的显式阶段屏障保持读写顺序。
 // P5R Metal 4: batch adjacent buffer-only work, preserving order with explicit unified-compute stage barriers.
-static int g_p5r_compute_batch = -1;
-static uint64_t g_compute_batch_encoders, g_compute_batch_ops, g_compute_batch_barriers;
+// 保留真机调试开关与计数，防止发布优化删掉同包对照所需的观测点。
+// Retain the device switch and counters so release optimization preserves same-package comparisons.
+static volatile int g_p5r_compute_batch = -1;
+static volatile uint64_t g_compute_batch_encoders, g_compute_batch_ops, g_compute_batch_barriers;
 #if !DM_NVN_M3
 static CENC g_compute_batch_encoder;
 static unsigned g_compute_batch_count;
