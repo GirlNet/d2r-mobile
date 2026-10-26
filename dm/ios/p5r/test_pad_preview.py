@@ -6,6 +6,7 @@ import argparse,json,platform,plistlib,subprocess,sys,time
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 def run(*args,**kwargs):
+    kwargs.setdefault('timeout',90)
     try:
         return subprocess.run([str(a) for a in args],check=True,capture_output=True,text=True,**kwargs).stdout
     except subprocess.CalledProcessError as error:
@@ -42,21 +43,29 @@ def main(output):
         name='iPad' if device['name'].startswith('iPad') else 'iPhone'
         udid=run('xcrun','simctl','create','P5R controls '+name,device['identifier'],runtime['identifier']).strip()
         try:
-            run('xcrun','simctl','boot',udid);run('xcrun','simctl','bootstatus',udid,'-b',timeout=180)
+            print(name+' booting: '+device['name'],flush=True)
+            run('xcrun','simctl','boot',udid,timeout=180);run('xcrun','simctl','bootstatus',udid,'-b',timeout=180)
+            print(name+' installing and launching fixture',flush=True)
             run('xcrun','simctl','install',udid,app);run('xcrun','simctl','launch',udid,bundle)
             container=Path(run('xcrun','simctl','get_app_container',udid,bundle,'data').strip())
             result=container/'Documents/pad-editor-result.json'
             deadline=time.monotonic()+30
             while not result.is_file() and time.monotonic()<deadline:time.sleep(.5)
-            if not result.is_file():raise RuntimeError(name+' UIKit assertions did not complete')
+            if not result.is_file():
+                try:
+                    logs=run('xcrun','simctl','spawn',udid,'log','show','--last','2m','--style','compact','--predicate','process == "PadEditorTest"',timeout=15)
+                    (output/(name+'-failure.log')).write_text(logs)
+                except (subprocess.SubprocessError,OSError):pass
+                raise RuntimeError(name+' UIKit assertions did not complete')
             value=json.loads(result.read_text());assert value['passed'] and value['width']>value['height'],value
             value['device']=device['name'];results.append(value)
             (output/(name+'-result.json')).write_text(json.dumps(value,indent=2)+'\n')
             run('xcrun','simctl','io',udid,'screenshot',output/(name+'-controls.png'))
             print(name+' PAD EDITOR UIKit OK: '+', '.join(value['checks']),flush=True)
         finally:
-            subprocess.run(['xcrun','simctl','shutdown',udid],capture_output=True)
-            subprocess.run(['xcrun','simctl','delete',udid],capture_output=True)
+            for action in ('shutdown','delete'):
+                try:subprocess.run(['xcrun','simctl',action,udid],capture_output=True,timeout=15)
+                except subprocess.TimeoutExpired:print('::warning::Simulator '+action+' timed out for '+name,flush=True)
     (output/'result.json').write_text(json.dumps({'skipped':False,'passed':True,'devices':results},indent=2)+'\n')
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('output',type=Path);main(parser.parse_args().output)

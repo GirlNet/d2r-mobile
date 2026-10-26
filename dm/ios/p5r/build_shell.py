@@ -50,7 +50,7 @@ def run(command, log):
 def retained_diagnostics(symbols):
     # 带尾下划线的项是命名空间前缀；其余项必须精确匹配，避免误判正常采样器表 g_sreg。
     # Trailing underscores mark namespace prefixes; other entries match exactly, excluding normal sampler tables such as g_sreg.
-    forbidden=['_g_compute_probe_', '_g_pg4_', '_g_compute_batch_', '_g_p5r_compute_batch', '_nvn_prof_entry', '_cctx_snap', '_g_sr', '_g_draw_sites', '_g_draw_sites_n']
+    forbidden=['_g_compute_probe_', '_g_pg4_', '_g_compute_batch_', '_g_p5r_compute_batch', '_g_main_yield_', '_g_mp_ticks', '_g_mp_calls', '_g_mp_pages', '_nvn_prof_entry', '_cctx_snap', '_g_sr', '_g_draw_sites', '_g_draw_sites_n']
     names={line.split()[-1] for line in symbols.splitlines() if line.split()}
     return [symbol for symbol in forbidden if any(name.startswith(symbol) if symbol.endswith('_') else name==symbol for name in names)]
 

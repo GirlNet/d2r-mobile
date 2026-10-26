@@ -5,6 +5,8 @@
 NVN call counters and timing wrappers, per-frame statistics and slow-frame files,
 GPU timing callbacks and counter heaps, shader comparison probes, draw-site
 histograms, capture probes, text diagnostics and periodic system-state sampling.
+Yield timing and diagnostic page-protection timing/counters are omitted too;
+the underlying scheduler and dirty-page protection/generations are preserved.
 The linked executable is checked for retained diagnostic symbols.
 
 默认构建从编译层关闭性能观测，并检查链接结果是否还保留诊断模块。资源完整性、

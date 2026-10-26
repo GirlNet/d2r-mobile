@@ -94,6 +94,20 @@ jobs:
           set -euo pipefail
           make -C dm/host/tests build/t_oe
           dm/host/tests/build/t_oe
+      - name: Verify player yield and dirty-page paths without observation
+        run: |
+          set -euo pipefail
+          for diagnostics in 0 1; do
+            xcrun clang -O1 -Wno-unused-function -DDM_RUNTIME_DIAGNOSTICS="$diagnostics" -I dm/host \
+              dm/host/tests/t_player_yield.c dm/host/hle_thread.c -o "$RUNNER_TEMP/yield-$diagnostics"
+            "$RUNNER_TEMP/yield-$diagnostics"
+          done
+          xcrun clang -O1 -Wno-unused-function -DDM_RUNTIME_DIAGNOSTICS=0 -DDM_TEST_HOOKS -I dm/host \
+            dm/host/tests/t_condvar.c dm/host/tests/t_condvar_stub.c dm/host/hle_thread.c -o "$RUNNER_TEMP/condvar-player"
+          "$RUNNER_TEMP/condvar-player"
+          make -C dm/gfx/tests t_dirty_slots t_dirty_race CFLAGS='-O1 -g -Wall -Wno-unused-function -DDM_RUNTIME_DIAGNOSTICS=0 -I../nvn/include'
+          dm/gfx/tests/t_dirty_slots
+          dm/gfx/tests/t_dirty_race
       - name: Check movie codec registration on the packaging host
         run: |
           set -euo pipefail
