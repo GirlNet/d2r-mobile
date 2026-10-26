@@ -6210,12 +6210,14 @@ static void bright_lut(NvShader *cs) {
     enc_c_pso(ce, ps); enc_c_dispatch(ce, MTLSizeMake((lut.width + 3) / 4, (lut.height + 3) / 4, (lut.depth + 3) / 4), MTLSizeMake(4, 4, 4)); enc_c_end(ce);
     args_dirty_all();
 }
+#include "nvn_compute_probe.inc"
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
     NvProg *program=program_resources(programs_get(&S.programs),1u<<5);
     if (!program) { RED_ONCE(27, "派发前没有绑定程序"); return; }
     NvShader *cs = program->sh[5];
     if (!cs) { RED_ONCE(28, "派发的程序没有计算着色器（或未映射）"); return; }
+    cs = compute_probe_shader(cs);
     if (cs->builtin || !compute_batch_buffer_only(&cs->rf)) compute_batch_stop();
     const void *k = (__bridge const void *)cs;
     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
@@ -6251,7 +6253,7 @@ static void dispatch(const p_dispatch *dp) {
     if(!dm_guest_d2r())prepare_shader_textures(cs,5,textures);
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     id<MTLComputeCommandEncoder> ce = pg_compute();
-    pg4_note(cs->key);
+    pg4_note(compute_probe_label(cs));
     enc_c_pso(ce, ps);
     encode_args(ce, cs, 5, 0,dm_guest_d2r()?NULL:textures);
     enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));

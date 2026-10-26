@@ -324,6 +324,22 @@ jobs:
                   if result.returncode:
                       raise SystemExit(result.returncode)
           PY
+      - name: Verify default-off compute comparisons and fallback guards
+        run: |
+          set -euo pipefail
+          make -C dm/gfx/tests t_compute_probe_gpu t_compute_probe_gpu_m4
+          python3 - <<'PY'
+          import os,subprocess
+          for suffix in ('','_m4'):
+              for flag in ('','--disabled-no-config','--missing','--bad-original','--bad-candidate','--bad-entry','--bad-layout','--oversize'):
+                  argv=['dm/gfx/tests/t_compute_probe_gpu'+suffix]+([flag] if flag else [])
+                  r=subprocess.run(argv,capture_output=True,text=True,env=dict(os.environ,MTL_DEBUG_LAYER='1'))
+                  print(r.stdout,r.stderr)
+                  if r.returncode in (77,78):
+                      print('::warning::Compute comparison GPU execution unavailable for '+(suffix or 'Metal 3'))
+                      break
+                  if r.returncode or 'COMPUTE PROBE GPU OK:' not in r.stdout:raise SystemExit('Compute comparison failed: '+str(argv))
+          PY
       - name: Verify buffer compute batching and exact baseline parity
         run: |
           set -euo pipefail

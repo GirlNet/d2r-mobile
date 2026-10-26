@@ -27,6 +27,9 @@ t_resource_binding_gpu: t_resource_binding_gpu.m nvn_gpu_test_device.h ../../hos
 t_compute_batch_gpu: t_compute_batch_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_compute_batch_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 
+t_compute_probe_gpu: t_compute_probe_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_compute_probe_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+
 t_guarded_runtime_gpu: t_guarded_runtime_gpu.m nvn_gpu_test_device.h ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -DDM_NVN_M3=1 -fobjc-arc -o $@ t_guarded_runtime_gpu.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 
