@@ -3,6 +3,7 @@
 // Multi-module loading (playing the role of Horizon's rtld): mapping, claiming thread slots, gate registration, cross-module relocation, take-over by name, segment permissions.
 // The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
 #include "dm.h"
+#include "boot_probe.h"
 #include <TargetConditionals.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -18,7 +19,7 @@ pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui;   // g_keyaspect：宽高比上限参数位（KASPECT）          // 分辨率参数位（改写器 PARAMS，KRES0 掌机 / KRES1 主机）；产物没有即 0、不占 | g_keyaspect: aspect ratio upper-limit parameter slot (KASPECT)          // resolution parameter slots (rewriter PARAMS, KRES0 handheld / KRES1 docked); 0 and not allocated if the build output lacks them
 enum { KEY_K18, KEY_KTLS, KEY_KTLR, KEY_KGATE, KEY_KRES0, KEY_KRES1, KEY_KASPECT, KEY_KASPECTUI, KEY_N };
 
-uint64_t resolve_import(module_t *m, const char *name);
+uint64_t resolve_import(module_t *m, const char *name, int weak);
 void gate_register(uint64_t ret_addr, const char *kind, int arg, uint64_t orig);
 
 static pthread_key_t key_value(unsigned i) {
@@ -113,19 +114,28 @@ module_t *module_of(const void *p) {
     return NULL;
 }
 
-// 跨模块符号解析：先在已装模块里找定义，找不到再交给 HLE / 桩
-// Cross-module symbol resolution: first look for a definition in the loaded modules, and only if not found hand over to HLE / stubs
-static uint64_t resolve_sym(module_t *m, const char *name) {
+// 跨模块符号解析：先找客体定义和 HLE；未定义弱符号保持零，强符号才分配记名桩。
+// Cross-module resolution: try guest definitions and HLE; unresolved weak symbols stay zero, while strong symbols get named stubs.
+static uint64_t resolve_sym(module_t *m, const Elf64_Sym *symbol) {
+    const char *name = m->strtab + symbol->st_name;
     for (int i = 0; i < g_nmod; i++) { void *p = module_sym(&g_mod[i], name); if (p) return (uint64_t)p; }
-    return resolve_import(m, name);
+    return resolve_import(m, name, (symbol->st_info >> 4) == 2);
 }
 
 // 强制接管表（hle.h HLE_FORCE，__DATA,swforce 段）：命中即覆盖模块内定义
 // Forced take-over table (hle.h HLE_FORCE, the __DATA,swforce section): a hit overrides the definition inside the module
-static const hle_force_ent *g_force; static unsigned g_nforce; static unsigned *g_force_hits;
+static hle_force_ent *g_force; static unsigned g_nforce, g_nforce_required; static unsigned *g_force_hits;
 static void force_init(void) {
-    unsigned long sz; g_force = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
-    g_nforce = g_force ? (unsigned)(sz / sizeof *g_force) : 0;
+    unsigned long sz = 0, optional_sz = 0;
+    const hle_force_ent *required = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
+    const hle_force_ent *optional = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforceopt", &optional_sz);
+    if (sz % sizeof *g_force || optional_sz % sizeof *g_force) die("Invalid forced HLE section size");
+    g_nforce_required = required ? (unsigned)(sz / sizeof *g_force) : 0;
+    unsigned noptional = optional ? (unsigned)(optional_sz / sizeof *g_force) : 0;
+    g_nforce = g_nforce_required + noptional;
+    g_force = calloc(g_nforce + 1, sizeof *g_force);
+    if (g_nforce_required) memcpy(g_force, required, sz);
+    if (noptional) memcpy(g_force + g_nforce_required, optional, optional_sz);
     g_force_hits = calloc(g_nforce + 1, sizeof *g_force_hits);
     for (unsigned i = 0; i < g_nforce; i++)
         for (unsigned j = i + 1; j < g_nforce; j++)
@@ -142,9 +152,10 @@ static void *force_lookup(const char *name) {
 static void force_check(void) {
     int bad = 0;
     for (unsigned i = 0; i < g_nforce; i++)
-        if (!g_force_hits[i]) { LOG("强制接管条目无任何引用：%s", g_force[i].name); bad = 1; }
+        if (!g_force_hits[i] && i < g_nforce_required && dm_guest_d2r()) { LOG("强制接管条目无任何引用：%s", g_force[i].name); bad = 1; }
     if (bad) die("强制接管清单有误");
-    LOG("force: %u 条全部命中", g_nforce);
+    unsigned hits = 0; for (unsigned i = 0; i < g_nforce; i++) hits += g_force_hits[i] != 0;
+    LOG("force: %u/%u referenced entries, %u optional", hits, g_nforce, g_nforce - g_nforce_required);
 }
 
 // 读改写器表头（段边界、槽号）；表头以外有任何行即旧版产物（装载期改代码），拒绝
@@ -218,7 +229,7 @@ static void relocate(module_t *m) {
             if (type == R_AARCH64_RELATIVE) { *where = (uint64_t)m->base + r->r_addend; cnt[0]++; continue; }
             const Elf64_Sym *s = &m->symtab[si];
             uint64_t v = (uint64_t)force_lookup(m->strtab + s->st_name);
-            if (!v) v = s->st_shndx ? (uint64_t)m->base + s->st_value : resolve_sym(m, m->strtab + s->st_name);
+            if (!v) v = s->st_shndx ? (uint64_t)m->base + s->st_value : resolve_sym(m, s);
             if (type == R_AARCH64_JUMP_SLOT) { *where = v; cnt[2]++; }
             else { *where = v + r->r_addend; cnt[1]++; }       // ABS64 / GLOB_DAT
         }
@@ -361,11 +372,13 @@ void load_modules(const char *dir, const char **names, int n) {
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];
         strlcpy(m->name, names[i], sizeof m->name);
+        dm_boot_probe_note("module_layout", names[i]);
         read_layout(m, dir);
     }
     create_keys();
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];
+        dm_boot_probe_note("module_map", names[i]);
         t = now_ns(); map_image(m, dir); tm += now_ns() - t;   // 返回时代码区已是只读+执行，此后装载器只写 data | On return the code area is already read-only+execute; from here on the loader only writes data
         if (!i) tsd_check();
         t = now_ns(); parse_dynamic(m); tp += now_ns() - t;
@@ -391,6 +404,8 @@ void run_module_inits(void) {
         module_t *m = &g_mod[i];
         if (!m->init) continue;
         LOG("%s: DT_INIT +%#llx（init_array %llu 项）", m->name, m->init, m->init_arraysz / 8);
+        dm_boot_probe_note("module_init_begin", m->name);
         ((void (*)(void))(m->base + m->init))();
+        dm_boot_probe_note("module_init_complete", m->name);
     }
 }

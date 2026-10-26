@@ -12,11 +12,17 @@
 #include <stdatomic.h>
 #include "dm_cursor.h"
 #include <math.h>
+#include "dm_haptics.h"
 _Atomic int g_dm_l_presses;
 
 enum { NPAD_HANDHELD = 0x20 };
 enum { STYLE_FULLKEY = 1u << 0, STYLE_HANDHELD = 1u << 1 };
 enum { ATTR_CONNECTED = 1u << 0 };
+HLE_FORCE_OPTIONAL("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",
+    "Host controller has no motion sensors; report an empty handle list without HID IPC", int, h_hid_GetSixAxisHandles,
+    void *handles, int capacity, const uint32_t *id, uint32_t styles) {
+    (void)handles;(void)capacity;(void)id;(void)styles;return 0;
+}
 
 // nn::hid::NpadFullKeyState / NpadHandheldState 布局相同
 // nn::hid::NpadFullKeyState / NpadHandheldState have the same layout
@@ -53,6 +59,12 @@ static _Atomic uint64_t g_press_latch;
 // Controller (dm_input.h dm_pad_set): buttons and the four axes are packed into two atomics, and press edges are likewise latched until the game's next
 // read (short controller presses are not lost)
 static _Atomic uint64_t g_pad_btn, g_pad_axes, g_pad_latch;
+void dm_input_release_all(void) {
+    g_in.buttons=0;g_in.lx=0;g_in.ly=0;g_in.rx=0;g_in.ry=0;
+    atomic_store(&g_press_latch,0);atomic_store(&g_pad_btn,0);
+    atomic_store(&g_pad_axes,0);atomic_store(&g_pad_latch,0);
+    atomic_store(&g_sampled_right,0);
+}
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_pad_btn, buttons); atomic_fetch_or(&g_pad_latch, buttons & ~old);
     atomic_store(&g_pad_axes, (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48);
@@ -371,6 +383,22 @@ static void receipt(const NpadState *s, uint32_t id, uint32_t style, uint64_t km
 void (*dm_pad_hook)(uint64_t, uint64_t *, int32_t *, int32_t *, int32_t *, int32_t *);
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
     pthread_once(&g_receipt_once, receipt_init);
+    // P5R 直接接前端手柄数据，不进入暗黑 UI 消息、物品、技能及光标改写链。
+    // P5R reads front-end controller data directly, bypassing D2R UI messages, items, skills and cursor rewriting.
+    if (!dm_guest_d2r()) {
+        uint64_t start = g_receipt_file ? now_ns() : 0;
+        memset(s, 0, sizeof *s); s->sampling = ++g_sampling;
+        if (!(style_of(id) & style)) { receipt(s, id, style, 0, start); return; }
+        s->buttons = g_in.buttons | atomic_exchange(&g_press_latch, 0) | atomic_load(&g_pad_btn) | atomic_exchange(&g_pad_latch, 0);
+        s->lx = g_in.lx; s->ly = g_in.ly; s->rx = g_in.rx; s->ry = g_in.ry;
+        uint64_t axes = atomic_load(&g_pad_axes);
+        if (!(s->lx || s->ly)) { s->lx = (int16_t)axes; s->ly = (int16_t)(axes >> 16); }
+        if (!(s->rx || s->ry)) { s->rx = (int16_t)(axes >> 32); s->ry = (int16_t)(axes >> 48); }
+        s->attributes = ATTR_CONNECTED;
+        atomic_store_explicit(&g_sampled_right, (uint32_t)s->rx | ((uint64_t)(uint32_t)s->ry << 32), memory_order_release);
+        receipt(s, id, style, 0, start);
+        return;
+    }
     ui_taps_step();
     dm_ui_frontend_pump();
     { void dm_textinput_pump(void); dm_textinput_pump(); }   // 文本框补「弹键盘」那一下、数量框设值（dm_textinput.c） | the extra "bring up keyboard" press for text boxes, setting the value of quantity boxes (dm_textinput.c)
@@ -430,14 +458,180 @@ HLE_FORCE("_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivatio
 HLE_FORCE("_ZN2nn3hid15GetNpadStyleSetERKj", "手柄样式查询；跟 DM_OPMODE 走", uint32_t, h_hid_GetStyle, const uint32_t *id) { return style_of(*id); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", "全键手柄状态；取 dm_input", void, h_hid_GetFullKey, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_FULLKEY); }
 HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", "掌机手柄状态；取 dm_input", void, h_hid_GetHandheld, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_HANDHELD); }
+// The host exposes one full-key/handheld pad. A separate Joy-Con pair is not
+// connected; it shares the 0x28-byte state layout and the normal sampling path.
+HLE_FORCE_OPTIONAL("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", "Host Joy-Con-pair state; disconnected when a full-key pad is selected", void, h_hid_GetJoyDual, NpadState *s, const uint32_t *id) { fill(s, *id, 1u << 2); }
+HLE_FORCE_OPTIONAL("_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE", "Full-key host input does not depend on single Joy-Con orientation", void, h_hid_SetJoyHold, int type) { (void)type; }
+HLE_FORCE_OPTIONAL("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", "Host full-key pad requires no Horizon Joy-Con pairing", void, h_hid_SetJoyDual, const uint32_t *id) { (void)id; }
 
-// 震动：设备数 0，游戏不会再初始化 / 发送
-// Vibration: device count 0, the game will not initialize / send any further
-HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可；宿主不支持（返回 bool）", unsigned, h_hid_VibPermit, void) { return 0; }
+// 震动：D2R 仍是设备数 0；P5R 把虚拟手柄的左右马达混合成手机 Taptic Engine 的单路输出。
+// Vibration: D2R still reports 0 devices; P5R mixes the virtual controller's
+// left/right motors into the phone Taptic Engine's single output.
+// 混合器移植自 MZhao-ouo/Touchable（MIT，internal/runtime/common/ss_haptics.c）。
+// The mixer is ported from MZhao-ouo/Touchable (MIT, internal/runtime/common/ss_haptics.c).
+_Static_assert(sizeof(dm_vibration_value) == 16, "Switch VibrationValue ABI");
+_Static_assert(sizeof(dm_vibration_info) == 8, "Switch VibrationDeviceInfo ABI");
+
+// 单路 Taptic Engine 落点；iOS 前端提供强定义，CLI 宿主回退为 no-op。
+// Single Taptic Engine sink; the iOS front end provides a strong definition, the CLI host falls back to a no-op.
+__attribute__((weak)) void dm_haptics_platform_apply(dm_haptic_output output) { (void)output; }
+
+static pthread_mutex_t g_haptics_lock = PTHREAD_MUTEX_INITIALIZER;
+static dm_vibration_value g_haptics_values[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};
+static dm_haptic_status g_haptics_status;
+
+static int haptics_index(uint32_t handle) {
+    return handle == DM_VIBRATION_LEFT ? 0 : handle == DM_VIBRATION_RIGHT ? 1 : -1;
+}
+static float haptics_bounded(float value, float minimum, float maximum, float fallback) {
+    return !isfinite(value) ? fallback : fmaxf(minimum, fminf(value, maximum));
+}
+static dm_vibration_value haptics_clean(dm_vibration_value value) {
+    value.amplitude_low = haptics_bounded(value.amplitude_low, 0, 1, 0);
+    value.amplitude_high = haptics_bounded(value.amplitude_high, 0, 1, 0);
+    value.frequency_low = haptics_bounded(value.frequency_low, 40, 1280, 160);
+    value.frequency_high = haptics_bounded(value.frequency_high, 40, 1280, 320);
+    return value;
+}
+static int haptics_allowed_locked(void) { return g_haptics_status.supported && !g_haptics_status.suspended; }
+
+// 手机只有一个马达：取左右手各频段较强的一侧，再合并频段能量。两侧同信号不应把强度翻倍。
+// Core Haptics 暴露的是锐度而非载波频率，用幅度加权的对数频率映射到 0..1。
+// The phone has one actuator: take the stronger left/right band, then combine band energy.
+// Equal signals on both Joy-Cons must not double the strength. Core Haptics exposes sharpness,
+// not a carrier frequency, so map the amplitude-weighted log frequency to its 0..1 range.
+static dm_haptic_output haptics_mix_locked(void) {
+    dm_haptic_output result = {.epoch = g_haptics_status.epoch};
+    if (!haptics_allowed_locked()) return result;
+    const dm_vibration_value *low = g_haptics_values[0].amplitude_low >= g_haptics_values[1].amplitude_low ? &g_haptics_values[0] : &g_haptics_values[1];
+    const dm_vibration_value *high = g_haptics_values[0].amplitude_high >= g_haptics_values[1].amplitude_high ? &g_haptics_values[0] : &g_haptics_values[1];
+    float low_power = low->amplitude_low * low->amplitude_low;
+    float high_power = high->amplitude_high * high->amplitude_high;
+    float power = low_power + high_power;
+    if (power > 0) {
+        result.intensity = fminf(1, sqrtf(power));
+        result.sharpness = (low_power * log2f(low->frequency_low / 40) +
+                            high_power * log2f(high->frequency_high / 40)) / (5 * power);
+    }
+    return result;
+}
+static void haptics_emit_locked(int force) {
+    dm_haptic_output output = haptics_mix_locked();
+    if (!force && fabsf(output.intensity - g_haptics_status.output.intensity) < 0.00001f &&
+        fabsf(output.sharpness - g_haptics_status.output.sharpness) < 0.00001f) return;
+    if (g_haptics_status.output.intensity > 0 && output.intensity == 0) ++g_haptics_status.stops;
+    ++g_haptics_status.output_changes;
+    g_haptics_status.output = output;
+    // 该钩子只入队工作；提交保持设备更新顺序。
+    // This hook only enqueues work; submission keeps device update order.
+    dm_haptics_platform_apply(output);
+}
+static void haptics_clear_locked(void) {
+    g_haptics_values[0] = g_haptics_values[1] = (dm_vibration_value){0, 160, 0, 320};
+    ++g_haptics_status.epoch;
+    haptics_emit_locked(1);
+}
+void dm_haptics_configure(int supported) {
+    pthread_mutex_lock(&g_haptics_lock);
+    g_haptics_status.supported = supported != 0;
+    haptics_clear_locked();
+    pthread_mutex_unlock(&g_haptics_lock);
+}
+void dm_haptics_suspend_for(unsigned reason, int suspended) {
+    pthread_mutex_lock(&g_haptics_lock);
+    unsigned previous = g_haptics_status.suspended;
+    if (suspended) g_haptics_status.suspended |= reason; else g_haptics_status.suspended &= ~reason;
+    if (previous != g_haptics_status.suspended) haptics_clear_locked();
+    pthread_mutex_unlock(&g_haptics_lock);
+}
+int dm_haptics_allowed(void) {
+    pthread_mutex_lock(&g_haptics_lock);
+    int result = haptics_allowed_locked();
+    pthread_mutex_unlock(&g_haptics_lock);
+    return result;
+}
+void dm_haptics_initialize(uint32_t handle) {
+    int index = haptics_index(handle);
+    if (index < 0) return;
+    pthread_mutex_lock(&g_haptics_lock);
+    g_haptics_values[index] = (dm_vibration_value){0, 160, 0, 320};
+    haptics_emit_locked(0);
+    pthread_mutex_unlock(&g_haptics_lock);
+}
+void dm_haptics_send(uint32_t handle, const dm_vibration_value *value) {
+    int index = haptics_index(handle);
+    if (index < 0 || !value) return;
+    pthread_mutex_lock(&g_haptics_lock);
+    ++g_haptics_status.requests;
+    dm_vibration_value sanitized = haptics_clean(*value);
+    if (sanitized.amplitude_low > 0 || sanitized.amplitude_high > 0) ++g_haptics_status.nonzero_requests;
+    // 后台/不可用时写零，避免恢复前台后重放后台信号。
+    // Store zero while not allowed so background signals are not replayed on reactivation.
+    g_haptics_values[index] = haptics_allowed_locked() ? sanitized : (dm_vibration_value){0, 160, 0, 320};
+    haptics_emit_locked(0);
+    pthread_mutex_unlock(&g_haptics_lock);
+}
+dm_vibration_value dm_haptics_actual(uint32_t handle) {
+    int index = haptics_index(handle);
+    pthread_mutex_lock(&g_haptics_lock);
+    dm_vibration_value result = index >= 0 && haptics_allowed_locked() ? g_haptics_values[index] : (dm_vibration_value){0, 160, 0, 320};
+    pthread_mutex_unlock(&g_haptics_lock);
+    return result;
+}
+void dm_haptics_stop(void) {
+    pthread_mutex_lock(&g_haptics_lock);
+    haptics_clear_locked();
+    pthread_mutex_unlock(&g_haptics_lock);
+}
+dm_haptic_status dm_haptics_status(void) {
+    pthread_mutex_lock(&g_haptics_lock);
+    dm_haptic_status result = g_haptics_status;
+    pthread_mutex_unlock(&g_haptics_lock);
+    return result;
+}
+
+HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "虚拟手柄震动许可（手机支持触觉反馈）", unsigned, h_hid_VibPermit, void) {
+    unsigned supported = dm_guest_d2r() ? 0u : (unsigned)dm_haptics_allowed();
+    static int logged;
+    if (!logged++) LOG("P5R vibration: permission requested -> %u", supported);
+    return supported;
+}
 HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",
-          "震动设备；宿主 0 个", int, h_hid_GetVibHandles, void *out, int max, const uint32_t *id, uint32_t style) { (void)out; (void)max; (void)id; (void)style; return 0; }
-HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "震动；宿主不支持", void, h_hid_InitVib, const void *h) { (void)h; }
-HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "震动；宿主不支持", void, h_hid_SendVib, const void *h, const void *v) { (void)h; (void)v; }
+          "虚拟手柄左右马达映射到手机触觉", int, h_hid_GetVibHandles, uint32_t *out, int max, const uint32_t *id, uint32_t style) {
+    (void)id; (void)style;
+    if (dm_guest_d2r() || !out || max <= 0 || !dm_haptics_allowed()) return 0;
+    int count = max < 2 ? max : 2;
+    out[0] = DM_VIBRATION_LEFT;
+    if (count > 1) out[1] = DM_VIBRATION_RIGHT;
+    static int logged;
+    if (!logged++) LOG("P5R vibration: device handles=%d first=%#x", count, out[0]);
+    return count;
+}
+HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE",
+          "虚拟马达信息；绕开会触发 HID IPC 的 PermitVibration", void, h_hid_VibInfo, dm_vibration_info *out, const uint32_t *handle) {
+    if (!out) return;
+    out->type = 0;
+    out->position = 0;
+    int index = handle ? haptics_index(*handle) : -1;
+    if (index >= 0) { out->type = 1; out->position = (uint32_t)index + 1; }
+}
+HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "初始化虚拟马达", void, h_hid_InitVib, const uint32_t *handle) {
+    if (handle) dm_haptics_initialize(*handle);
+}
+HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "虚拟手柄震动 → Taptic Engine", void, h_hid_SendVib, const uint32_t *handle, const dm_vibration_value *value) {
+    if (!dm_guest_d2r() && handle) dm_haptics_send(*handle, value);
+}
+HLE_FORCE("_ZN2nn3hid6detail19SendVibrationValuesEPKNS0_21VibrationDeviceHandleEPKNS0_14VibrationValueEi", "批量虚拟手柄震动 → Taptic Engine", Result, h_hid_SendVibs, const uint32_t *handles, const dm_vibration_value *values, int count) {
+    if (!dm_guest_d2r() && handles && values) for (int i = 0; i < count; i++) dm_haptics_send(handles[i], &values[i]);
+    return 0;
+}
+HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "读取已提交的虚拟马达值", void, h_hid_GetActualVib, dm_vibration_value *out, const uint32_t *handle) {
+    if (!out) return;
+    *out = handle ? dm_haptics_actual(*handle) : (dm_vibration_value){0, 160, 0, 320};
+}
+HLE_FORCE("_ZN2nn3hid24IsVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE", "虚拟马达始终已连接", unsigned, h_hid_VibMounted, const uint32_t *handle) {
+    return !dm_guest_d2r() && handle && haptics_index(*handle) >= 0;
+}
 
 // 触屏：nn::hid::TouchScreenState<16> = { int64 sampling; int32 count; int32 _r; TouchState touches[16]（各 0x28） }
 // 内容由 hle_touch.c 按前端推来的触点填（布局与短按锁存见该文件）；游戏只看第 0 份，返回写入的状态份数 1
@@ -451,3 +645,4 @@ HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_E
     touch_fill(out, guest_ns());
     return 1;
 }
+HLE_FORCE_OPTIONAL("_ZN2nn3hid19GetTouchScreenStateILm16EEEvPNS0_16TouchScreenStateIXT_EEE", "Single touchscreen snapshot uses the same host touch latch", void, h_hid_GetTouchOne, TouchState16 *out) { (void)h_hid_GetTouch(out, 1); }

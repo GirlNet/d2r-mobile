@@ -15,6 +15,7 @@ void nvn_present_config(int hz, int display_mode);
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/mman.h>
 uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
 
 static int g_fail, g_n;
@@ -24,6 +25,14 @@ static int g_fail, g_n;
 #define P(name) ((NVNT_##name)proc(#name))
 static PFNNVNDEVICEGETPROCADDRESSPROC gpa; static NVNdevice dev;
 static void *proc(const char *n) { void *p = (void *)gpa(&dev, n); if (!p) { printf("取址失败 %s\n", n); exit(1); } return p; }
+#include "t_sampler_state.inc"
+#include "t_texture_state.inc"
+#include "t_viewport_batch.inc"
+#include "t_texture_linear.inc"
+#include "t_queue_sync.inc"
+#include "t_copy_image_stride.inc"
+#include "t_clear_buffer.inc"
+#include "t_clear_texture_int.inc"
 
 // 命令内存回调：每次给一段 256 字节的新内存（强制多段 JUMP 链）
 // Command memory callback: hands out a new 256-byte memory segment each time (forces a multi-segment JUMP chain)
@@ -51,7 +60,284 @@ static size_t tex_size(int fmt, int w, int h, int flags, size_t *align) {
     return P(nvnTextureBuilderGetStorageSize)(&tb);
 }
 
-int main(void) {
+// 注册表的生命周期、边界与并发检查；全部通过生产取址接口和跳板，不创建 GPU。
+// Check registry lifecycle, bounds and concurrency through production lookup and thunks, without creating a GPU.
+static _Atomic unsigned g_clear_errors;
+static void *clear_register_thread(void *arg) {
+    NVNdevice *d=arg; const float color[4]={0,0,0,0};
+    for (int i=0;i<1000;i++) {
+        if (!P(nvnDeviceRegisterFastClearColor)(d,color,NVN_FORMAT_RGBA8)) atomic_fetch_add(&g_clear_errors,1);
+        if (!P(nvnDeviceRegisterFastClearDepth)(d,1.0f)) atomic_fetch_add(&g_clear_errors,1);
+    }
+    return NULL;
+}
+static void test_fast_clear_registry(const NVNdeviceBuilder *db) {
+    struct { uint64_t before; NVNdevice device; uint64_t after; } guarded={.before=0x11223344,.after=0x55667788};
+    NVNdevice *d=&guarded.device, other={0}; const float zero[4]={0,0,0,0};
+    EXPECT("未初始化设备拒绝 / reject uninitialized device",0,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA8));
+    EXPECT("独立设备初始化 / initialize separate device",1,P(nvnDeviceInitialize)(d,db));
+    fast_clear_t *f=&((dev_t_ *)d)->fast_clear;
+    EXPECT("初始化清空注册 / initialized registry empty",0,f->color_count+f->depth_count);
+    EXPECT("游戏使用的零色注册 / guest zero color registration",1,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA8));
+    EXPECT("游戏使用的深度一注册 / guest depth one registration",1,P(nvnDeviceRegisterFastClearDepth)(d,1.0f));
+    EXPECT("重复颜色成功 / duplicate color succeeds",1,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA8));
+    EXPECT("重复深度成功 / duplicate depth succeeds",1,P(nvnDeviceRegisterFastClearDepth)(d,1.0f));
+    EXPECT("重复项不增加记录 / duplicates reuse entries",1,f->color_count==1 && f->depth_count==1);
+    EXPECT("不同格式另记 / distinct format entry",1,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA8_SRGB));
+    const uint32_t izero[4]={0,0,0,0};
+    EXPECT("相同位的不同类型另记 / distinct argument type entry",1,P(nvnDeviceRegisterFastClearColorui)(d,izero,NVN_FORMAT_RGBA8));
+    EXPECT("格式和类型键隔离 / format and type keys isolated",3,f->color_count);
+    NVNdevice snapshot=*d;
+    EXPECT("空设备拒绝 / reject null device",0,P(nvnDeviceRegisterFastClearColor)(NULL,zero,NVN_FORMAT_RGBA8));
+    EXPECT("空颜色拒绝 / reject null color",0,P(nvnDeviceRegisterFastClearColor)(d,NULL,NVN_FORMAT_RGBA8));
+    EXPECT("无格式拒绝 / reject absent format",0,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_NONE));
+    EXPECT("未知格式拒绝 / reject unknown format",0,P(nvnDeviceRegisterFastClearColor)(d,zero,(NVNformat)0x7fffffff));
+    EXPECT("深度格式不作颜色 / reject depth color format",0,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_DEPTH32F));
+    EXPECT("块压缩颜色拒绝 / reject block-compressed color",0,P(nvnDeviceRegisterFastClearColor)(d,zero,NVN_FORMAT_RGBA_DXT1));
+    EXPECT("负深度拒绝 / reject negative depth",0,P(nvnDeviceRegisterFastClearDepth)(d,-0.1f));
+    EXPECT("过大深度拒绝 / reject depth above one",0,P(nvnDeviceRegisterFastClearDepth)(d,1.1f));
+    uint32_t nanbits=0x7fc00000;float nan;memcpy(&nan,&nanbits,4);
+    EXPECT("NaN 深度拒绝 / reject NaN depth",0,P(nvnDeviceRegisterFastClearDepth)(d,nan));
+    EXPECT("无效输入不改变记录 / invalid inputs preserve registry",0,memcmp(&snapshot,d,sizeof snapshot));
+    P(nvnDeviceInitialize)(d,db);
+    int all=1;
+    for (int i=0;i<64;i++) { float c[4]={(float)i,0,0,1}; all &= P(nvnDeviceRegisterFastClearColor)(d,c,NVN_FORMAT_RGBA8)!=0; }
+    EXPECT("64 个不同颜色成功 / 64 distinct colors",1,all && f->color_count==64);
+    snapshot=*d; const float extra[4]={1000,0,0,1};
+    EXPECT("颜色满表拒绝 / full color table rejects new entry",0,P(nvnDeviceRegisterFastClearColor)(d,extra,NVN_FORMAT_RGBA8));
+    EXPECT("满表无副作用 / full table unchanged",0,memcmp(&snapshot,d,sizeof snapshot));
+    const float first[4]={0,0,0,1};
+    EXPECT("颜色满表仍复用 / reuse duplicate in full color table",1,P(nvnDeviceRegisterFastClearColor)(d,first,NVN_FORMAT_RGBA8));
+    all=1;for (int i=0;i<16;i++) all &= P(nvnDeviceRegisterFastClearDepth)(d,(float)i/32)!=0;
+    EXPECT("16 个不同深度成功 / 16 distinct depths",1,all && f->depth_count==16);
+    snapshot=*d;
+    EXPECT("深度满表拒绝 / full depth table rejects new entry",0,P(nvnDeviceRegisterFastClearDepth)(d,1.0f));
+    EXPECT("深度满表仍复用 / reuse duplicate in full depth table",1,P(nvnDeviceRegisterFastClearDepth)(d,0.0f));
+    EXPECT("深度满表无副作用 / full depth table unchanged",0,memcmp(&snapshot,d,sizeof snapshot));
+    P(nvnDeviceInitialize)(&other,db);
+    EXPECT("设备间隔离 / device isolation",0,((dev_t_ *)&other)->fast_clear.color_count+((dev_t_ *)&other)->fast_clear.depth_count);
+    P(nvnDeviceFinalize)(d);
+    EXPECT("销毁释放记录 / finalize clears registrations",0,((dev_t_ *)d)->magic+f->color_count+f->depth_count);
+    EXPECT("销毁设备拒绝注册 / finalized device rejects registration",0,P(nvnDeviceRegisterFastClearDepth)(d,1.0f));
+    P(nvnDeviceInitialize)(d,db);
+    EXPECT("重建设备清空 / rebuilt device empty",0,f->color_count+f->depth_count);
+    pthread_t th[8];int started=0;for (;started<8;started++) if (pthread_create(&th[started],NULL,clear_register_thread,d)) break;
+    for (int i=0;i<started;i++) pthread_join(th[i],NULL);
+    EXPECT("八线程注册无失败 / eight-thread registration succeeds",1,started==8 && atomic_load(&g_clear_errors)==0);
+    EXPECT("并发重复项唯一 / concurrent duplicate entries unique",1,f->color_count==1 && f->depth_count==1);
+    EXPECT("设备对象前后边界 / device object bounds",1,guarded.before==0x11223344 && guarded.after==0x55667788);
+    // 注册不替换清除载荷；录制时复制颜色，调用方之后修改不会污染命令。
+    // Registration does not replace clear payloads; recording copies colors so later caller mutations cannot corrupt commands.
+    NVNcommandBuffer cb;uint8_t bytes[256] __attribute__((aligned(8)));float c[4]={0.25f,0.5f,0.75f,1};
+    P(nvnCommandBufferInitialize)(&cb,d);CB(&cb)->cur=bytes;CB(&cb)->end=bytes+sizeof bytes;
+    P(nvnCommandBufferBeginRecording)(&cb);P(nvnCommandBufferClearColor)(&cb,0,c,15);P(nvnCommandBufferClearDepthStencil)(&cb,1.0f,1,0,0);
+    NVNcommandHandle h=P(nvnCommandBufferEndRecording)(&cb);c[0]=100;
+    op_hdr header;memcpy(&header,bytes+8,8);const p_clear_color *pc=(const p_clear_color *)(bytes+16);
+    EXPECT("普通清色载荷不变 / ordinary clear color payload intact",1,h==(NVNcommandHandle)bytes && header.op==OP_CLEAR_COLOR && pc->index==0 && pc->mask==15 && pc->rgba[0]==0.25f && pc->rgba[3]==1);
+    const uint8_t *next=bytes+8+header.size;memcpy(&header,next,8);const p_clear_ds *pd=(const p_clear_ds *)(next+8);
+    EXPECT("普通清深度载荷不变 / ordinary depth clear payload intact",1,header.op==OP_CLEAR_DS && pd->depth==1.0f && pd->depth_mask==1);
+    P(nvnDeviceFinalize)(d);P(nvnDeviceFinalize)(&other);
+}
+
+// 池用合成共享字节，不创建 Metal；验证真实跳板、边界、别名写入与生命周期。
+// Use synthetic shared pool bytes without Metal; verify real thunks, bounds, alias writes and lifecycle.
+static void test_program_bindings(void) {
+    prog_t a={0},b={0};
+    for(unsigned mask=0;mask<64;mask++) {
+        program_bindings bindings={0};
+        EXPECT("bind all shader stages",1,nvn_program_bind(&bindings,&a,63));
+        EXPECT("masked shader binding change",mask!=0,nvn_program_bind(&bindings,&b,mask));
+        for(unsigned stage=0;stage<6;stage++)
+            EXPECT("preserve unselected shader stage",(uintptr_t)(mask&(1u<<stage)?&b:&a),(uintptr_t)bindings.stage[stage]);
+        program_bindings saved=bindings;
+        EXPECT("repeated stage binding is unchanged",0,nvn_program_bind(&bindings,&b,mask));
+        EXPECT("masked shader unbind change",mask!=0,nvn_program_bind(&bindings,NULL,mask));
+        for(unsigned stage=0;stage<6;stage++) {
+            EXPECT("null unbind preserves other stages",(uintptr_t)(mask&(1u<<stage)?NULL:&a),(uintptr_t)bindings.stage[stage]);
+            EXPECT("shader binding snapshot is independent",(uintptr_t)(mask&(1u<<stage)?&b:&a),(uintptr_t)saved.stage[stage]);
+        }
+    }
+}
+static void test_buffers(void) {
+    uint8_t storage[256]; memset(storage,0x5a,sizeof storage);
+    NVNmemoryPool pool={0}; pool_t *p=(pool_t *)&pool;
+    *p=(pool_t){.magic=MAGIC('P','O','O','L'),.flags=NVN_MEMORY_POOL_FLAGS_CPU_CACHED|NVN_MEMORY_POOL_FLAGS_GPU_CACHED,.mem=storage,.size=sizeof storage};
+    NVNmemoryPool pool_before=pool;
+    struct { uint64_t before; NVNbufferBuilder b; uint64_t after; } builder={.before=0x12345678,.after=0xabcdef};
+    struct { uint64_t before; NVNbuffer b; uint64_t after; } object={.before=0x11223344,.after=0x55667788};
+    NVNbufferBuilder *b=&builder.b; NVNbuffer *v=&object.b;
+    P(nvnBufferBuilderSetDevice)(b,&dev); P(nvnBufferBuilderSetStorage)(b,&pool,16,32); P(nvnBufferBuilderSetDefaults)(b);
+    EXPECT("默认值保留设备 / defaults preserve device",(uintptr_t)&dev,(uintptr_t)P(nvnBufferBuilderGetDevice)(b));
+    EXPECT("默认池为空 / default pool null",0,(uintptr_t)P(nvnBufferBuilderGetMemoryPool)(b));
+    EXPECT("默认偏移和长度 / default offset and size",0,P(nvnBufferBuilderGetMemoryOffset)(b)+P(nvnBufferBuilderGetSize)(b));
+    EXPECT("无存储初始化失败 / missing storage rejected",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,32,96);
+    EXPECT("构建器池指针 ABI / builder pool pointer ABI",(uintptr_t)&pool,(uintptr_t)P(nvnBufferBuilderGetMemoryPool)(b));
+    EXPECT("构建器偏移 / builder offset",32,P(nvnBufferBuilderGetMemoryOffset)(b));
+    EXPECT("构建器长度 / builder size",96,P(nvnBufferBuilderGetSize)(b));
+    EXPECT("初始化有界视图 / initialize bounded view",1,P(nvnBufferInitialize)(v,b));
+    EXPECT("实际存储地址 / actual storage address",(uintptr_t)(storage+32),P(nvnBufferGetAddress)(v));
+    EXPECT("映射同一存储 / map aliases storage",(uintptr_t)(storage+32),(uintptr_t)P(nvnBufferMap)(v));
+    EXPECT("缓冲池指针 / buffer pool pointer",(uintptr_t)&pool,(uintptr_t)P(nvnBufferGetMemoryPool)(v));
+    EXPECT("缓冲偏移 / buffer offset",32,P(nvnBufferGetMemoryOffset)(v));
+    EXPECT("缓冲长度 / buffer size",96,P(nvnBufferGetSize)(v));
+    uint64_t id=P(nvnBufferGetDebugID)(v); EXPECT("调试号非零 / debug ID nonzero",1,id!=0);
+    memset(P(nvnBufferMap)(v),0x71,96);
+    P(nvnBufferFlushMappedRange)(v,0,96);P(nvnBufferInvalidateMappedRange)(v,96,0);P(nvnBufferSetDebugLabel)(v,"synthetic-buffer");
+    EXPECT("映射写入边界 / mapped write boundaries",1,storage[31]==0x5a && storage[32]==0x71 && storage[127]==0x71 && storage[128]==0x5a);
+    EXPECT("池元数据不变 / pool metadata unchanged",0,memcmp(&pool,&pool_before,sizeof pool));
+    NVNbuffer before=*v;
+    P(nvnBufferBuilderSetStorage)(b,&pool,-1,1);EXPECT("负偏移拒绝 / reject negative offset",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,257,1);EXPECT("池外偏移拒绝 / reject offset past pool",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,255,2);EXPECT("池尾越界拒绝 / reject range past end",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,1,SIZE_MAX);EXPECT("长度溢出拒绝 / reject length overflow",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,PTRDIFF_MAX,1);EXPECT("大偏移拒绝 / reject huge offset",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,257,0);EXPECT("空视图池外偏移拒绝 / reject empty view past pool",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,NULL,0,1);EXPECT("空池拒绝 / reject null pool",0,P(nvnBufferInitialize)(v,b));
+    P(nvnBufferBuilderSetStorage)(b,&pool,0,1);P(nvnBufferBuilderSetDevice)(b,NULL);EXPECT("空设备拒绝 / reject null device",0,P(nvnBufferInitialize)(v,b));
+    NVNdevice invalid={0};P(nvnBufferBuilderSetDevice)(b,&invalid);EXPECT("无效设备拒绝 / reject invalid device",0,P(nvnBufferInitialize)(v,b));P(nvnBufferBuilderSetDevice)(b,&dev);
+    p->magic=0;EXPECT("无效池拒绝 / reject invalid pool",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    p->mem=NULL;EXPECT("无背后存储拒绝 / reject absent backing",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    p->flags|=NVN_MEMORY_POOL_FLAGS_VIRTUAL;EXPECT("虚拟池拒绝 / reject virtual pool",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    p->flags|=NVN_MEMORY_POOL_FLAGS_PHYSICAL;EXPECT("物理池拒绝 / reject physical pool",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    p->mem=(uint8_t *)(uintptr_t)(UINTPTR_MAX-4);P(nvnBufferBuilderSetStorage)(b,&pool,8,1);EXPECT("地址溢出拒绝 / reject address overflow",0,P(nvnBufferInitialize)(v,b));*p=*(pool_t *)&pool_before;
+    EXPECT("失败保持对象 / failure preserves object",0,memcmp(&before,v,sizeof before));
+    EXPECT("空输出拒绝 / reject null output",0,P(nvnBufferInitialize)(NULL,b));
+    EXPECT("空构建器拒绝 / reject null builder",0,P(nvnBufferInitialize)(v,NULL));
+    NVNbuffer alias=*v;P(nvnBufferFinalize)(v);
+    EXPECT("销毁不释放池 / finalize retains backing",1,storage[32]==0x71 && !memcmp(&pool,&pool_before,sizeof pool));
+    EXPECT("销毁后映射为空 / finalized map null",0,(uintptr_t)P(nvnBufferMap)(v));
+    EXPECT("销毁后地址为零 / finalized address zero",0,P(nvnBufferGetAddress)(v));
+    EXPECT("销毁后元数据清空 / finalized metadata empty",0,P(nvnBufferGetSize)(v)+P(nvnBufferGetMemoryOffset)(v)+P(nvnBufferGetDebugID)(v)+(uintptr_t)P(nvnBufferGetMemoryPool)(v));
+    EXPECT("值拷贝仍有效 / value copy remains valid",(uintptr_t)(storage+32),P(nvnBufferGetAddress)(&alias));
+    p->flags|=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS;
+    EXPECT("CPU 禁访问池不可映射 / CPU-inaccessible pool map null",0,(uintptr_t)P(nvnBufferMap)(&alias));
+    EXPECT("CPU 禁访问不改 GPU 地址 / CPU access flag preserves GPU address",(uintptr_t)(storage+32),P(nvnBufferGetAddress)(&alias));*p=*(pool_t *)&pool_before;
+    P(nvnBufferBuilderSetStorage)(b,&pool,255,1);EXPECT("池尾合法视图 / valid view at pool end",1,P(nvnBufferInitialize)(v,b));
+    EXPECT("重建生成新号 / reinitialize gets new ID",1,P(nvnBufferGetDebugID)(v)!=id && P(nvnBufferGetDebugID)(v)!=0);
+    EXPECT("池尾地址 / pool end address",(uintptr_t)(storage+255),P(nvnBufferGetAddress)(v));
+    for (size_t off=0;off<=sizeof storage;off+=32) {
+        P(nvnBufferBuilderSetStorage)(b,&pool,(ptrdiff_t)off,0);
+        EXPECT("空视图初始化 / initialize empty address view",1,P(nvnBufferInitialize)(v,b));
+        EXPECT("空视图保留地址 / empty view retains address",(uintptr_t)(storage+off),P(nvnBufferGetAddress)(v));
+        EXPECT("空视图保留大小 / empty view retains zero size",0,P(nvnBufferGetSize)(v));
+        EXPECT("空视图保留偏移 / empty view retains offset",off,P(nvnBufferGetMemoryOffset)(v));
+        EXPECT("空视图可映射 / map empty address view",(uintptr_t)(storage+off),(uintptr_t)P(nvnBufferMap)(v));
+        P(nvnBufferFlushMappedRange)(v,0,0);P(nvnBufferInvalidateMappedRange)(v,0,0);
+        P(nvnBufferFlushMappedRange)(v,0,sizeof storage-off);
+        P(nvnBufferInvalidateMappedRange)(v,(ptrdiff_t)(sizeof storage-off),0);
+    }
+    p->magic=0;EXPECT("池销毁后不可映射 / finalized pool cannot map",0,(uintptr_t)P(nvnBufferMap)(v));
+    EXPECT("池销毁后无地址 / finalized pool has no address",0,P(nvnBufferGetAddress)(v));*p=*(pool_t *)&pool_before;
+    EXPECT("空对象查询 / null object queries",0,P(nvnBufferGetAddress)(NULL)+(uintptr_t)P(nvnBufferMap)(NULL));
+    EXPECT("对象及构建器边界 / object and builder bounds",1,builder.before==0x12345678 && builder.after==0xabcdef && object.before==0x11223344 && object.after==0x55667788);
+    P(nvnBufferFinalize)(v);P(nvnBufferFinalize)(&alias);
+}
+
+// 查询用两种手机已观察到的标志和合成池，检查指针返回、64 位长度与访问权限。
+// Query synthetic pools with both flag combinations observed in phone reports; check pointer returns, 64-bit sizes and access permissions.
+static void test_pool_accessors(void) {
+    uint8_t bytes[256];memset(bytes,0x35,sizeof bytes);
+    struct { uint64_t before; NVNmemoryPoolBuilder b; uint64_t after; } builder={.before=0x11223344,.after=0x55667788};
+    NVNmemoryPoolBuilder *b=&builder.b;
+    P(nvnMemoryPoolBuilderSetDevice)(b,&dev);P(nvnMemoryPoolBuilderSetStorage)(b,bytes,sizeof bytes);P(nvnMemoryPoolBuilderSetFlags)(b,0xa1);P(nvnMemoryPoolBuilderSetDefaults)(b);
+    EXPECT("池默认值保留设备 / pool defaults preserve device",(uintptr_t)&dev,(uintptr_t)P(nvnMemoryPoolBuilderGetDevice)(b));
+    EXPECT("池默认值清空存储 / pool defaults clear storage",0,(uintptr_t)P(nvnMemoryPoolBuilderGetMemory)(b));
+    EXPECT("池默认值清空长度标志 / pool defaults clear size and flags",0,P(nvnMemoryPoolBuilderGetSize)(b)+P(nvnMemoryPoolBuilderGetFlags)(b));
+    P(nvnMemoryPoolBuilderSetStorage)(b,bytes,sizeof bytes);P(nvnMemoryPoolBuilderSetFlags)(b,0x22);
+    EXPECT("池存储指针返回 ABI / pool memory pointer return ABI",(uintptr_t)bytes,(uintptr_t)P(nvnMemoryPoolBuilderGetMemory)(b));
+    EXPECT("池构建长度 / pool builder size",256,P(nvnMemoryPoolBuilderGetSize)(b));
+    EXPECT("CPU 池构建标志 / CPU pool builder flags",0x22,P(nvnMemoryPoolBuilderGetFlags)(b));
+    NVNmemoryPool pool={0};pool_t *p=(pool_t *)&pool;
+    *p=(pool_t){.magic=MAGIC('P','O','O','L'),.flags=0x22,.mem=bytes,.size=256};NVNmemoryPool saved=pool;
+    EXPECT("CPU 池原始标志 / exact CPU pool flags",0x22,P(nvnMemoryPoolGetFlags)(&pool));
+    EXPECT("池实际长度 / actual pool size",256,P(nvnMemoryPoolGetSize)(&pool));
+    EXPECT("CPU 池映射 / CPU pool map",(uintptr_t)bytes,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    EXPECT("CPU 池缓冲地址 / CPU pool buffer address",(uintptr_t)bytes,P(nvnMemoryPoolGetBufferAddress)(&pool));
+    memset(P(nvnMemoryPoolMap)(&pool),0x71,sizeof bytes);
+    P(nvnMemoryPoolFlushMappedRange)(&pool,0,256);P(nvnMemoryPoolInvalidateMappedRange)(&pool,256,0);P(nvnMemoryPoolSetDebugLabel)(&pool,"synthetic-pool");
+    EXPECT("共享池映射写入 / shared pool map writes",1,bytes[0]==0x71 && bytes[255]==0x71);
+    EXPECT("池查询刷新不改对象 / pool queries and flush preserve object",0,memcmp(&saved,&pool,sizeof pool));
+    p->flags=0xa1;
+    EXPECT("GPU 池原始标志 / exact GPU pool flags",0xa1,P(nvnMemoryPoolGetFlags)(&pool));
+    EXPECT("禁止 CPU 池不映射 / CPU-inaccessible pool does not map",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    EXPECT("GPU 池保留实际地址 / GPU pool retains actual address",(uintptr_t)bytes,P(nvnMemoryPoolGetBufferAddress)(&pool));
+    p->flags=NVN_MEMORY_POOL_FLAGS_CPU_CACHED|NVN_MEMORY_POOL_FLAGS_GPU_CACHED;
+    EXPECT("CPU 缓存池也映射 / cached CPU pool maps",(uintptr_t)bytes,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    p->flags|=NVN_MEMORY_POOL_FLAGS_VIRTUAL;EXPECT("虚拟池不直接映射 / virtual pool does not map directly",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    p->flags=NVN_MEMORY_POOL_FLAGS_PHYSICAL;EXPECT("物理池不直接映射 / physical pool does not map directly",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    p->flags=0x2000022;EXPECT("标志位原样返回 / flag bits preserved",0x2000022,P(nvnMemoryPoolGetFlags)(&pool));
+    p->size=UINT64_C(0x100000011);EXPECT("池长度不截断 / pool size not truncated",UINT64_C(0x100000011),P(nvnMemoryPoolGetSize)(&pool));
+    P(nvnMemoryPoolBuilderSetStorage)(b,bytes,UINT64_C(0x100000011));EXPECT("构建长度不截断 / builder size not truncated",UINT64_C(0x100000011),P(nvnMemoryPoolBuilderGetSize)(b));
+    *p=*(pool_t *)&saved;p->mem=NULL;EXPECT("无存储映射为空 / absent backing maps null",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    P(nvnMemoryPoolFinalize)(&pool);
+    EXPECT("销毁后查询标志为零 / finalized flags zero",0,P(nvnMemoryPoolGetFlags)(&pool));
+    EXPECT("销毁后查询长度为零 / finalized size zero",0,P(nvnMemoryPoolGetSize)(&pool));
+    EXPECT("销毁后池不映射 / finalized pool map null",0,(uintptr_t)P(nvnMemoryPoolMap)(&pool));
+    EXPECT("销毁后池地址为零 / finalized pool address zero",0,P(nvnMemoryPoolGetBufferAddress)(&pool));
+    EXPECT("空池查询 / null pool queries",0,P(nvnMemoryPoolGetFlags)(NULL)+P(nvnMemoryPoolGetSize)(NULL)+P(nvnMemoryPoolGetBufferAddress)(NULL)+(uintptr_t)P(nvnMemoryPoolMap)(NULL));
+    EXPECT("空池构建器查询 / null pool builder queries",0,(uintptr_t)P(nvnMemoryPoolBuilderGetDevice)(NULL)+(uintptr_t)P(nvnMemoryPoolBuilderGetMemory)(NULL)+P(nvnMemoryPoolBuilderGetSize)(NULL)+P(nvnMemoryPoolBuilderGetFlags)(NULL));
+    EXPECT("池构建器边界 / pool builder bounds",1,builder.before==0x11223344 && builder.after==0x55667788);
+}
+
+#include "t_startup_batch.inc"
+
+#ifdef DM_P5R_ONLY
+#include "t_probe_command_capture.inc"
+#include <sys/wait.h>
+#include <signal.h>
+static int captureDisabledCheck(void) {
+    pid_t child=fork();if(child<0)return 1;
+    if (!child) { struct rlimit limit={0,0};setrlimit(RLIMIT_CORE,&limit);h_nvnCommandBufferSetPatchSize(NULL,257);_exit(1); }
+    int status=0;if(waitpid(child,&status,0)!=child || !WIFSIGNALED(status) || WTERMSIG(status)!=SIGABRT)return 1;
+    puts("NVN PROBE CAPTURE GATE OK: inactive capture rejected");return 0;
+}
+// 实际后端设置结束后线程必须留在生产停止边界；启用 UDC 开关也不能越过该边界。
+// After real backend setup the thread must remain at the production stop boundary, even with the UDC self-test switch enabled.
+static _Atomic int setupEscaped, setupContinued;
+static void *realSetup(void *preSubmit) {
+    mtl_init();
+    if (preSubmit) {
+        // 使用真实池注册路径检查 CPU 设置仍可继续，随后由实际提交门停止。
+        // Check continued CPU setup through real pool registration, then stop at the actual submission gate.
+        static uint8_t bytes[16384] __attribute__((aligned(16384)));
+        NVNdeviceBuilder db={0};NVNdevice device;NVNmemoryPoolBuilder builder={0};NVNmemoryPool pool;
+        h_nvnDeviceBuilderSetDefaults(&db);if (!h_nvnDeviceInitialize(&device,&db)) return NULL;
+        h_nvnMemoryPoolBuilderSetDevice(&builder,&device);h_nvnMemoryPoolBuilderSetDefaults(&builder);
+        h_nvnMemoryPoolBuilderSetStorage(&builder,bytes,sizeof bytes);h_nvnMemoryPoolBuilderSetFlags(&builder,0x22);
+        if (!h_nvnMemoryPoolInitialize(&pool,&builder) || h_nvnMemoryPoolGetFlags(&pool)!=0x22 || h_nvnMemoryPoolGetSize(&pool)!=sizeof bytes || h_nvnMemoryPoolMap(&pool)!=bytes) return NULL;
+        h_nvnMemoryPoolFlushMappedRange(&pool,0,sizeof bytes);h_nvnMemoryPoolInvalidateMappedRange(&pool,sizeof bytes,0);
+        if ((uintptr_t)preSubmit==2 && test_probe_command_capture()) return NULL;
+        atomic_store(&setupContinued,1); mtl_drain();
+    }
+    atomic_store(&setupEscaped,1); return NULL;
+}
+static int realSetupProbe(const char *directory, int preSubmit) {
+    if (!(preSubmit ? dm_boot_probe_begin_pre_submit(directory) : dm_boot_probe_begin_gpu_setup(directory)) || !dm_boot_probe_checkpoint("nnMain",0)) return 1;
+    setenv("DM_UDC_SELFTEST","1",1);
+    pthread_t thread; if (pthread_create(&thread,NULL,realSetup,(void *)(uintptr_t)preSubmit)) return 1; pthread_detach(thread);
+    char path[2048], data[262144]; snprintf(path,sizeof path,"%s/boot-report.json",directory);
+    for (int i=0;i<4000;i++) {
+        usleep(10000); FILE *f=fopen(path,"rb"); if (!f) continue;
+        size_t n=fread(data,1,sizeof data-1,f); fclose(f); data[n]=0;
+        if (strstr(data,preSubmit ? "blocked_before_unverified_operation" : "stopped_after_gpu_initialization")) {
+            if (atomic_load(&setupEscaped) || (preSubmit && !atomic_load(&setupContinued))) return 1;
+            if (dm_boot_probe_capture_command("after_terminal",0,NULL)) return 1;
+            puts(preSubmit ? "REAL METAL PRE-SUBMIT OK: setup returned; production mtl_drain commit blocked" : "REAL METAL SETUP OK: backend objects initialized; owner parked before returning to guest"); return 0;
+        }
+        if (strstr(data,"failure_reason") || strstr(data,"process_exit_requested")) return 1;
+    }
+    return 1;
+}
+#endif
+
+int main(int argc, char **argv) {
+#ifdef DM_P5R_ONLY
+    if (argc==3 && !strcmp(argv[1],"--gpu-setup-probe")) return realSetupProbe(argv[2],0);
+    if (argc==3 && !strcmp(argv[1],"--pre-submit-probe")) return realSetupProbe(argv[2],1);
+    if (argc==3 && !strcmp(argv[1],"--capture-command-probe")) return realSetupProbe(argv[2],2);
+    if (argc==2 && !strcmp(argv[1],"--capture-disabled-check")) return captureDisabledCheck();
+#endif
     crash_install();   // 生产同一套 SIGSEGV / SIGBUS 处理（缺页钩子在其中分发） | the same SIGSEGV / SIGBUS handling as production (the page-fault hook is dispatched from within it)
     // 1. 引导取址：bootstrap 取 GetProcAddress，再用它取全部名字
     // 1. Bootstrap address lookup: bootstrap gets GetProcAddress, then uses it to get all the names
@@ -59,17 +345,63 @@ int main(void) {
     gpa = (PFNNVNDEVICEGETPROCADDRESSPROC)boot("nvnDeviceGetProcAddress");
     EXPECT("bootstrap 取 GetProcAddress 非空", 1, gpa != NULL);
     int nonnull = 0; for (unsigned i = 0; i < NVN_NFUNC; i++) nonnull += gpa(NULL, nvn_names[i]) != NULL;
-    EXPECT("523 个名字全部取到地址", 523, nonnull);
+    EXPECT("全部登记名字取到地址 / registered names", NVN_NFUNC, nonnull);
     EXPECT("未知名字取址返回空", 0, gpa(NULL, "nvnNoSuchFunction") != NULL);
 
     // 2. 设备
     // 2. Device
     NVNdeviceBuilder db; P(nvnDeviceBuilderSetDefaults)(&db); P(nvnDeviceBuilderSetFlags)(&db, 0);
     EXPECT("DeviceInitialize 成功", 1, P(nvnDeviceInitialize)(&dev, &db));
+    if (argc == 2 && !strcmp(argv[1], "--queue-sync-gpu")) return test_queue_sync_gpu();
+    if (argc == 2 && !strcmp(argv[1], "--copy-image-stride-gpu")) return test_copy_image_stride_gpu();
+    if (argc == 2 && !strcmp(argv[1], "--clear-buffer-gpu")) return test_clear_buffer_gpu();
+    if (argc == 2 && !strcmp(argv[1], "--signed-texture-clear-gpu")) return test_clear_texture_int_gpu();
     int v; P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_UNIFORM_BUFFER_ALIGNMENT, &v);
     EXPECT("uniform 缓冲对齐（X1 实测 256）", 256, v);
     P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_TEXTURE_DESCRIPTOR_SIZE, &v); EXPECT("贴图描述符大小（32）", 32, v);
     P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_QUEUE_COMMAND_MEMORY_MIN_SIZE, &v); EXPECT("队列命令内存下限（65536）", 65536, v);
+
+    // 只运行启动接口时也走真实静态跳板；未验证的新名字必须仍接具名阻塞桩。
+    // Bootstrap-only checks also use real static thunks; unverified new names must retain named blocking stubs.
+    NVNdevice snapshot = dev;
+    const float fc[4] = {0.0f, 0.25f, 1.0f, -1.0f};
+    const int ic[4] = {-1, 0, 1, INT32_MAX};
+    const uint32_t uc[4] = {0, 1, UINT32_MAX, 0x80000000u};
+    EXPECT("快速清除浮点注册 / float registration", 1, P(nvnDeviceRegisterFastClearColor)(&dev, fc, NVN_FORMAT_RGBA8));
+    EXPECT("快速清除有符号注册 / int registration", 1, P(nvnDeviceRegisterFastClearColori)(&dev, ic, NVN_FORMAT_RGBA8I));
+    EXPECT("快速清除无符号注册 / uint registration", 1, P(nvnDeviceRegisterFastClearColorui)(&dev, uc, NVN_FORMAT_RGBA8UI));
+    EXPECT("快速清除深度注册 / depth registration", 1, P(nvnDeviceRegisterFastClearDepth)(&dev, 0.5f));
+    EXPECT("设备原字段不变 / existing device fields unchanged", 0, memcmp(&dev, &snapshot, offsetof(dev_t_,fast_clear)));
+    EXPECT("已有跳板计数保留 / original thunk counter", 1, atomic_load(&nvn_slot[17].cnt));
+    EXPECT("已有名字序号保留 / original name index", 0, strcmp(nvn_names[17], "nvnDeviceRegisterFastClearColor"));
+    const fast_clear_t *f = &((dev_t_ *)&dev)->fast_clear;
+    EXPECT("颜色计数 / color count", 3, f->color_count);
+    EXPECT("深度计数 / depth count", 1, f->depth_count);
+    EXPECT("浮点原始位 / raw float bits", 0, memcmp(f->colors[0].bits,fc,16));
+    EXPECT("有符号原始位 / raw signed bits", 0, memcmp(f->colors[1].bits,ic,16));
+    EXPECT("无符号原始位 / raw unsigned bits", 0, memcmp(f->colors[2].bits,uc,16));
+    EXPECT("参数类型与格式 / argument kind and format", 1, f->colors[0].kind==0 && f->colors[1].kind==1 && f->colors[2].kind==2 && f->colors[0].format==NVN_FORMAT_RGBA8 && f->colors[1].format==NVN_FORMAT_RGBA8I && f->colors[2].format==NVN_FORMAT_RGBA8UI);
+    EXPECT("深度原始位 / depth bits", 0x3f000000, f->depths[0]);
+    test_fast_clear_registry(&db);
+    test_buffers();
+    test_program_bindings();
+    test_pool_accessors();
+    test_startup_batch();
+    test_sampler_state();
+    test_texture_state();
+    test_viewport_batch_recording();
+    test_texture_linear();
+    test_queue_sync_objects();
+    int named = 0;
+    for (unsigned i = 523; i < NVN_NFUNC; i++) {
+        named += nvn_slot[i].fn == (void *)nvn_unimpl_entry && (void *)gpa(&dev,nvn_names[i]) == nvn_thunk[i];
+        for (unsigned j = 0; j < i; j++) if (!strcmp(nvn_names[i],nvn_names[j])) named = -100;
+    }
+    EXPECT("11 个新接口仍为具名桩 / 11 named unimplemented interfaces", 11, named);
+    if (argc == 2 && !strcmp(argv[1], "--bootstrap-only")) {
+        printf("NVN BOOTSTRAP: %d checks, %d failures; no GPU work\n", g_n, g_fail);
+        return g_fail ? 1 : 0;
+    }
 
     // 3. 内存池：GPU 地址 = 游戏给的存储地址
     // 3. Memory pool: GPU address = the storage address given by the game
@@ -188,9 +520,15 @@ int main(void) {
     P(nvnTextureBuilderSetWidth)(&tb, 1280); P(nvnTextureBuilderSetHeight)(&tb, 720); P(nvnTextureBuilderSetFormat)(&tb, NVN_FORMAT_RGBA8);
     P(nvnTextureBuilderSetStorage)(&tb, &pool, 0); P(nvnTextureInitialize)(&sc[0], &tb); P(nvnTextureInitialize)(&sc[1], &tb);
     EXPECT("贴图宽", 1280, P(nvnTextureGetWidth)(&sc[0]));
-    NVNtexture *scp[2] = {&sc[0], &sc[1]};
+    size_t page=(size_t)sysconf(_SC_PAGESIZE);
+    uint8_t *texture_pages=mmap(NULL,page*2,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+    if(texture_pages==MAP_FAILED || mprotect(texture_pages+page,page,PROT_NONE))abort();
+    NVNtexture **scp=(NVNtexture **)(texture_pages+page-2*sizeof *scp);scp[0]=&sc[0];scp[1]=&sc[1];
     NVNwindowBuilder wb; NVNwindow win; P(nvnWindowBuilderSetDevice)(&wb, &dev); P(nvnWindowBuilderSetDefaults)(&wb);
     P(nvnWindowBuilderSetTextures)(&wb, 2, scp); EXPECT("WindowInitialize 成功", 1, P(nvnWindowInitialize)(&win, &wb));
+    EXPECT("window copies exactly the provided texture count",1,((win_t *)&win)->tex[0]==&sc[0] && ((win_t *)&win)->tex[1]==&sc[1] && !((win_t *)&win)->tex[2] && !((win_t *)&win)->tex[3]);
+    scp[0]=&sc[1];EXPECT("initialized window owns a texture snapshot",(uintptr_t)&sc[0],(uintptr_t)((win_t *)&win)->tex[0]);
+    P(nvnWindowBuilderSetTextures)(&wb,0,NULL);munmap(texture_pages,page*2);
     int idx[4];
     for (int f = 0; f < 4; f++) {
         P(nvnWindowAcquireTexture)(&win, &s2, &idx[f]);
@@ -361,8 +699,8 @@ int main(void) {
 
     // 7. 未实现函数：返回 0、报红、只报一次
     // 7. Unimplemented functions: return 0, report a failure, report only once
-    unsigned ui = 0; while (strcmp(nvn_names[ui], "nvnBufferBuilderSetDefaults")) ui++;
-    ((void (*)(void *))proc("nvnBufferBuilderSetDefaults"))(NULL); ((void (*)(void *))proc("nvnBufferBuilderSetDefaults"))(NULL);
+    unsigned ui = 0; while (strcmp(nvn_names[ui], "nvnDeviceWalkDebugDatabase")) ui++;
+    ((void (*)(void *))proc("nvnDeviceWalkDebugDatabase"))(NULL); ((void (*)(void *))proc("nvnDeviceWalkDebugDatabase"))(NULL);
     EXPECT("未实现函数被调用后记为已报红", 1, g_unimpl_seen[ui] > 0);
     EXPECT("未实现函数计数 2", 2, nvn_slot[ui].cnt);
 

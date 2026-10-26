@@ -350,30 +350,31 @@ def reflect(key, stage, msl, res):
             if stage == 'cs' and off is not None and 0x210 <= off < 0x310 and (off - 0x210) % 16 == 0:
                 e.update(kind='ubo_ptr', reg=(off - 0x210) // 16)   # 计算阶段 uniform 槽 r：地址在 c0[0x210 + 0x10 r]，经全局内存读（cs_lut_combine_c 读 cb10[66] 核对） | compute-stage uniform slot r: address at c0[0x210 + 0x10 r], read through global memory (checked against cs_lut_combine_c reading cb10[66])
             else: e['reg'] = (off - base) // 16 if off is not None and base is not None and 0 <= off - base < 0x100 and (off - base) % 16 == 0 else None
-            e['rw'] = bool(b and b['flags'] & 2)
+            e['rw'] = bool(b and b['flags'] & 1)   # BufferUsageFlags.Write 是第 0 位 | BufferUsageFlags.Write is bit 0.
     return binds
 
-DRV_FILL = {0: [(0x110, 0x210), (0x310, 0x410), (0x510, 0x610)],   # c0：存储缓冲地址表（顶点 / 计算 / 像素，各 16 槽 × 0x10） | c0: storage buffer address tables (vertex / compute / pixel, 16 slots × 0x10 each)
-            2: [(0x168, 0x568), (0x568, 0x968)]}                     # c2：贴图句柄表、采样器句柄表（各 128 槽 × 8） | c2: texture handle table, sampler handle table (128 slots × 8 each)
+DRV_STORAGE = {'vs': (0x110, 0x210), 'cs': (0x310, 0x410), 'ps': (0x510, 0x610)}
+DRV_TEXTURE = [(0x20, 0x120), (0x168, 0x968)]   # c2：组合句柄、连续的分离纹理/采样器表 | c2: combined handles and contiguous separate texture/sampler tables
 
 def drv_reads(src):
     """MSL 里对驱动段 c0 / c2 的读取：常量下标 → 字节区间；非常量下标记为动态 | Reads of driver segments c0 / c2 in the MSL: constant index → byte range; non-constant indices are recorded as dynamic"""
     out = {}
     for bank in (0, 2):
         offs, dyn = set(), False
-        for m in re.finditer(r'fp_c%d\)\._m0\[([^\]]+)\]' % bank, src):
+        for m in re.finditer(r'\b[a-z]+_c%d\)\._m0\[([^\]]+)\]' % bank, src):
             idx = m.group(1).rstrip('u')
             if idx.isdigit(): offs.add(int(idx) * 16)
             else: dyn = True
         if offs or dyn: out[str(bank)] = {'vec4_offsets': sorted(offs), 'dynamic': dyn}
     return out
 
-def unfillable(dr):
+def unfillable(dr, stage):
     bad = []
+    ranges = {0: ([DRV_STORAGE[stage]] if stage in DRV_STORAGE else []) + ([(0x210, 0x310)] if stage == 'cs' else []), 2: DRV_TEXTURE}
     for bank, d in dr.items():
         if d['dynamic']: bad.append(f'c{bank} 动态下标')
         for o in d['vec4_offsets']:
-            if not any(a <= o and o + 16 <= b or (a <= o < b) for a, b in DRV_FILL[int(bank)]): bad.append(f'c{bank}+{o:#x}')
+            if not any(a <= o and o + 16 <= b for a, b in ranges.get(int(bank), [])): bad.append(f'c{bank}+{o:#x}')
     return bad
 
 RULES = []   # 按着色器名挂的 MSL 改写规则（函数, 适用判定）；原有的暗部重映射 toe 已删（回到 Switch 原版亮度） | MSL rewrite rules attached by shader name (function, applicability test); the former dark-range remap toe has been removed (back to the original Switch brightness)
@@ -407,7 +408,7 @@ def finish(key, w, j, c1):
     dr = drv_reads(src)
     refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
             'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None,
-            'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['无配对 PC 反射，查询按缺省'] if j.get('pc_missing') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
+            'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['无配对 PC 反射，查询按缺省'] if j.get('pc_missing') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr, j['stage']),
             'bindings': reflect(key, j['stage'], src, res),
             'vertex_inputs': [{'location': int(m.group(2)), 'msl_type': m.group(1)} for m in re.finditer(r'(\w+)\s+\w+\s*\[\[attribute\((\d+)\)\]\]', src)],
             'raster': raster_facts(j['stage'], src)}

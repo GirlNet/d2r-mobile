@@ -5,6 +5,11 @@
 // Not cut: the getters of Friend / Profile / FriendPresence and the constructors of Friend / Profile / UserPresence (they only read and write the game's own objects and do not go through the service).
 // Return convention: Result returns RES_FAIL; bool returns false; event pointers get a SystemEvent that is bound to a kernel event and never fires.
 #include "hle.h"
+HLE_FORCE_OPTIONAL("_ZN2nn7friends14AddPlayHistoryERKNS_7account3UidERKNS0_26PlayHistoryRegistrationKeyERKNS0_15InAppScreenNameESA_",
+    "Offline play-history overload with local user ID; no friends service IPC", Result, h_fr_AddPlayHistoryUid,
+    const void *uid, const void *key, const void *first, const void *second) {
+    (void)uid;(void)key;(void)first;(void)second;return RES_FAIL;
+}
 
 // 永不触发的通知事件（GetSystemEvent 类返回指针；首次在客体线程上绑定）
 // Notification event that never fires (GetSystemEvent-style calls return a pointer; bound on the guest thread on first use)

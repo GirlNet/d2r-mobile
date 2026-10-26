@@ -23,6 +23,38 @@ HLE_FORCE("nnsslFinalize", "与 nnsslInitialize 配对（剪）", Result, h_ssl_
 #define SK_ENETDOWN 50                  // Horizon 套接字用 FreeBSD 错误码 | Horizon sockets use FreeBSD error codes
 static __thread int t_skerr = SK_ENETDOWN;
 static int sk_fail(void) { t_skerr = SK_ENETDOWN; return -1; }
+
+// P5R also imports the older BSD-shaped overloads. They must share the same
+// offline policy and thread-local errno as the typed interfaces below; leaving
+// them in the SDK would reconnect to Horizon's bsd service behind our back.
+HLE_FORCE_OPTIONAL("_ZN2nn6socket10InitializeEPvmmi", "Offline BSD initialization; no Horizon service session", Result, h_sk_InitLegacy, void *pool, size_t size, size_t alloc, int sessions) {
+    (void)pool; (void)size; (void)alloc; (void)sessions; return RES_OK;
+}
+#define SKO(m, cname, ...) HLE_FORCE_OPTIONAL(m, "Offline BSD overload; return -1/ENETDOWN without IPC", int, cname, __VA_ARGS__)
+SKO("_ZN2nn6socket6SocketEiii", h_sk_SocketLegacy, int a, int b, int c) { (void)a; (void)b; (void)c; return sk_fail(); }
+SKO("_ZN2nn6socket4BindEiPK8sockaddrj", h_sk_BindLegacy, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
+SKO("_ZN2nn6socket7ConnectEiPK8sockaddrj", h_sk_ConnectLegacy, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
+SKO("_ZN2nn6socket6AcceptEiP8sockaddrPj", h_sk_AcceptLegacy, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
+SKO("_ZN2nn6socket11GetSockNameEiP8sockaddrPj", h_sk_GetSockNameLegacy, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
+SKO("_ZN2nn6socket10GetSockOptEiiiPvPj", h_sk_GetSockOptLegacy, int s, int l, int o, void *v, unsigned *n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
+SKO("_ZN2nn6socket10SetSockOptEiiiPKvj", h_sk_SetSockOptLegacy, int s, int l, int o, const void *v, unsigned n) { (void)s; (void)l; (void)o; (void)v; (void)n; return sk_fail(); }
+SKO("_ZN2nn6socket4PollEP6pollfdmi", h_sk_PollLegacy, void *p, size_t n, int timeout) { (void)p; (void)n; (void)timeout; return sk_fail(); }
+SKO("_ZN2nn6socket5FcntlEiiz", h_sk_FcntlLegacy, int s, int c) { (void)s; (void)c; return sk_fail(); }
+SKO("_ZN2nn6socket8ShutdownEii", h_sk_ShutdownLegacy, int s, int how) { (void)s; (void)how; return sk_fail(); }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket4RecvEiPvmi", "Offline BSD receive overload", long, h_sk_RecvLegacy, int s, void *b, size_t n, int flags) { (void)s; (void)b; (void)n; (void)flags; return sk_fail(); }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket4SendEiPKvmi", "Offline BSD send overload", long, h_sk_SendLegacy, int s, const void *b, size_t n, int flags) { (void)s; (void)b; (void)n; (void)flags; return sk_fail(); }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket8RecvFromEiPvmiP8sockaddrPj", "Offline BSD receive-from overload", long, h_sk_RecvFromLegacy, int s, void *b, size_t n, int f, void *a, unsigned *al) { (void)s; (void)b; (void)n; (void)f; (void)a; (void)al; return sk_fail(); }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket6SendToEiPKvmiPK8sockaddrj", "Offline BSD send-to overload", long, h_sk_SendToLegacy, int s, const void *b, size_t n, int f, const void *a, unsigned al) { (void)s; (void)b; (void)n; (void)f; (void)a; (void)al; return sk_fail(); }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket6SendToEiPKvmNS0_7MsgFlagEPKNS0_8SockAddrEj", "Offline typed send-to overload", long, h_sk_SendTo, int s, const void *b, size_t n, int f, const void *a, unsigned al) { (void)s; (void)b; (void)n; (void)f; (void)a; (void)al; return sk_fail(); }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket11GetAddrInfoEPKcS2_PK8addrinfoPPS3_", "Offline resolver; EAI_FAIL and null result", int, h_sk_GetAddrInfoLegacy, const char *h, const char *s, const void *hint, void **out) { (void)h; (void)s; (void)hint; if (out) *out = NULL; t_skerr = SK_ENETDOWN; return 4; }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket12FreeAddrInfoEP8addrinfo", "Offline resolver has no allocated results", void, h_sk_FreeAddrInfoLegacy, void *p) { (void)p; }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket12GetLastErrnoEv", "Share the host BSD thread-local errno", int, h_sk_GetErrnoLegacy, void) { return t_skerr; }
+HLE_FORCE_OPTIONAL("_ZN2nn6socket11GAIStrErrorENS0_7AiErrnoE", "Host offline resolver error description; do not initialize the resolver service", const char *, h_sk_GAIStrError, int error) {
+    (void)error; return "Network unavailable";
+}
+HLE_FORCE_OPTIONAL("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", "Offline request completes with network unavailable", Result, h_nifm_SubmitWait, void) { return RES_FAIL; }
+HLE_FORCE_OPTIONAL("_ZN2nn4nifm26GetCurrentPrimaryIpAddressEP7in_addr", "Offline address overload; no IP", Result, h_nifm_GetIpLegacy, uint32_t *out) { if (out) *out = 0; return RES_FAIL; }
+#undef SKO
 #define SKF(m, cname, ...) HLE_FORCE(m, "bsd 套接字服务（剪）：回 -1/ENETDOWN", int, cname, __VA_ARGS__)
 SKF("_ZN2nn6socket6SocketENS0_6FamilyENS0_4TypeENS0_8ProtocolE", h_sk_Socket, int a, int b, int c) { (void)a; (void)b; (void)c; return sk_fail(); }
 SKF("_ZN2nn6socket4BindEiPKNS0_8SockAddrEj", h_sk_Bind, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }

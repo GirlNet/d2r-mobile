@@ -1,0 +1,77 @@
+# 通用整数核验证默认关闭的同进程计算对照；构建不含游戏内容的宿主。
+# Verify disabled-by-default same-process compute comparisons with generic integer kernels; build a game-free host.
+name: P5R compute comparison
+on:
+  push:
+    branches: ['codex/p5r-runtime']
+    paths:
+      - '.github/workflows/p5r-compute-probe.yml'
+      - 'dm/gfx/nvn/nvn_compute_probe.inc'
+      - 'dm/gfx/nvn/nvn_mtl.m'
+      - 'dm/gfx/tests/t_compute_probe_gpu.m'
+      - 'dm/gfx/tests/Makefile'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: p5r-compute-probe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gpu-comparison:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify public compute switching, parity and guarded fallback
+        run: |
+          set -euo pipefail
+          python3 dm/gfx/tools/dmsh_chain.py --header
+          make -C dm/gfx/tests t_compute_probe_gpu t_compute_probe_gpu_m4
+          python3 - <<'PY'
+          import json,os,subprocess
+          results=[]
+          for suffix in ('','_m4'):
+              for flag in ('','--disabled-no-config','--missing','--bad-original','--bad-candidate','--bad-entry','--bad-layout','--oversize'):
+                  argv=['dm/gfx/tests/t_compute_probe_gpu'+suffix]+([flag] if flag else [])
+                  r=subprocess.run(argv,capture_output=True,text=True,env=dict(os.environ,MTL_DEBUG_LAYER='1'))
+                  print(r.stdout,r.stderr,flush=True)
+                  skipped=r.returncode in (77,78)
+                  results.append(dict(binary=argv[0],flag=flag,exit_code=r.returncode,executed=not skipped,passed=not skipped and r.returncode==0 and 'COMPUTE PROBE GPU OK:' in r.stdout))
+                  with open('compute-probe-results.json','w') as f:json.dump(results,f,indent=2)
+                  if skipped:
+                      print('::warning::GPU comparison execution unavailable: '+argv[0])
+                      break
+                  if not results[-1]['passed']:raise SystemExit('Compute probe regression failed: '+str(argv))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compute-probe-results
+          path: compute-probe-results.json
+          retention-days: 7
+  ios-shell:
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify text and shader cache identity
+        run: |
+          set -euo pipefail
+          python3 dm/i18n/scan_literals.py
+          python3 dm/ios/tools/dm_i18n.py --check
+          python3 dm/gfx/tools/dmsh_chain.py --header
+      - name: Compile and package the complete iOS Metal 4 host
+        run: python3 dm/ios/p5r/build_shell.py "$RUNNER_TEMP/p5r-shell" --metal-backend 4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: p5r-ios-shell
+          path: |
+            ${{ runner.temp }}/p5r-shell/*.ipa
+            ${{ runner.temp }}/p5r-shell/build-report.json
+            ${{ runner.temp }}/p5r-shell/logs
+          retention-days: 7

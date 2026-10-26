@@ -1,3 +1,4 @@
+#include "../../host/dm_diagnostics.h"
     .arch_extension lse
 // 未实现 NVN 函数的公共入口：跳板进来时 x16 = 本函数的槽地址（nvn_slot[i]）。
 // 调 nvn_unimpl_c(slot, x0, x1, x2) 报红记名，返回 0。
@@ -25,6 +26,7 @@ _nvn_unimpl_entry:
 // Save x0-x7 / q0-q7 (NVN functions pass no arguments on the stack, verified by the generator), take mach_absolute_time -> call the real implementation (nvn_real[i]) -> take it again,
 // atomically add the difference to nvn_prof_ticks[i] (mach timebase units); return values x0/x1, q0-q3 are passed back unchanged.
 // cntvct_el0 is not used: measured on this machine it is not in a fixed ratio to the system timebase (cntfrq reports 1 GHz, increment ratio over the same interval 98.9), so it cannot be converted to time.
+#if DM_RUNTIME_DIAGNOSTICS
     .globl _nvn_prof_entry
     .p2align 2
 _nvn_prof_entry:
@@ -77,3 +79,4 @@ _nvn_prof_entry:
     ldp x29, x30, [sp]
     add sp, sp, #240
     ret
+#endif
