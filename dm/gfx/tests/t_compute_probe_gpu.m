@@ -78,7 +78,9 @@ int main(int argc,char **argv){@autoreleasepool{
     }
     if(!flag[0]){
         CHECK(g_compute_probe_status==1&&g_compute_probe_original_dispatches==3&&g_compute_probe_candidate_dispatches==3);
-        CHECK(!strcmp(compute_probe_label(g_compute_probe_original),"probe-original")&&!strcmp(compute_probe_label(g_compute_probe_candidate),"probe-candidate"));
+        p_dispatch dimensions={.x=7,.y=2,.z=1};
+        CHECK(!strcmp(compute_probe_label(g_compute_probe_original,&dimensions),"P0:7,2,1"));
+        CHECK(!strcmp(compute_probe_label(g_compute_probe_candidate,&dimensions),"P1:7,2,1"));
         CHECK(g_compute_probe_original->fn!=g_compute_probe_candidate->fn);
     }else CHECK(g_compute_probe_status==(rejection?-1:0)&&!g_compute_probe_candidate_dispatches&&g_compute_probe_mode==0);
     g_compute_probe_mode=0;h_nvnCommandBufferFinalize(&cb);h_nvnQueueFinalize(&queue);mtl_pool_del(memory);free(memory);

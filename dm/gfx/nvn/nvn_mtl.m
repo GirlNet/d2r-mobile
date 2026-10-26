@@ -6253,7 +6253,7 @@ static void dispatch(const p_dispatch *dp) {
     if(!dm_guest_d2r())prepare_shader_textures(cs,5,textures);
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     id<MTLComputeCommandEncoder> ce = pg_compute();
-    pg4_note(compute_probe_label(cs));
+    pg4_note(compute_probe_label(cs,dp));
     enc_c_pso(ce, ps);
     encode_args(ce, cs, 5, 0,dm_guest_d2r()?NULL:textures);
     enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));

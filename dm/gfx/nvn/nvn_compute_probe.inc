@@ -87,8 +87,12 @@ static NvShader *compute_probe_shader(NvShader *original) {
     if(mode==1||(mode==2&&(g_cur_frame&1))){g_compute_probe_candidate_dispatches++;return g_compute_probe_candidate;}
     g_compute_probe_original_dispatches++;return original;
 }
-static const char *compute_probe_label(NvShader *shader) {
-    if(shader==g_compute_probe_candidate)return "probe-candidate";
-    if(shader==g_compute_probe_original)return "probe-original";
+static const char *compute_probe_label(NvShader *shader,const p_dispatch *dispatch) {
+    int variant=shader==g_compute_probe_candidate?1:shader==g_compute_probe_original?0:-1;
+    if(g_compute_probe_mode && variant>=0){
+        // 记录派发尺寸，后续只比较相同工作量的样本；关闭实验后不格式化标签。
+        // Record dispatch dimensions for matched-work comparisons; skip formatting when the experiment is off.
+        static char label[48];snprintf(label,sizeof label,"P%d:%d,%d,%d",variant,dispatch->x,dispatch->y,dispatch->z);return label;
+    }
     return shader->key;
 }
