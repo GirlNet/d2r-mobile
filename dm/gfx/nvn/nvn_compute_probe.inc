@@ -92,7 +92,8 @@ static const char *compute_probe_label(NvShader *shader,const p_dispatch *dispat
     if(g_compute_probe_mode && variant>=0){
         // 记录派发尺寸，后续只比较相同工作量的样本；关闭实验后不格式化标签。
         // Record dispatch dimensions for matched-work comparisons; skip formatting when the experiment is off.
-        static char label[48];snprintf(label,sizeof label,"P%d:%d,%d,%d",variant,dispatch->x,dispatch->y,dispatch->z);return label;
+        static char label[24];int n=snprintf(label,sizeof label,"P%d:%d,%d,%d",variant,dispatch->x,dispatch->y,dispatch->z);
+        return n>=0&&(size_t)n<sizeof label?label:"probe-unmatched";
     }
     return shader->key;
 }
