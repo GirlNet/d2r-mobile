@@ -19,7 +19,10 @@ def main(output):
         print('::warning::UIKit rendering skipped: no iOS 26 simulator runtime installed.');return
     runtime=max(runtimes,key=lambda r:tuple(int(x) for x in r['version'].split('.')))
     types=json.loads(run('xcrun','simctl','list','devicetypes','-j'))['devicetypes']
-    chosen=[next(t for t in reversed(types) if t['name'].startswith(prefix)) for prefix in ('iPhone','iPad')]
+    version=[int(x) for x in runtime['version'].split('.')];version+=[0]*(3-len(version))
+    encoded=version[0]*65536+version[1]*256+version[2]
+    compatible=[t for t in types if t.get('minRuntimeVersion',0)<=encoded<=t.get('maxRuntimeVersion',0xffffffff)]
+    chosen=[next(t for t in compatible if t['name'].startswith(prefix)) for prefix in ('iPhone','iPad')]
     app=output/'PadEditorTest.app';app.mkdir()
     sdk=run('xcrun','--sdk','iphonesimulator','--show-sdk-path').strip()
     run('xcrun','--sdk','iphonesimulator','clang','-arch',platform.machine(),'-isysroot',sdk,
