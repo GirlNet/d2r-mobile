@@ -1,3 +1,4 @@
+#if DM_RUNTIME_DIAGNOSTICS
 // 按 Apple Metal 4 CounterHeap 接口，有限记录主提交的渲染／计算／拷贝时间戳。
 // 默认关闭；每批独立持有计数堆，在 GPU 完成反馈中解析，不重用在途槽或改动屏障。
 // Record bounded render/compute/copy timestamps using Apple's Metal 4 CounterHeap API.
@@ -135,3 +136,11 @@ static void pg4_commit(MTL4CommitOptions *options) {
         atomic_fetch_sub(&g_pg4_pending,1);
     }];
 }
+
+#else
+static void pg4_sub_begin(void) {}
+static void pg4_begin(id encoder,char kind,RPD *descriptor) { (void)encoder;(void)kind;(void)descriptor; }
+static void pg4_end(id encoder) { (void)encoder; }
+static void pg4_commit(MTL4CommitOptions *options) { (void)options; }
+static void pg4_note(const char *label) { (void)label; }
+#endif

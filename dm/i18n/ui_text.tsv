@@ -398,3 +398,7 @@ dmP5RResourcesVersion	资源版本不匹配，请使用本版配套资源包。	
 dmP5RResourcesIncomplete	资源不完整或已损坏，请重新解压配套资源包。	Resources are incomplete or damaged. Extract the supplied resource package again.	P5R resource launcher
 dmP5RResourcesNoProgram	安装包缺少游戏启动组件，请重新安装。	This installation is missing the game component. Reinstall the app.	P5R resource launcher
 dmP5RResourcesKept	%@ 当前仍使用：%@	%@ Still using: %@	P5R resource launcher
+dmP5RPadLayout	按键布局	Control layout	P5R control editor
+dmP5RPadLayoutHint	拖动按键调整位置，拖动标题移动此面板。	Drag controls to reposition them. Drag the title to move this panel.	P5R control editor
+dmP5RPadReset	恢复默认	Reset	P5R control editor
+dmP5RPadSave	保存	Save	P5R control editor

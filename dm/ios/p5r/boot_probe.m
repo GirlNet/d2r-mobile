@@ -2,6 +2,7 @@
 // Atomic JSON reports for staged initialization probes: record entries, file checkpoints and provenance; startup admits game main; setup can park after initialization, while pre-submit mode continues CPU work; all probes block guest submission.
 #import <Foundation/Foundation.h>
 #include "boot_probe.h"
+#if DM_RUNTIME_DIAGNOSTICS
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sys/stat.h>
@@ -201,3 +202,5 @@ void dm_boot_probe_gpu_complete(const char *backend, const char *device) { @auto
     while (atomic_load(&active)) pthread_cond_wait(&parked,&mutex);
     pthread_mutex_unlock(&mutex);
 } }
+
+#endif

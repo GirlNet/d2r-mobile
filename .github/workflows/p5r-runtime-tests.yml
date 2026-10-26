@@ -58,6 +58,26 @@ concurrency:
   group: p5r-runtime-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  control-editor:
+    runs-on: macos-26-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check normalized layouts and stale diagnostic config rejection
+        run: |
+          xcrun clang -Wall -Wextra -Werror dm/ios/p5r/t_pad_layout.c -o "$RUNNER_TEMP/pad-layout"
+          "$RUNNER_TEMP/pad-layout"
+          xcrun clang -Wall -Wextra -Werror dm/ios/p5r/t_camera_swipe.c -o "$RUNNER_TEMP/camera-swipe"
+          "$RUNNER_TEMP/camera-swipe"
+      - name: Verify actual phone and tablet controls and render editor previews
+        run: python3 dm/ios/p5r/test_pad_preview.py "$RUNNER_TEMP/pad-preview"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: p5r-control-editor
+          path: ${{ runner.temp }}/pad-preview
   ios-shell:
     # The iPhone executable is explicitly cross-compiled with -arch arm64.
     # Keep packaging available when the hosted Apple Silicon pool is full.
@@ -417,6 +437,8 @@ jobs:
         run: |
           make -C dm/gfx/tests t_conditional_render_gpu
           dm/gfx/tests/t_conditional_render_gpu
+          make -C dm/gfx/tests t_conditional_render_gpu_player
+          DM_NVN_PROF=1 DM_SLOWFRAME=1 DM_NVN_SUBPROF=1 DM_P5R_DRAW_DEBUG=1 dm/gfx/tests/t_conditional_render_gpu_player
           dm/gfx/tests/t_nvn_gpu_setup --gpu-setup-probe "$RUNNER_TEMP/p5r-real-metal-setup"
           dm/gfx/tests/t_nvn_gpu_setup --pre-submit-probe "$RUNNER_TEMP/p5r-real-pre-submit"
           dm/gfx/tests/t_nvn_gpu_setup --capture-disabled-check

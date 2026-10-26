@@ -87,6 +87,7 @@ static _Atomic uint64_t g_hle_draw_submits;      // 诊断：游戏提交的绘�
 // Diagnostic: histogram of the guest's draw call sites (return addresses) to locate the draw functions, then their cullers.
 static struct { uint64_t pc; uint32_t n; } g_draw_sites[64]; static int g_draw_sites_n;
 static void draw_site_note(uint64_t pc) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     for (int i = 0; i < g_draw_sites_n; i++) if (g_draw_sites[i].pc == pc) { g_draw_sites[i].n++; return; }
     if (g_draw_sites_n < 64) { g_draw_sites[g_draw_sites_n++] = (typeof(g_draw_sites[0])){pc, 1}; }
 }
@@ -94,7 +95,7 @@ static void draw_site_note(uint64_t pc) {
 
 static void nvn_init_slots(void) {
     static int done; if (done) return; done = 1;
-    g_log = getenv("DM_NVN_LOG") != NULL;
+    g_log = DM_RUNTIME_DIAGNOSTICS && getenv("DM_NVN_LOG") != NULL;
     unsigned long sz;
     const nvn_impl *im = (const nvn_impl *)getsectiondata(&_mh_execute_header, "__DATA", "swnvn", &sz);
     unsigned nim = im ? (unsigned)(sz / sizeof *im) : 0, hit = 0;
@@ -644,7 +645,7 @@ static uint8_t *align8(uint8_t *p) { return (uint8_t *)(((uintptr_t)p + 7) & ~(u
 static struct { int on; uint64_t bytes, recs, grants, grant_bytes, grant_min, grant_max, cbs, hostseg, op_n[64], op_b[64], frame0, waste; } g_cs = { .on = -1 };
 static pthread_mutex_t g_cs_mu = PTHREAD_MUTEX_INITIALIZER;
 uint64_t dm_nvn_frame_count(void);
-static int cs_on(void) { if (g_cs.on < 0) g_cs.on = getenv("DM_NVN_CMDSTAT") != NULL; return g_cs.on; }
+static int cs_on(void) { if(!DM_RUNTIME_DIAGNOSTICS)return 0; if (g_cs.on < 0) g_cs.on = getenv("DM_NVN_CMDSTAT") != NULL; return g_cs.on; }
 static void cs_op(uint32_t op, uint32_t size) { if (!cs_on() || op >= 64) return; pthread_mutex_lock(&g_cs_mu); g_cs.op_n[op]++; g_cs.op_b[op] += size; pthread_mutex_unlock(&g_cs_mu); }
 static void cs_dump(void) {   // 每帧调一次（出图处） | Called once per frame (at present)
     if (!cs_on()) return; uint64_t f = dm_nvn_frame_count(); if (f - g_cs.frame0 < 300) return;
@@ -874,17 +875,17 @@ NVN(nvnCommandBufferSetStencilRef, void, NVNcommandBuffer *c, NVNface f, int v) 
 NVN(nvnCommandBufferSetPolygonOffsetClamp, void, NVNcommandBuffer *c, float fa, float un, float cl) {
     *REC(c, OP_POLY_OFFSET, p_poly_offset) = (p_poly_offset){fa, un, cl};
 }
-NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { atomic_fetch_add(&g_hle_draw_submits, 1); draw_site_note((uint64_t)__builtin_return_address(0)); *REC(c, OP_DRAW, p_draw) = (p_draw){.prim=pr,.first=first,.count=n}; }
+NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { if(DM_RUNTIME_DIAGNOSTICS)atomic_fetch_add(&g_hle_draw_submits, 1); draw_site_note((uint64_t)__builtin_return_address(0)); *REC(c, OP_DRAW, p_draw) = (p_draw){.prim=pr,.first=first,.count=n}; }
 NVN(nvnCommandBufferDrawArraysInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n, int base_instance, int instances) {
     if(first<0 || n<0 || base_instance<0 || instances<0)die("Invalid array instance parameters");
-    atomic_fetch_add(&g_hle_draw_submits, 1); draw_site_note((uint64_t)__builtin_return_address(0));
+    if(DM_RUNTIME_DIAGNOSTICS)atomic_fetch_add(&g_hle_draw_submits, 1); draw_site_note((uint64_t)__builtin_return_address(0));
     *REC(c, OP_DRAW, p_draw)=(p_draw){pr,first,n,instances-1,base_instance};
 }
 NVN(nvnCommandBufferDrawElementsInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib,
     int bv, int bi, int inst) {
     if(n<0 || bi<0 || inst<0)die("Invalid indexed instance parameters");
     if(!inst)n=0;
-    atomic_fetch_add(&g_hle_draw_submits, 1); draw_site_note((uint64_t)__builtin_return_address(0));
+    if(DM_RUNTIME_DIAGNOSTICS)atomic_fetch_add(&g_hle_draw_submits, 1); draw_site_note((uint64_t)__builtin_return_address(0));
     *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, n, bv, bi, inst, ib};
 }
 NVN(nvnCommandBufferDispatchCompute, void, NVNcommandBuffer *c, int x, int y, int z) {
@@ -1028,6 +1029,7 @@ static _Atomic uint64_t g_hsp_restore_ns, g_hsp_begin_ns, g_hsp_index_ns;
 static _Atomic uint64_t g_hsp_exec_ns, g_hsp_commit_ns, g_hsp_capture_ns;
 static _Atomic uint64_t g_hsp_submit_n;
 static int host_subprof_on(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return 0;
     static int enabled = -1;
     if (enabled < 0) {
         const char *value = getenv("DM_NVN_SUBPROF");
@@ -1089,7 +1091,9 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
     dm_boot_probe_block("guest_gpu_submission","nvnQueueSubmitCommands");
     gfx_enter();
     queue_api_enter();
+#if DM_RUNTIME_DIAGNOSTICS
     uint64_t t0 = now_ns(), c0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID), i0, y0, s0 = thr_sys_ns(); thr_counts(&i0, &y0);
+#endif
     int hsp = host_subprof_on();
     ((queue_t *)q)->submits++;
     uint64_t hp = hsp ? now_ns() : 0;
@@ -1113,12 +1117,14 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
     hp = hsp ? now_ns() : 0;
     mtl_queue_capture(((queue_t *)q)->replay_state);
     if (hsp) host_subprof_add(&g_hsp_capture_ns, hp);
+#if DM_RUNTIME_DIAGNOSTICS
     uint64_t dw = now_ns() - t0;
     atomic_fetch_add(&g_nvn_ns, dw); atomic_fetch_add(&g_sub_wall_ns, dw);
     uint64_t i1, y1; thr_counts(&i1, &y1); uint64_t dc = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - c0, di = i1 - i0;
     atomic_fetch_add(&g_cum_sub_cyc, y1 - y0); atomic_fetch_add(&g_cum_sub_sys_ns, thr_sys_ns() - s0); atomic_fetch_add(&g_cum_sub_wall_ns, dw);
     atomic_fetch_add(&g_sub_cpu_ns, dc); atomic_fetch_add(&g_cum_sub_cpu_ns, dc);
     atomic_fetch_add(&g_sub_instr, di); atomic_fetch_add(&g_cum_sub_instr, di);
+#endif
     queue_api_leave();gfx_leave();
 }
 
@@ -1129,11 +1135,13 @@ static void nvn_nop(void) {}
 // DM_NVN_PROF is installed from a constructor, before the shell has read Documents/p5r-config.txt; the shell calls this
 // once after reading the config so the switch still works (idempotent).
 void nvn_prof_apply(void) {
+#if DM_RUNTIME_DIAGNOSTICS
     if (!getenv("DM_NVN_PROF")) return;
     for (unsigned i = 0; i < NVN_NFUNC; i++)
         if (!nvn_real[i] && nvn_slot[i].fn != (void *)nvn_unimpl_entry && strcmp(nvn_names[i], "nvnQueuePresentTexture")) {
             nvn_real[i] = nvn_slot[i].fn; nvn_slot[i].fn = (void *)nvn_prof_entry;
         }
+#endif
 }
 static const char *const g_nops[] = {
 #ifndef DM_P5R_ONLY
@@ -1227,11 +1235,21 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
         if (pace < 0) { const char *e = getenv("DM_DETCLOCK_PACE"), *d = getenv("DM_DETCLOCK"); step = d ? strtoull(d, 0, 0) : 0; pace = e && atoi(e) && step; }
         if (pace) { if (last && now_ns() < last + step) sleep_until_ns(last + step); last = now_ns(); }
     }
+#if DM_RUNTIME_DIAGNOSTICS
     g_acq_wait_ns += wait; trow(g_frame, "@late_ms", wait ? (now_ns() - at) / 1e6 : 0);
+#endif
     // 该张上一次出图还没被出图线程处理完（显示跟不上、落后一整轮交换链）：等它归还，再交给游戏画
     // The previous present of this texture has not yet been processed by the present thread (display cannot keep up, a whole swapchain round behind): wait for it to be returned, then hand it to the game to draw
     uint64_t tk = *idx < 4 ? o->ticket[*idx] : 0;
-    if (tk) { uint64_t w0 = now_ns(); mtl_present_wait(tk); g_pq_wait_ns += now_ns() - w0; }
+    if (tk) {
+#if DM_RUNTIME_DIAGNOSTICS
+        uint64_t w0 = now_ns();
+#endif
+        mtl_present_wait(tk);
+#if DM_RUNTIME_DIAGNOSTICS
+        g_pq_wait_ns += now_ns() - w0;
+#endif
+    }
     if (s) {
         __atomic_store_n(&((sync_t *)s)->fence,mtl_last_fence(),__ATOMIC_RELEASE);
         __atomic_store_n(&((sync_t *)s)->fenced,1,__ATOMIC_RELEASE);
@@ -1244,6 +1262,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
 static uint64_t g_prev[NVN_NFUNC];
 static FILE *g_tsv;
 static void dump_frame(void) {
+#if DM_RUNTIME_DIAGNOSTICS
     static int inited, nframes = 3, calls = 1;
     if (!inited) {
         inited = 1;
@@ -1275,6 +1294,9 @@ static void dump_frame(void) {
             void mtl_mem_stat(unsigned long long, unsigned long long, int, unsigned long long, unsigned long long, unsigned long long); mtl_mem_stat(g_frame, mb, hok, ht, hf, hm);
             static long cap = -1; if (cap < 0) { const char *e = getenv("DM_MEM_CAP_GB"); cap = e ? atol(e) : DM_MEM_CAP_DEFAULT_GB; }
             if (cap > 0 && mb > (unsigned long long)cap * 1024) { LOG("【红】内存看门狗：常驻 %llu MB 超过上限 %ld GB（帧 %llu），自行退出", mb, cap, (unsigned long long)g_frame); _exit(86); } } }
+#else
+    g_frame++;
+#endif
     dm_guest_frame_tick();   // 确定性客体时钟（DM_DETCLOCK，宿主 hle_os.c）：每次出图推进固定步长；未开为空操作 | Deterministic guest clock (DM_DETCLOCK, host hle_os.c): each present advances a fixed step; a no-op when not enabled
 }
 // ---------- 计时埋点（逐帧行写进 DM_NVN_TSV：frame / @指标 / 值；每 300 帧汇总 p50 / p95 / 最大） ----------
@@ -1351,13 +1373,14 @@ static void tsummary(uint64_t frame) {
 static struct { uint64_t f; int n; const char *k[64]; double v[64]; } g_sr[SRN];
 static int g_slow = -1;
 static int slow_on(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return 0;
     if (g_slow < 0) {
         const char *value = getenv("DM_SLOWFRAME");
         g_slow = value && strcmp(value, "0");
     }
     return g_slow;
 }
-static int frame_rec(void) { return g_tsv || slow_on(); }
+static int frame_rec(void) { return DM_RUNTIME_DIAGNOSTICS && (g_tsv || slow_on()); }
 static void trow(uint64_t f, const char *name, double v) {
     if (g_tsv) fprintf(g_tsv, "%llu\t%s\t%.3f\n", f, name, v);
     if (slow_on()) { __typeof__(g_sr[0]) *r = &g_sr[f % SRN]; if (r->f != f) { r->f = f; r->n = 0; } if (r->n < 64) { r->k[r->n] = name; r->v[r->n++] = v; } }
@@ -1458,14 +1481,19 @@ int (*g_nvn_loadscreen_up)(void);   // 宿主登记：读取画面此刻是否�
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     gfx_enter();queue_api_enter();
     (void)q; win_t *o = (win_t *)w; o->presents++;
+#if DM_RUNTIME_DIAGNOSTICS
     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
+#endif
     // 第一次进局的读取画面：后台管线预热没跑完就在这里等它（读取画面多停一会儿），进局后不在提交线程现编管线。预热早已完成时一次判断即过
     // Loading screen on first entering a run: if the background pipeline warm-up has not finished, wait for it here (the loading screen stays a bit longer), so that after entering the run no pipelines are compiled on the fly on the submit thread. When warm-up finished long ago this passes with a single check
     { static int gate;
       if (!gate && g_nvn_loadscreen_up && g_nvn_loadscreen_up()) { gate = 1; int ms = mtl_warm_wait(15000); if (ms) LOG("[nvn] 进局读取画面等管线预热 %d ms", ms); } }
     present_cfg(o);
+#if DM_RUNTIME_DIAGNOSTICS
     uint64_t t0 = now_ns();
+#endif
     if (idx >= 0 && idx < o->ntex && idx < 4) o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // 只入队，立即返回 | enqueue only, return immediately
+#if DM_RUNTIME_DIAGNOSTICS
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);
     // 诊断：每 30 帧记一行「游戏提交 vs 宿主编码」的绘制条数（含本段增量），区分物体消失是游戏没提交（CPU 剔除，
@@ -1575,8 +1603,11 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
               dm_longframe_note(b); } }
         uint64_t g0, g1; if (frame_rec() && mtl_gpu_span(f - 8, &g0, &g1)) { trow(f - 8, "@gpu_beg_ms", (g0 - g_t0_ns) / 1e6); trow(f - 8, "@gpu_end_ms", (g1 - g_t0_ns) / 1e6); } }
     prev_in = t0; prev_pass = ps; prev_draw = dr;
+#endif
     dump_frame();
+#if DM_RUNTIME_DIAGNOSTICS
     if (g_frame % TWIN == 0) tsummary(g_frame);
+#endif
     mtl_set_frame(g_frame);
     // 真机语义：出图只入队、立即返回；本帧显示时刻按节拍器排，该贴图到「显示时刻 + 一个周期」才可再获取（阻塞在 AcquireTexture）
     // Real-device semantics: present only enqueues and returns immediately; this frame's display time is scheduled by the pacer, and the texture can be acquired again only at "display time + one period" (blocking in AcquireTexture)
@@ -1585,6 +1616,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     uint64_t slot = now + nvn_pace(&pc, now, period);
     o->pace = pc.target;
     if (idx >= 0 && idx < 4) o->avail[idx] = period ? slot + period : 0;
+#if DM_RUNTIME_DIAGNOSTICS
     static uint64_t prev_slot; if (prev_slot && period) trow(f, "@display_ms", (slot - prev_slot) / 1e6); prev_slot = slot;   // 屏幕上相邻两帧的显示间隔（掉帧看这个） | display interval between two adjacent frames on screen (this is the one to look at for dropped frames)
     // 实际呈现间隔（窗口模式）：滞后 8 次出图取（呈现回调已到），第 n 次与第 n−1 次之差；−1 = 被丢弃
     // Actual presentation interval (windowed mode): taken 8 presents late (the presented callback has arrived by then), as the difference between the n-th and the (n−1)-th; −1 = discarded
@@ -1596,6 +1628,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6); }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
     if (f >= 8 && slow_on()) slow_emit(f - 8);
     prev_out = now_ns();
+#endif
     queue_api_leave();gfx_leave();
 }
 

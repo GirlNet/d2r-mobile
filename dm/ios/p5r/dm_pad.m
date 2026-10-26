@@ -11,6 +11,8 @@
 #include <pthread.h>
 #include "dm_input.h"
 #include "camera_swipe.h"
+#import "dm_pad.h"
+#include "pad_layout.h"
 
 // P5R：右半屏空白处相对滑动控制镜头，按钮先占有触摸；右摇杆圈不再显示。
 // P5R: relative swipes on empty space in the right half control the camera; buttons claim touches first and the right-stick ring stays hidden.
@@ -59,6 +61,12 @@ static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 1 = 3
 
 @interface DmGamepad : UIView
 - (void)updateCamera:(double)time;
+- (instancetype)initWithFrame:(CGRect)frame editing:(BOOL)editing;
+- (void)reloadPositions;
+- (void)savePositions;
+- (void)defaultPositions;
+- (CGPoint)editCenter:(int)controlID;
+- (CGFloat)editRadius:(int)controlID;
 @end
 static __weak DmGamepad *g_view;
 
@@ -78,6 +86,8 @@ static __weak DmGamepad *g_view;
     P5RCameraSwipe _camera;                        // 单根镜头手指的相对运动 | Relative movement of the single camera finger
     int32_t _cameraX, _cameraY;
     CGRect _inputBounds; UIEdgeInsets _inputInsets; // 尺寸变化时释放旧坐标系触摸 | Release old-coordinate touches when the layout changes
+    BOOL _editing; P5RPadLayout _positions;
+    UITouch *_editTouch; int _editID; CGPoint _editStart,_editOrigin;
 }
 
 static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn;
@@ -95,7 +105,11 @@ static CATextLayer *label(CALayer *parent, NSString *s) {
 static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   // keys shown only in the 3D layout
 
 - (instancetype)initWithFrame:(CGRect)f {
+    return [self initWithFrame:f editing:NO];
+}
+- (instancetype)initWithFrame:(CGRect)f editing:(BOOL)editing {
     if ((self = [super initWithFrame:f])) {
+        _editing=editing;_editID=-1;[self reloadPositions];
         self.multipleTouchEnabled = YES; self.opaque = NO; self.backgroundColor = UIColor.clearColor;
         _owner = [NSMapTable strongToStrongObjectsMapTable]; _faceOf = [NSMapTable strongToStrongObjectsMapTable];
         static dispatch_once_t once;
@@ -118,7 +132,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         }
         _swap = shape(_controls); _swapLabel = label(_swap, @"");
         NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
-        _full = saved ? saved.boolValue : DM_GAME_PAD_FULL;
+        _full = _editing ? YES : saved ? saved.boolValue : DM_GAME_PAD_FULL;
         [self applyLayout];
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidConnectNotification object:nil];
@@ -126,6 +140,34 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         [self padsChanged];
     }
     return self;
+}
+// 按设备类别分别保存，只在加载、编辑或保存时读写偏好；游戏逐帧不访问持久存储。
+// Persist separately by device class, reading preferences only on load/edit/save, never every frame.
+- (NSString *)positionsKey { return UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPad?@"P5RPadPositions-v1-iPad":@"P5RPadPositions-v1-iPhone"; }
+- (void)reloadPositions {
+    p5r_pad_layout_clear(&_positions);
+    id saved=[NSUserDefaults.standardUserDefaults objectForKey:self.positionsKey];
+    if([saved isKindOfClass:NSDictionary.class] && [saved[@"version"] isEqual:@1] && [saved[@"positions"] isKindOfClass:NSDictionary.class]) {
+        NSDictionary *points=saved[@"positions"];
+        for(int controlID=0;controlID<P5R_PAD_LAYOUT_COUNT;controlID++) {
+            id value=points[[NSString stringWithFormat:@"%d",controlID]];
+            if([value isKindOfClass:NSArray.class] && [value count]==2 && [value[0] isKindOfClass:NSNumber.class] && [value[1] isKindOfClass:NSNumber.class])
+                p5r_pad_layout_load(&_positions,controlID,[value[0] doubleValue],[value[1] doubleValue]);
+        }
+    }
+    [self setNeedsLayout];
+}
+- (void)savePositions {
+    if(!_editing)return;NSMutableDictionary *points=[NSMutableDictionary new];
+    for(int id=0;id<P5R_PAD_LAYOUT_COUNT;id++)if(_positions.mask&(UINT32_C(1)<<id))
+        points[[NSString stringWithFormat:@"%d",id]]=@[@(_positions.x[id]),@(_positions.y[id])];
+    [NSUserDefaults.standardUserDefaults setObject:@{@"version":@1,@"positions":points} forKey:self.positionsKey];
+}
+- (void)defaultPositions { p5r_pad_layout_clear(&_positions);_editTouch=nil;_editID=-1;[self setNeedsLayout]; }
+- (CGPoint)customPoint:(int)id fallback:(CGPoint)point rx:(CGFloat)rx ry:(CGFloat)ry {
+    CGRect s=self.safe;double x,y;
+    if(p5r_pad_layout_point(&_positions,id,s.origin.x,s.origin.y,s.size.width,s.size.height,rx,ry,&x,&y))return CGPointMake(x,y);
+    return point;
 }
 - (void)applyLayout {   // show / hide the controls for the current layout
     [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -151,22 +193,24 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
 - (CGFloat)faceGap { return K_FACE_GAP * self.u; }
 - (CGFloat)faceR { return K_FACE_R * self.u; }
 - (CGPoint)facePos:(int)b { CGPoint c = self.faceCenter; CGFloat g = self.faceGap;
-    switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
+    switch (b) { case B_A: c.x+=g;break; case B_B:c.y+=g;break;case B_X:c.y-=g;break;default:c.x-=g;break; }
+    return [self customPoint:b fallback:c rx:self.faceR ry:self.faceR]; }
 - (CGPoint)stickHome:(int)i { CGRect s = self.corner; CGFloat u = self.u;
-    return i ? side(s, 1, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u) : side(s, 0, K_STICK_X * u, CGRectGetMaxY(s) - K_PAD_Y * u); }
+    CGPoint c=i ? side(s, 1, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u) : side(s, 0, K_STICK_X * u, CGRectGetMaxY(s) - K_PAD_Y * u);
+    return i?c:[self customPoint:P5R_PAD_STICK fallback:c rx:K_STICK_R*u ry:K_STICK_R*u]; }
 - (CGFloat)stickR:(int)i { return (i ? K_RSTICK_R : K_STICK_R) * self.u; }
-- (CGPoint)dpadCenter { CGRect s = self.corner; CGFloat u = self.u; return side(s, 0, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u); }
+- (CGPoint)dpadCenter { CGRect s = self.corner; CGFloat u = self.u;return [self customPoint:P5R_PAD_DPAD fallback:side(s,0,K_LOW_X*u,CGRectGetMaxY(s)-K_LOW_Y*u) rx:self.dpadR ry:self.dpadR]; }
 - (CGFloat)dpadR { return K_DPAD_R * self.u; }
 static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
 static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
 - (CGPoint)dropCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
-    return side(s, b == B_ZR || b == B_R, (z ? K_ZL_X : K_L_X) * u, CGRectGetMinY(s) + (z ? K_ZL_Y : K_L_Y) * u); }
+    CGFloat r=[self dropR:b]*K_DROP_TIP;return [self customPoint:b fallback:side(s,b==B_ZR||b==B_R,(z?K_ZL_X:K_L_X)*u,CGRectGetMinY(s)+(z?K_ZL_Y:K_L_Y)*u) rx:r ry:r]; }
 - (CGFloat)dropR:(int)b { return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
-- (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; return side(s, b == B_RS, K_CLICK_X * u, CGRectGetMinY(s) + K_ZL_Y * u); }
+- (CGPoint)clickCenter:(int)b { CGRect s=self.safe;CGFloat u=self.u;return [self customPoint:b fallback:side(s,b==B_RS,K_CLICK_X*u,CGRectGetMinY(s)+K_ZL_Y*u) rx:K_CLICK_R*u ry:K_CLICK_R*u]; }
 - (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
     CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? K_PILL_DX : -K_PILL_DX) * u, CGRectGetMinY(s) + K_PILL_Y * u);   // − on the left, + on the right
-    return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
-- (CGPoint)swapCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + K_PILL_Y * self.u); }
+    c=[self customPoint:b fallback:c rx:w/2 ry:h/2];return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
+- (CGPoint)swapCenter { CGRect s=self.safe;return [self customPoint:P5R_PAD_SWITCH fallback:CGPointMake(CGRectGetMidX(s),CGRectGetMinY(s)+K_PILL_Y*self.u) rx:K_SWAP_R*self.u ry:K_SWAP_R*self.u]; }
 
 static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
 - (int)btnAt:(CGPoint)p {   // locked keys (tested on touch-down only, then locked)
@@ -246,6 +290,18 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     return NO;
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if(_editing) {
+        if(_editTouch)return;
+        UITouch *touch=ts.anyObject;CGPoint p=[touch locationInView:self];
+        CGFloat best=1.35;int selected=-1;
+        for(int controlID=0;controlID<P5R_PAD_LAYOUT_COUNT;controlID++) {
+            if(!p5r_pad_layout_id(controlID))continue;
+            CGPoint c=[self editCenter:controlID];CGFloat r=[self editRadius:controlID];
+            CGFloat d=dist(p,c)/r;if(d<best){best=d;selected=controlID;}
+        }
+        if(selected>=0){_editTouch=touch;_editID=selected;_editStart=p;_editOrigin=[self editCenter:selected];[self refresh];}
+        return;
+    }
     BOOL game = NO;
     for (UITouch *t in ts) {
         if (_padOff) { game |= [self gameBegin:t]; continue; }
@@ -255,7 +311,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
         // 按钮、方向键与左摇杆先于空白处滑动接收触摸；所有权保持到抬手或取消。
         // Buttons, the D-pad and the left stick take priority over empty-space swipes; ownership persists until release or cancellation.
         CGFloat best = 1; int kind = C_NONE, idx = 0;
-        CGFloat f = dist(p, self.faceCenter) / (self.faceGap + self.faceR * 1.6); if (f <= best) { best = f; kind = C_FACE; }
+        for(int b=B_A;b<=B_Y;b++) { CGFloat f=dist(p,[self facePos:b])/(self.faceR*1.25);if(f<=best){best=f;kind=C_FACE;} }
         if (_full) { CGFloat d = dist(p, self.dpadCenter) / (self.dpadR * K_DPAD_GRAB); if (d < best) { best = d; kind = C_DPAD; } }
         for (int i = 0; i < 1; i++) if (!_stick[i]) {
             CGFloat s = dist(p, [self stickHome:i]) / ([self stickR:i] * K_STICK_GRAB); if (s < best) { best = s; kind = C_STICK; idx = i; } }
@@ -271,6 +327,17 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     [self recompute];
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if(_editing) {
+        if(_editTouch && [ts containsObject:_editTouch]) {
+            CGPoint p=[_editTouch locationInView:self];CGRect s=self.safe;
+            if(s.size.width>0 && s.size.height>0) {
+                p5r_pad_layout_move(&_positions,_editID,(_editOrigin.x+p.x-_editStart.x-s.origin.x)/s.size.width,
+                    (_editOrigin.y+p.y-_editStart.y-s.origin.y)/s.size.height);
+                [self setNeedsLayout];
+            }
+        }
+        return;
+    }
     BOOL game = NO;
     for (UITouch *t in ts) {
         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
@@ -283,6 +350,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     [self recompute];
 }
 - (void)endTouches:(NSSet<UITouch *> *)ts tapped:(BOOL)ended {
+    if(_editing){if(_editTouch && [ts containsObject:_editTouch]){_editTouch=nil;_editID=-1;[self refresh];}return;}
     BOOL swap = NO, game = NO;
     for (UITouch *t in ts) {
         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue;
@@ -297,7 +365,27 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
-- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; p5r_camera_reset(&_camera); for (int i = 0; i < 16; i++) _game[i] = nil; [self pushGame]; [self recompute]; }
+- (void)reset { if(_editing){_editTouch=nil;_editID=-1;return;} [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; p5r_camera_reset(&_camera); for (int i = 0; i < 16; i++) _game[i] = nil; [self pushGame]; [self recompute]; }
+
+// 编辑只移动共享几何，不创建摇杆或镜头输入，也不更新全局手柄视图。
+// Editing moves shared geometry only: no stick/camera input or replacement of the global game pad.
+- (CGPoint)editCenter:(int)controlID {
+    if(controlID==P5R_PAD_STICK)return [self stickHome:0];
+    if(controlID==P5R_PAD_DPAD)return self.dpadCenter;
+    if(controlID==P5R_PAD_SWITCH)return self.swapCenter;
+    if(controlID<=B_Y)return [self facePos:controlID];
+    if(isDrop(controlID))return [self dropCenter:controlID];
+    if(isClick(controlID))return [self clickCenter:controlID];
+    CGRect r=[self pillRect:controlID];return CGPointMake(CGRectGetMidX(r),CGRectGetMidY(r));
+}
+- (CGFloat)editRadius:(int)controlID {
+    if(controlID==P5R_PAD_STICK)return [self stickR:0];
+    if(controlID==P5R_PAD_DPAD)return self.dpadR;
+    if(controlID==P5R_PAD_SWITCH)return K_SWAP_R*self.u;
+    if(controlID<=B_Y)return self.faceR;
+    if(isDrop(controlID))return [self dropR:controlID];
+    return K_CLICK_R*self.u;
+}
 
 // ---- Shapes ----
 static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
@@ -366,12 +454,12 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 - (void)refresh {   // pressed state → fill, sticks → knob position
     uint64_t all = _faceBits | _dpadBits | _btnBits;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1;
+    for (int b = 0; b < B_N; b++) { BOOL on = ((all >> b) & 1) || (_editing && (_editID==b || (_editID==P5R_PAD_DPAD && b>=B_LEFT)));
         _key[b].fillColor = (on ? k_on : k_idle).CGColor; _label[b].foregroundColor = (on ? k_textOn : k_text).CGColor; }
-    _swap.fillColor = (_swapHeld ? k_on : k_idle).CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : k_text).CGColor;
+    _swap.fillColor = ((_swapHeld || (_editing && _editID==P5R_PAD_SWITCH)) ? k_on : k_idle).CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : k_text).CGColor;
     for (int i = 0; i < 2; i++) {
         CGPoint h = [self stickHome:i], o = [self knobOffset:i];
-        _knob[i].position = CGPointMake(h.x + o.x, h.y + o.y); _knob[i].fillColor = (_stick[i] ? k_on : k_idle).CGColor;
+        _knob[i].position = CGPointMake(h.x + o.x, h.y + o.y); _knob[i].fillColor = ((_stick[i] || (_editing && _editID==P5R_PAD_STICK)) ? k_on : k_idle).CGColor;
     }
     [CATransaction commit];
 }
@@ -380,6 +468,7 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 // Physical pads are read by the app shell (P5RController -update -> dm_pad_set); this view only hides
 // its own controls while one is connected, so both sources never fight over the same channel.
 - (void)padsChanged {
+    if(_editing)return;
     BOOL any = NO;
     for (GCController *c in GCController.controllers) if (c.extendedGamepad) any = YES;
     dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });
@@ -387,6 +476,11 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
 @end
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
+UIView *dm_gamepad_layout_preview(CGRect frame) { return [[DmGamepad alloc] initWithFrame:frame editing:YES]; }
+void dm_gamepad_layout_defaults(UIView *preview) { if([preview isKindOfClass:DmGamepad.class])[(DmGamepad *)preview defaultPositions]; }
+void dm_gamepad_layout_save(UIView *preview) {
+    if([preview isKindOfClass:DmGamepad.class]){[(DmGamepad *)preview savePositions];[g_view reset];[g_view reloadPositions];}
+}
 void dm_gamepad_frame(double time) { [g_view updateCamera:time]; }
 // The old P5R overlay exposed -resetInput; keep the same name for the shell's calls.
 @interface DmGamepad (P5RShell)

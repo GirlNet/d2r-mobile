@@ -11,12 +11,12 @@
 #include "dm_i18n.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "resources.h"
+#import "dm_pad.h"
+#import "pad_editor.h"
 #include "boot_probe.h"
+#include "player_config.h"
 // 移植自 nxnative 的虚拟手柄：左摇杆、按钮和相对滑动视角；显示节拍负责清除停手后的镜头输入。
 // Virtual pad adapted from nxnative: left stick, buttons and relative camera swipes; the display tick clears idle camera input.
-extern UIView *dm_gamepad_view(CGRect frame);
-extern void dm_gamepad_reset(void);
-extern void dm_gamepad_frame(double time);
 extern void dm_haptics_stop(void);
 extern void dm_haptics_ios_init(void);
 #include <fcntl.h>
@@ -29,6 +29,7 @@ static int started;
 static NSURL *activeExternalRoot;
 // 只读系统状态，按两秒缓存供宿主计时日志取用；不改变系统功耗或游戏画质。
 // Cache read-only system state every two seconds for host timing logs; do not change power policy or game quality.
+#if DM_RUNTIME_DIAGNOSTICS
 static _Atomic int powerThermal = -1;
 static _Atomic double powerBrightness = -1;
 static double powerNextSample;
@@ -46,6 +47,11 @@ static void samplePower(BOOL force) {
             UIApplication.sharedApplication.applicationState==UIApplicationStateActive);
     previousLow=low;
 }
+#else
+int dm_thermal_now(void) { return -1; }
+double dm_brightness_now(void) { return -1; }
+static void samplePower(BOOL force) { (void)force; }
+#endif
 static void *runHost(void *unused);
 int dm_main(int argc, char **argv);
 static NSString *text(const char *key) { return @(dm_ui(key)); }
@@ -136,6 +142,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 @property UILabel *status;
 @property UIButton *launch;
 @property UIButton *settingsButton;
+@property UIButton *layoutButton;
 @property UIButton *resourceButton;
 @property UIView *launcherView;
 @property CADisplayLink *poll;
@@ -177,7 +184,10 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     subtitle.font=[UIFont systemFontOfSize:15];subtitle.textColor=UIColor.lightGrayColor;[menu addSubview:subtitle];
     self.launch=[self button:"dmP5RLaunch" action:@selector(startGuest)];self.launch.backgroundColor=[UIColor colorWithRed:.91 green:.035 blue:.11 alpha:1];
     self.launch.layer.cornerRadius=10;[menu addSubview:self.launch];
-    self.settingsButton=[self button:"dmP5RSettings" action:@selector(showSettings)];[menu addSubview:self.settingsButton];
+    self.settingsButton=[self button:"dmP5RSettings" action:@selector(showSettings)];
+    self.layoutButton=[self button:"dmP5RPadLayout" action:@selector(showPadLayout)];
+    UIStackView *actions=[[UIStackView alloc] initWithArrangedSubviews:@[self.settingsButton,self.layoutButton]];
+    actions.spacing=20;actions.translatesAutoresizingMaskIntoConstraints=NO;[menu addSubview:actions];
     self.resourceButton=[self button:"dmP5RChooseResources" action:@selector(pickResourceFolder)];
     [self.resourceButton setTitleColor:[UIColor colorWithRed:1 green:.35 blue:.4 alpha:1] forState:UIControlStateNormal];
     self.status=[UILabel new];self.status.textColor=UIColor.lightGrayColor;self.status.numberOfLines=0;self.status.font=[UIFont systemFontOfSize:15];
@@ -198,9 +208,9 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         [self.launch.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-24],
         [self.launch.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-16],[self.launch.heightAnchor constraintEqualToConstant:56],startWidth,
         [self.launch.widthAnchor constraintLessThanOrEqualToAnchor:safe.widthAnchor multiplier:.48],
-        [self.settingsButton.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:24],
-        [self.settingsButton.centerYAnchor constraintEqualToAnchor:self.launch.centerYAnchor],[self.settingsButton.heightAnchor constraintGreaterThanOrEqualToConstant:44],
-        [self.settingsButton.trailingAnchor constraintLessThanOrEqualToAnchor:self.launch.leadingAnchor constant:-16],
+        [actions.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:24],
+        [actions.centerYAnchor constraintEqualToAnchor:self.launch.centerYAnchor],[actions.heightAnchor constraintGreaterThanOrEqualToConstant:44],
+        [actions.trailingAnchor constraintLessThanOrEqualToAnchor:self.launch.leadingAnchor constant:-16],
         [scroll.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],[scroll.trailingAnchor constraintLessThanOrEqualToAnchor:safe.trailingAnchor constant:-24],panelWidth,
         [scroll.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:22],[scroll.bottomAnchor constraintEqualToAnchor:self.launch.topAnchor constant:-16],
         [resources.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
@@ -255,6 +265,11 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     navigation.modalPresentationStyle=UIModalPresentationFormSheet;[self presentViewController:navigation animated:YES completion:nil];
 }
 - (void)closeSettings {[self dismissViewControllerAnimated:YES completion:nil];}
+- (void)showPadLayout {
+    if(started || self.checkingResources)return;
+    P5RPadEditor *editor=[P5RPadEditor new];editor.modalPresentationStyle=UIModalPresentationFullScreen;
+    [self presentViewController:editor animated:YES completion:nil];
+}
 - (void)pickResourceFolder {
     if(started || self.checkingResources)return;
     UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
@@ -266,7 +281,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 }
 - (void)validateURL:(NSURL *)url save:(BOOL)save launch:(BOOL)launch {
     if(started || self.checkingResources || !url)return;
-    self.checkingResources=YES;self.launch.enabled=self.settingsButton.enabled=self.resourceButton.enabled=NO;
+    self.checkingResources=YES;self.launch.enabled=self.settingsButton.enabled=self.layoutButton.enabled=self.resourceButton.enabled=NO;
     self.status.text=text("dmP5RResourcesChecking");
     BOOL lease=[url startAccessingSecurityScopedResource];
     NSURL *documents=[NSURL fileURLWithPath:NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject isDirectory:YES];
@@ -282,7 +297,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         NSData *bookmark=paths&&save?[url bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark includingResourceValuesForKeys:nil relativeToURL:nil error:nil]:nil;
         if(paths && save && !bookmark){paths=nil;errorKey=@"dmP5RResourcesAccess";}
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.checkingResources=NO;self.settingsButton.enabled=self.resourceButton.enabled=YES;
+            self.checkingResources=NO;self.settingsButton.enabled=self.layoutButton.enabled=self.resourceButton.enabled=YES;
             if(paths) {
                 if(self.resourceLease)[self.resourceURL stopAccessingSecurityScopedResource];
                 self.resourceURL=url;self.resourceLease=lease;self.resourcePaths=paths;
@@ -343,10 +358,8 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     NSDictionary *identity=self.identity;
     NSString *msl=self.resourcePaths[@"shaders"].path;
     setenv("DM_MSL_DIR",msl.fileSystemRepresentation,1);
-    // Documents/p5r-config.txt：一行一个 KEY=VALUE，给宿主诊断开关用，改完重启游戏即可生效。
-    // 只接受 DM_ 前缀，且不允许改写路径 / 归档 / 配置档这些由壳自己决定的键。
-    // Documents/p5r-config.txt: one KEY=VALUE per line for host diagnostics; restart the game to apply.
-    // Only DM_ keys are accepted, and the ones the shell owns (paths, profile) cannot be overridden.
+    // 玩家构建只读取已验证的兼容性覆盖；开发构建仍接受 DM_ 诊断键，路径与配置档始终由壳管理。
+    // Player builds accept verified compatibility overrides only; developer builds accept DM_ diagnostics, while paths and profile remain shell-owned.
     { NSString *text = [NSString stringWithContentsOfFile:[documents stringByAppendingPathComponent:@"p5r-config.txt"]
                                                  encoding:NSUTF8StringEncoding error:nil];
       if (text.length) {
@@ -360,11 +373,18 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
             NSString *value = [[line substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
             if (![key hasPrefix:@"DM_"] || ![key length] || ![value length]) continue;
             if ([@[@"DM_ROMFS",@"DM_SAVE",@"DM_TEMP",@"DM_GUEST_PROFILE",@"DM_MSL_DIR",@"DM_NVN_SHMAP"] containsObject:key]) continue;
+            if(!DM_RUNTIME_DIAGNOSTICS && !p5r_player_config_allowed(key.UTF8String,value.UTF8String))continue;
             setenv(key.UTF8String, value.UTF8String, 1);
             if (applied.count < 16) [applied addObject:[NSString stringWithFormat:@"%@=%@", key, value]];
         }
         if (applied.count) LOG("P5R config: %s", ([applied componentsJoinedByString:@" "]).UTF8String);
       } }
+#if !DM_RUNTIME_DIAGNOSTICS
+    // 未采纳的测试路径保持关闭，玩家配置无法重新开启。
+    // Keep unadopted test paths off, regardless of older player configuration files.
+    setenv("DM_P5R_COMPUTE_BATCH","0",1);setenv("DM_P5R_RT_CONTINUE","0",1);
+    setenv("DM_P5R_NO_DEPTHBOUNDS","1",1);setenv("DM_P5R_SKIP_DEPTH_DRAW","0",1);setenv("DM_P5R_COND_IGNORE","1",1);
+#endif
     // 启动菜单是本次画质选择的来源；覆盖旧诊断文件，并同步可能已查询过的运行模式缓存。
     // The launch menu owns this launch's quality choice; override stale diagnostics and update any previously queried operation-mode cache.
     int renderPreset=self.renderMode.selectedSegmentIndex==1?0:1;

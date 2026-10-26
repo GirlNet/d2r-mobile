@@ -27,7 +27,7 @@ def sources():
     result = [host / f for f in CORE] + [p for p in sorted(host.glob('hle_*.c')) if p.name not in EXCLUDE]
     for directory in ('dm/gfx', 'dm/gfx/nvn', 'dm/gfx/tex'):
         result += sorted(p for p in (REPO / directory).iterdir() if p.suffix in ('.c', '.m', '.S'))
-    return result + [REPO / 'dm/ios/p5r/diagnostics.c', REPO / 'dm/ios/p5r/boot_probe.m', REPO / 'dm/ios/p5r/dm_pad.m', REPO / 'dm/ios/p5r/haptics.m', REPO / 'dm/ios/p5r/resources.m', REPO / 'dm/ios/p5r/app.m']
+    return result + [REPO / 'dm/ios/p5r/diagnostics.c', REPO / 'dm/ios/p5r/boot_probe.m', REPO / 'dm/ios/p5r/dm_pad.m', REPO / 'dm/ios/p5r/pad_editor.m', REPO / 'dm/ios/p5r/haptics.m', REPO / 'dm/ios/p5r/resources.m', REPO / 'dm/ios/p5r/app.m']
 
 
 def fingerprint_sources(plan):
@@ -47,7 +47,7 @@ def run(command, log):
     return result.returncode
 
 
-def build(output,metal_backend=4):
+def build(output,metal_backend=4,diagnostics=False):
     if metal_backend not in (3,4):raise ValueError('Metal backend must be 3 or 4')
     # 背景由用户在本地提供；两种设备的图片必须成对存在，不进入公共仓库。
     # Users supply backgrounds locally; require a complete device pair and keep the images out of the public repository.
@@ -66,6 +66,7 @@ def build(output,metal_backend=4):
     flags = ['xcrun', '--sdk', 'iphoneos', 'clang', '-arch', 'arm64', '-miphoneos-version-min=26.0', '-O1',
              '-fobjc-arc', '-fblocks', '-Werror=implicit-function-declaration', '-DDM_P5R_ONLY=1', '-DDM_SHELL=1',
              '-DDM_P5R_METALFX=1',
+             '-DDM_RUNTIME_DIAGNOSTICS='+str(int(diagnostics)),
              '-DDM_NVN_M3='+str(int(metal_backend==3)),
              '-I' + str(REPO / 'dm/host'), '-I' + str(REPO / 'dm/gfx/nvn/include'), '-I' + str(vp9 / 'include')]
     plan = []
@@ -78,6 +79,7 @@ def build(output,metal_backend=4):
     failed = [str(p[0].relative_to(REPO)) for p, code in zip(plan, results) if code]
     fingerprint_files = fingerprint_sources(plan)
     configuration=dict(metal_backend='Metal '+str(metal_backend),architecture='arm64',minimum_ios='26.0',optimization='O1',
+                       runtime_diagnostics=bool(diagnostics),
                        vp9_decoder='libvpx-'+build_vp9.VERSION, vp9_source_sha256=build_vp9.SOURCE_SHA256)
     report = dict(profile='p5r', game_content_included=False, signed=False, runtime_ready=False,
                   menu_backgrounds=[dict(name=p.name,sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in backgrounds],
@@ -116,9 +118,17 @@ def build(output,metal_backend=4):
         raise RuntimeError('Linked host lacks an iOS entry point/platform declaration')
     if 'sectname __dm' in load_commands: raise RuntimeError('Game module sections must not appear in the shell')
     report['linked'] = True
+    if not diagnostics:
+        if run(['xcrun', 'nm', executable], logs / 'player-symbols.log'):
+            raise RuntimeError('Cannot inspect player build symbols')
+        symbols=(logs / 'player-symbols.log').read_text()
+        forbidden=['_g_compute_probe_', '_g_pg4_', '_nvn_prof_entry', '_cctx_snap', '_g_sr', '_g_draw_sites']
+        retained=[symbol for symbol in forbidden if any(line.split()[-1].startswith(symbol) for line in symbols.splitlines() if line.split())]
+        if retained: raise RuntimeError('Player package retained runtime diagnostics: '+', '.join(retained))
+        report['runtime_observation_removed']=forbidden
     info = dict(CFBundleExecutable='P5RMobile', CFBundleIdentifier='org.p5r.experimental', CFBundleName='P5RMobile',
                 CFBundleDisplayName='P5R Mobile', CFBundlePackageType='APPL', CFBundleInfoDictionaryVersion='6.0',
-                CFBundleVersion='15', CFBundleShortVersionString='0.15', MinimumOSVersion='26.0',
+                CFBundleVersion='16', CFBundleShortVersionString='0.16', MinimumOSVersion='26.0',
                 CFBundleSupportedPlatforms=['iPhoneOS'], UIDeviceFamily=[1,2], LSRequiresIPhoneOS=True,
                 UIFileSharingEnabled=True, LSSupportsOpeningDocumentsInPlace=True, UILaunchScreen={},
                 LSSupportsGameMode=True, GCSupportsGameMode=True,
@@ -151,6 +161,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Link and package the game-free P5R iOS host on macOS.')
     parser.add_argument('output', type=Path)
     parser.add_argument('--metal-backend',type=int,choices=(3,4),default=4,help='Use Metal 4 by default; Metal 3 remains available for comparisons')
+    parser.add_argument('--diagnostics',action='store_true',help='Developer build with runtime probes and performance observation; disabled in player builds')
     args = parser.parse_args()
-    try: build(args.output,args.metal_backend)
+    try: build(args.output,args.metal_backend,args.diagnostics)
     except (ValueError, OSError, RuntimeError) as error: parser.exit(1, str(error) + '\n')

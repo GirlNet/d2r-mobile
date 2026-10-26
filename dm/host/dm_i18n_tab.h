@@ -400,4 +400,8 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmP5RResourcesIncomplete", "资源不完整或已损坏，请重新解压配套资源包。", "Resources are incomplete or damaged. Extract the supplied resource package again." },
     { "dmP5RResourcesNoProgram", "安装包缺少游戏启动组件，请重新安装。", "This installation is missing the game component. Reinstall the app." },
     { "dmP5RResourcesKept", "%@ 当前仍使用：%@", "%@ Still using: %@" },
+    { "dmP5RPadLayout", "按键布局", "Control layout" },
+    { "dmP5RPadLayoutHint", "拖动按键调整位置，拖动标题移动此面板。", "Drag controls to reposition them. Drag the title to move this panel." },
+    { "dmP5RPadReset", "恢复默认", "Reset" },
+    { "dmP5RPadSave", "保存", "Save" },
 };

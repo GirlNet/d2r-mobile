@@ -375,7 +375,7 @@ void mtl_init(void) {
     g_dm_present_link = link ? atoi(link) : 1; if (g_dm_present_link < 0 || g_dm_present_link > 2) g_dm_present_link = 1;   // 缺省 1（真机同进程交替：负载超一拍时长帧 15% → 0、帧间隔变匀；稳 60 时与 0 无差别）；DM_PRESENT_LINK=0 关   // 1 = 60 Hz 节拍每拍出图；2 = 120 Hz 节拍、游戏隔拍出一帧（落后时下一个 8.33 ms 拍就能上屏） | Default 1 (real-device same-process alternation: when load exceeds one display-link period, long frames 15% → 0 and frame intervals even out; no difference from 0 at a steady 60); DM_PRESENT_LINK=0 turns it off   // 1 = present on every tick of a 60 Hz display link; 2 = 120 Hz display link, the game presents a frame every other display-link tick (when behind, it can present on the next 8.33 ms display-link tick)
     const char *latency = getenv("DM_PRESENT_LATENCY");
     if (latency && atoi(latency) > 0) g_present_latency = atoi(latency);
-    g_res_check_on = getenv("DM_RES_CHECK") != NULL;
+    g_res_check_on = DM_RUNTIME_DIAGNOSTICS && getenv("DM_RES_CHECK") != NULL;
     g_dev = MTLCreateSystemDefaultDevice();
     if (!g_dev) MDIE("没有 Metal 设备");
     if (!g_dev.hasUnifiedMemory) MDIE("需要统一内存设备（零拷贝内存池）");
@@ -713,6 +713,7 @@ extern int g_frz_on; static int g_frz_state;   // 世界冻结：本帧锁存的
 // DM_NVN_PASSGPU_SERIAL=1 (for measurement): before creating each encoder on the main command buffer, encode 'signal n+1 → wait for signal n+1' - the signal is only raised once all prior work has completed,
 // so the following encoder starts only after the previous one has fully finished; on TBDR passes no longer overlap in the pipeline, and the per-pass start-to-end span of DM_NVN_PASSGPU is that pass's exclusive time (the whole-frame total is inflated; look only at relative cost)
 static void ser_gate(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     static int on = -1; static id<MTLEvent> ev; static uint64_t n;
     if (on < 0) { on = getenv("DM_NVN_PASSGPU_SERIAL") != NULL; if (on) { ev = [g_dev newEvent]; MLOG("DM_NVN_PASSGPU_SERIAL：通道串行化（测量用，耗时偏大）"); } }
     if (!on) return;
@@ -840,7 +841,7 @@ static uint64_t gpu_ticks(void) { struct timespec t; clock_gettime(CLOCK_MONOTON
 static uint64_t bp_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
 static uint64_t g_bp_t0;   // 进程启动（本模块装入）时刻 | Time of process start (when this module is loaded)
 __attribute__((constructor)) static void bp_t0(void) { g_bp_t0 = bp_now(); }
-static int bootprof(void) { static int v = -1; if (v < 0) v = getenv("DM_BOOTPROF") != NULL; return v; }
+static int bootprof(void) { if(!DM_RUNTIME_DIAGNOSTICS)return 0; static int v = -1; if (v < 0) v = getenv("DM_BOOTPROF") != NULL; return v; }
 static uint64_t g_bp_lib_n, g_bp_lib_ns, g_bp_pso_n, g_bp_pso_ns, g_bp_up_bytes, g_bp_first_present;
 static uint64_t g_up_total_ns;   // 上传累计耗时（与逐帧 @upload_ms 同源） | Cumulative upload time (same source as the per-frame @upload_ms)
 // ---------- 按帧归集 GPU 时间 ----------
@@ -862,6 +863,7 @@ static _Atomic uint64_t g_cur_frame;
 //   <fragment shader key prefix> or *   the phase drops all draws of these fragment shaders (the picture will be wrong; it only measures 'how much this kind of draw is worth'; a nearly idle category needs a round of its own)
 // Readings: each phase discards its first 45 frames (transition + present lag); for the remaining frames, the mean of the actual present interval (same source as perf.txt) and the frame counts in the three buckets 16.7 / 25 / ≥33 ms, one log line 「UB 上屏」(UB present).
 // Table output: $DM_ROOT/run/ruler/ub_table.py; real-device script: $DM_ROOT/run/ruler/ub_alt.sh.
+#if DM_RUNTIME_DIAGNOSTICS
 static int g_ub_n = -1, g_ub_N = 180; static _Atomic int g_ub_cur = -1; static char g_ub_name[16][16], g_ub_keys[16][16][48]; static int g_ub_nk[16];
 static _Atomic int g_ubp_on, g_ubp_c[4]; static _Atomic uint64_t g_ubp_sum_us;
 void mtl_ub_present(double iv) {   // 出图线程每帧调一次：实际上屏间隔 ms（−1 = 被丢弃，0 = 无读数） | Called once per frame by the present thread: actual present interval in ms (−1 = dropped, 0 = no reading)
@@ -909,16 +911,23 @@ static int ub_skip(const char *key) {   // 本相要不要丢掉这个片元着�
     return 0;
 }
 void mtl_set_frame(uint64_t f) { atomic_store(&g_cur_frame, f); if (g_ub_n) ub_frame(f); }
+#endif
+#if !DM_RUNTIME_DIAGNOSTICS
+void mtl_set_frame(uint64_t f) { atomic_store(&g_cur_frame,f); }
+void mtl_ub_present(double iv) { (void)iv; }
+#endif
 // GPU 计时登记：提交前 gpu_tag_begin(帧)，完成时 gpu_tag_done(帧, GPU 起, GPU 止)（CACurrentMediaTime 基准秒）。
 // 旧队列命令缓冲走 gpu_tag_f；Metal 4 主提交在 mtl_sub_commit 的 feedback 里回填（换 Metal 4 时调用点全丢，「计时」行的 GPU 一栏成了空）
 // GPU timing registration: gpu_tag_begin(frame) before commit, gpu_tag_done(frame, GPU start, GPU end) on completion (seconds on the CACurrentMediaTime base).
 // Old-queue command buffers go through gpu_tag_f; the Metal 4 main submission backfills in the feedback of mtl_sub_commit (when switching to Metal 4 all the call sites were lost and the GPU column of the 「计时」(timing) line became empty)
 static void gpu_tag_begin(uint64_t f) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) { atomic_store(&g_gpu[k].frame, f); atomic_store(&g_gpu[k].ns, 0); atomic_store(&g_gpu[k].pending, 0); atomic_store(&g_gpu[k].t0, UINT64_MAX); atomic_store(&g_gpu[k].t1, 0); }
     atomic_fetch_add(&g_gpu[k].pending, 1);
 }
 static void gpu_tag_done(uint64_t f, double g0, double g1) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) return;
     double d = g1 - g0;
@@ -930,7 +939,7 @@ static void gpu_tag_done(uint64_t f, double g0, double g1) {
     }
     atomic_fetch_sub(&g_gpu[k].pending, 1);
 }
-static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { gpu_tag_begin(f); [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { gpu_tag_done(f, c.GPUStartTime, c.GPUEndTime); }]; }
+static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { if(!DM_RUNTIME_DIAGNOSTICS)return; gpu_tag_begin(f); [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { gpu_tag_done(f, c.GPUStartTime, c.GPUEndTime); }]; }
 void gpu_tag(id<MTLCommandBuffer> cb) { gpu_tag_f(cb, atomic_load(&g_cur_frame)); }
 double mtl_gpu_ms(uint64_t f) {
     unsigned k = f % GRING;
@@ -967,10 +976,16 @@ uint64_t mtl_sub_commit(void) {
     pg4_commit(o);
 #endif
     [FB_ON(o, g_cb) FB_SEL:^(FB_ARG f) { (void)f; for (dispatch_block_t block in commit_blocks) block(); }];
+#if DM_RUNTIME_DIAGNOSTICS
     uint64_t gpu_f = atomic_load(&g_cur_frame); gpu_tag_begin(gpu_f);
     NSString *cctx = @(cctx_snap());
+#else
+    NSString *cctx = @"player build";
+#endif
     [FB_ON(o, g_cb) FB_SEL:^(FB_ARG cb) {
+#if DM_RUNTIME_DIAGNOSTICS
         gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
+#endif
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】命令缓冲错误详情 fence=%llu：%s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】出错那次提交的现场 fence=%llu：%s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】命令缓冲执行出错：%s", cb.error.localizedDescription.UTF8String); }
         for (int i = 0; i < n; i++) {
             if (ops[i].kind == 1) { if (ops[i].mode == 1) *ops[i].val += ops[i].v; else *ops[i].val = ops[i].v; }
@@ -1124,15 +1139,18 @@ static int bc_recheck(const tex_t *t, uint64_t *stamp) {
 // Compressed-atlas evidence: read back up to two large BC textures that received a b2t, writing them
 // into DM_TEMP. Answers directly whether the glyph page has any content.
 static struct { void *tex; uint64_t ser; int want, sent, block; } g_ad[14];   // [0] 512x1024 字形页，其余按出现顺序；block=1 表示 BC 块行；[13] 绘制当刻的文字图集 | [0] the 512x1024 glyph page, the rest in order; block=1 means BC block rows; [13] the text atlas as it is at draw time
-static void atlas_dump_named(id<MTLTexture> t, uint64_t ser) {   // 绘制当刻的文字图集（序号 999999） | Text atlas at draw time (serial 999999)
+static void atlas_dump_named(id<MTLTexture> t, uint64_t ser) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;   // 绘制当刻的文字图集（序号 999999） | Text atlas at draw time (serial 999999)
     if (!t || g_ad[13].want || g_ad[13].sent) return;
     g_ad[13].tex = (__bridge void *)t; g_ad[13].ser = ser; g_ad[13].want = 1; g_ad[13].block = 1;
 }
-static void target_dump_request(id<MTLTexture> t) {   // 文字那一趟的颜色目标（序号记 0，文件名 p5r-atlas-0.bin） | colour target of the text pass (serial 0, file p5r-atlas-0.bin)
+static void target_dump_request(id<MTLTexture> t) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;   // 文字那一趟的颜色目标（序号记 0，文件名 p5r-atlas-0.bin） | colour target of the text pass (serial 0, file p5r-atlas-0.bin)
     if (!t || g_ad[12].want || g_ad[12].sent) return;
     g_ad[12].tex = (__bridge void *)t; g_ad[12].ser = 0; g_ad[12].want = 1; g_ad[12].block = 0;
 }
 static void atlas_dump_request(id<MTLTexture> t, uint64_t ser, uint32_t w, uint32_t h) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     if (!t || w < 512 || h < 512) return;
     int slot = (w == 512 && h == 1024) ? 0 : -1;
     if (slot < 0) for (int i = 1; i < 12; i++) if (!g_ad[i].want && !g_ad[i].sent) { slot = i; break; }
@@ -1140,6 +1158,7 @@ static void atlas_dump_request(id<MTLTexture> t, uint64_t ser, uint32_t w, uint3
     g_ad[slot].tex = (__bridge void *)t; g_ad[slot].ser = ser; g_ad[slot].want = 1; g_ad[slot].block = 1;
 }
 static void atlas_dump_begin(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
 #if !DM_NVN_M3
     return;   // Metal 4 command buffers have neither blitCommandEncoder nor addCompletedHandler; the readback is an M3 diagnostic | M4 命令缓冲没有这两个方法，读回只在 M3 用
 #else
@@ -1836,6 +1855,7 @@ static _Atomic uint64_t g_subprof_tex_prep_n, g_subprof_args_n;
 static _Atomic uint64_t g_subprof_draw_state_n, g_subprof_draw_call_n;
 static _Atomic uint64_t g_subprof_pso_n, g_subprof_dss_n, g_subprof_fixed_n, g_subprof_vbuf_n;
 static inline int subprof_on(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return 0;
     if (g_subprof < 0) {
         const char *value = getenv("DM_NVN_SUBPROF");
         g_subprof = value && strcmp(value, "0");
@@ -1860,6 +1880,7 @@ static int p5r_skip_depth_draws(void) {
     return enabled;
 }
 static int p5r_draw_debug(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return 0;
     static int enabled = -1;
     if (enabled < 0) {
         const char *value = getenv("DM_P5R_DRAW_DEBUG");
@@ -1868,6 +1889,7 @@ static int p5r_draw_debug(void) {
     return enabled;
 }
 static int p5r_perf_probe(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return 0;
     static int enabled = -1;
     if (enabled < 0) {
         const char *value = getenv("DM_P5R_PERF_PROBE");
@@ -1880,6 +1902,7 @@ static int p5r_perf_probe(void) {
 // DM_NVN_PASSDUMP: records pass attachments / samples / presents one by one (textures by serial) for offline data-flow analysis; the pass numbers of P / D / R / S lines agree (= g_stat_pass after the pass is opened)
 // DM_NVN_PASSDUMP=frame number, or start-end (inclusive at both ends)
 static int passdump(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return 0;
 #ifdef NVN_RT_RANGE_TEST
     if (g_rr_checking) return 0;
 #endif
@@ -1980,6 +2003,7 @@ static inline void args_dirty_all(void);
 typedef struct { double sum, last; uint64_t n; pg_pass meta; } pg_stat;
 static pg_stat g_pg_st[256]; static uint64_t g_pg_rep_frame;
 static int pg_on(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return 0;
     if (g_pg >= 0) return g_pg;
     const char *e = getenv("DM_NVN_PASSGPU"); g_pg = 0;
     if (!e) return 0;
@@ -2185,7 +2209,8 @@ static void xv_violation(const xv_ent *e, const char *why) {
     const char *p = getenv("DM_XV_FILE"); if (p && *p) { FILE *f = fopen(p, "a"); if (f) { fprintf(f, "%016llx\t%s\t%llu\n", (unsigned long long)e->tag, why, (unsigned long long)g_stat_pass); fclose(f); } }
     xv_drop_all_of(e->ser);
 }
-static void xv_check(uint64_t ser, uint32_t lv, uint32_t sl, const char *why) { xv_ent *e = xv_find(ser, lv, sl); if (e && (e->state == XV_INVALID || e->state == XV_PROBE)) { xv_ent copy = *e; xv_violation(&copy, why); } }
+static void xv_check(uint64_t ser, uint32_t lv, uint32_t sl, const char *why) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return; xv_ent *e = xv_find(ser, lv, sl); if (e && (e->state == XV_INVALID || e->state == XV_PROBE)) { xv_ent copy = *e; xv_violation(&copy, why); } }
 static void xv_good(xv_ent *e) { if (e->state == XV_PROBE) xv_trial_get(e->tag, 1); xv_drop(e->ser, e->lv, e->sl); }   // 合规触碰：试用期计一次，条目回到有效 | Compliant touch: counts once toward the trial period, and the entry returns to valid
 static void xv_touch_add(uint64_t ser, uint32_t lv, uint32_t sl, int good) { for (int i = 0; i < g_xv_ntouch; i++) if (g_xv_touch[i].ser == ser && g_xv_touch[i].lv == lv && g_xv_touch[i].sl == sl) return; if (g_xv_ntouch < 128) g_xv_touch[g_xv_ntouch++] = (xv_touch){ser, lv, sl, (uint8_t)good}; }
 static int xv_first_good(uint64_t ser, uint32_t lv, uint32_t sl) { for (int i = 0; i < g_xv_ntouch; i++) if (g_xv_touch[i].ser == ser && g_xv_touch[i].lv == lv && g_xv_touch[i].sl == sl) return g_xv_touch[i].good; return 0; }
@@ -2231,7 +2256,7 @@ static void defer_fallback(void);
 // DM_NVN_ENC_LABEL=1: label every render encoder with 'p<index of the render pass within the frame> <width>x<height> <first 8 digits of the first draw's fragment key> d<draw count>'; in Instruments (xctrace Game Performance / Metal System Trace)
 // the encoder track and the GPU interval table carry this name directly, and shader_map.tsv maps it back to the shader; off by default (one string allocation per pass)
 static int g_el_w, g_el_h, g_el_draws; static char g_el_key[12];
-static int enc_label_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_ENC_LABEL"); v = e && atoi(e); } return v; }
+static int enc_label_on(void) { if(!DM_RUNTIME_DIAGNOSTICS)return 0; static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_ENC_LABEL"); v = e && atoi(e); } return v; }
 static void ghost_flush(void);
 static void rp_end(void) { if (g_enc) {
     uint64_t prof_t0 = subprof_now();
@@ -3914,10 +3939,10 @@ static int encode_args_impl(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stag
     // Older API: every resource a shader accesses indirectly through an argument block must have its usage declared on this encoder, so that the system knows its ordering dependency against other encoders (upload copies, other passes);
     // without the declaration a read-only texture gets out of order with the copy that writes it (measured before the move to Metal 4). Repeated declarations within one encoder are idempotent
     #define USE(r, u) do { id<MTLResource> r_ = (id<MTLResource>)(r); if (r_) { if (nvn_stage == 5) [(id<MTLComputeCommandEncoder>)en useResource:r_ usage:(u)]; else if (!m3_use_seen((__bridge void *)r_, (uint32_t)(u))) [(id<MTLRenderCommandEncoder>)en useResource:r_ usage:(u) stages:MTLRenderStageVertex | MTLRenderStageFragment]; } \
-        if (__builtin_expect(g_res_check_on, 0)) res_check((r), sh->key, reg); } while (0)
-    #define USE_SAMP(r, u) do { (void)(u); if (__builtin_expect(g_res_check_on, 0)) res_check((r), sh->key, reg); } while (0)   // 采样器不是资源，不用声明 | samplers are not resources and need no declaration
+        if (DM_RUNTIME_DIAGNOSTICS && __builtin_expect(g_res_check_on, 0)) res_check((r), sh->key, reg); } while (0)
+    #define USE_SAMP(r, u) do { (void)(u); if (DM_RUNTIME_DIAGNOSTICS && __builtin_expect(g_res_check_on, 0)) res_check((r), sh->key, reg); } while (0)   // 采样器不是资源，不用声明 | samplers are not resources and need no declaration
 #else
-    #define USE(r, u) do { (void)(u); if (__builtin_expect(g_res_check_on, 0)) res_check((r), sh->key, reg); } while (0)
+    #define USE(r, u) do { (void)(u); if (DM_RUNTIME_DIAGNOSTICS && __builtin_expect(g_res_check_on, 0)) res_check((r), sh->key, reg); } while (0)
     #define USE_SAMP(r, u) USE(r, u)
 #endif
     // DM_NVN_PASSDUMP：每通道每阶段第一次新编时记着色器键（K）与各绑定的实际来源（B：UBO 地址 / 长度 / 前 4 个浮点，贴图号与序号或「哑」）
@@ -4450,6 +4475,7 @@ static int fz_load_covers(int i, id<MTLTexture> t, NSUInteger level) {
 // 探针收尾：每个被改成清哨兵色的附件回读该级 / 层，与同格式 1x1 哨兵像素逐像素比，数剩余（> 0 即覆盖证明有误，报红）
 // Probe wrap-up: for every attachment changed to clear to the sentinel color, read back that level / layer, compare pixel by pixel with a same-format 1x1 sentinel pixel, and count what remains (> 0 means the coverage proof is wrong, report a failure)
 static void lp_finish(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     id<MTLCommandBuffer> dcb = q_cb();
     NSArray *ps = g_lp; g_lp = nil;
     for (NSArray *e in ps) {
@@ -5737,16 +5763,20 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     // Draws that cannot draw anything (both faces culled, empty scissor) return before the render pass is opened: otherwise the render pass is already open and on TBDR the whole attachment is loaded and stored for nothing
     // (Mac character select page: 3 render passes are opened only because of such draws, all loaded, zero draws)
     // Diagnostic switch for measuring an upper bound DM_NVN_SKIP_FS=<fragment key>[,<fragment key>...] (none by default): drops all draws of these fragment shaders (the picture will be wrong; only used in real-device ABA to measure "how much GPU time this class of draws is worth in total")
+#if DM_RUNTIME_DIAGNOSTICS
     { static char sk[16][20]; static int nsk = -1;
       if (nsk < 0) { nsk = 0; for (const char *q = getenv("DM_NVN_SKIP_FS"); q && *q && nsk < 16; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) { size_t n = strcspn(q, ","); if (n > 16) n = 16; memcpy(sk[nsk], q, n); sk[nsk++][n] = 0; }
                      if (nsk) MLOG("DM_NVN_SKIP_FS：丢弃 %d 个片元着色器的绘制（诊断，画面不对）", nsk); }
+#if DM_RUNTIME_DIAGNOSTICS
       if (g_ub_n > 0 && pr->sh[1] && !g_defer_replaying && ub_skip(pr->sh[1]->key)) return;   // 同进程交替测量：本相丢这一类 | In-process alternating measurement: this phase drops this class
+#endif
       if (nsk && pr->sh[1] && !g_defer_replaying) for (int i = 0; i < nsk; i++) if (!strncmp(pr->sh[1]->key, sk[i], strlen(sk[i]))) return; }
     // 同类诊断 DM_NVN_SKIP_SMALL=<宽>：丢掉目标宽度（按所挂的级）≤ 该值的全部绘制——量「极小通道整批丢掉」在并行流水下值多少（每通道固定开销）
     // Similar diagnostic DM_NVN_SKIP_SMALL=<width>: drop all draws whose target width (by the attached level) is <= this value -- measures how much "dropping tiny render passes in bulk" is worth under the parallel pipeline (fixed per-pass overhead)
     { static int small = -1; if (small < 0) { const char *e = getenv("DM_NVN_SKIP_SMALL"); small = e ? atoi(e) : 0; if (small) MLOG("DM_NVN_SKIP_SMALL：丢弃目标宽度 ≤ %d 的绘制（诊断，画面不对）", small); }
       if (small > 0 && R.has_rt && !g_defer_replaying) { int k = R.rt.n && R.rt.color[0] ? 0 : R.rt.depth ? 8 : -1;
         if (k >= 0) { uint64_t s_; int lv, sl; rt_sub(&R.rt, k, &s_, &lv, &sl); const tex_t *t = k == 8 ? R.rt.depth : R.rt.color[0]; if ((int)MAX(t->d.width >> lv, 1u) <= small) return; } } }
+#endif
     // 试验开关 DM_NVN_NOFXAA=1（缺省关，去留按视觉尺子 + 实机看图定）：跳过 FXAA 那次全屏绘制，后面的锐化 / 放大改读 FXAA 的输入（色调映射结果）
     // Experimental switch DM_NVN_NOFXAA=1 (off by default; keep or drop decided by the visual ruler + looking at the picture on a real machine): skips the FXAA full-screen draw, and the later sharpening / upscale reads FXAA's input instead (the tone mapping result)
     { static int nofxaa = -1; static uint64_t fx_from, fx_to; if (nofxaa < 0) { const char *e = getenv("DM_NVN_NOFXAA"); nofxaa = e && !strcmp(e, "1"); if (nofxaa) MLOG("DM_NVN_NOFXAA=1：跳过 FXAA"); }
@@ -5901,6 +5931,7 @@ frz_plain:;
     // 位置由 vp_c3 里的屏幕尺寸换算；那块为 0 时顶点会落到屏幕外或变成 NaN。
     // Text shader: on the first real draw, record viewport / scissor / cull and its uniform block.
     // Positions come from the screen size in vp_c3; a zero block sends vertices off-screen or to NaN.
+#if DM_RUNTIME_DIAGNOSTICS
     uint64_t prof_textdiag0 = subprof_now();
     if (p5r_draw_debug() && !dm_guest_d2r() && pr->sh[1] && !strncmp(pr->sh[1]->key, "720fc52850f3c28d", 16)) {
         static int once2;
@@ -5995,6 +6026,7 @@ frz_plain:;
         }
     }
     subprof_record(&g_subprof_textdiag_ns, &g_subprof_textdiag_n, prof_textdiag0);
+#endif
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
     enc_r_cull(en, p5r_no_cull() ? MTLCullModeNone : S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone);
     enc_r_winding(en, S.poly.front == NVN_FRONT_FACE_CCW ? MTLWindingCounterClockwise : MTLWindingClockwise);
@@ -6210,14 +6242,18 @@ static void bright_lut(NvShader *cs) {
     enc_c_pso(ce, ps); enc_c_dispatch(ce, MTLSizeMake((lut.width + 3) / 4, (lut.height + 3) / 4, (lut.depth + 3) / 4), MTLSizeMake(4, 4, 4)); enc_c_end(ce);
     args_dirty_all();
 }
+#if DM_RUNTIME_DIAGNOSTICS
 #include "nvn_compute_probe.inc"
+#endif
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
     NvProg *program=program_resources(programs_get(&S.programs),1u<<5);
     if (!program) { RED_ONCE(27, "派发前没有绑定程序"); return; }
     NvShader *cs = program->sh[5];
     if (!cs) { RED_ONCE(28, "派发的程序没有计算着色器（或未映射）"); return; }
+#if DM_RUNTIME_DIAGNOSTICS
     cs = compute_probe_shader(cs);
+#endif
     if (cs->builtin || !compute_batch_buffer_only(&cs->rf)) compute_batch_stop();
     const void *k = (__bridge const void *)cs;
     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
@@ -6253,7 +6289,9 @@ static void dispatch(const p_dispatch *dp) {
     if(!dm_guest_d2r())prepare_shader_textures(cs,5,textures);
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     id<MTLComputeCommandEncoder> ce = pg_compute();
+#if DM_RUNTIME_DIAGNOSTICS
     pg4_note(compute_probe_label(cs,dp));
+#endif
     enc_c_pso(ce, ps);
     encode_args(ce, cs, 5, 0,dm_guest_d2r()?NULL:textures);
     enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
@@ -7139,6 +7177,7 @@ static void shot(id<MTLTexture> src, const char *path, int screen, const int cro
 static long g_td_frame = -2; static const char *g_td_path; static NSMutableArray *g_td_list; static int g_td_done;
 static void td_dump(void);
 void td_note(RPD *pd, NSUInteger nc) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     if (g_td_frame == -2) { const char *e = getenv("DM_NVN_TEXDUMP"), *c = e ? strchr(e, ':') : NULL; g_td_frame = c ? atol(e) : -1; g_td_path = c ? c + 1 : NULL; g_td_list = [NSMutableArray array]; }
     if (g_td_frame < 0 || g_td_done) return;
     long f = (long)atomic_load(&g_cur_frame);
@@ -7153,6 +7192,7 @@ void td_note(RPD *pd, NSUInteger nc) {
     }
 }
 static void td_dump(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     g_td_done = 1;
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     mtl_finish_gpu();
@@ -7226,6 +7266,7 @@ static void td_dump(void) {
 static int g_ts_idx[64], g_ts_n = -1, g_ts_on; static uint64_t g_ts_first, g_ts_curf = ~0ull;
 static __strong id<MTLTexture> g_ts_att[8]; static uint64_t g_ts_ser[8]; static NSUInteger g_ts_lv[8]; static int g_ts_na;
 void ts_note(RPD *pd, NSUInteger nc) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     if (g_ts_n < 0) { g_ts_n = 0; const char *e = getenv("DM_NVN_TEXSNAP");
         for (const char *q = e; q && *q && g_ts_n < 64; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) g_ts_idx[g_ts_n++] = atoi(q); }
     g_ts_on = 0; if (!g_ts_n || g_td_frame < 0 || g_td_done) return;
@@ -7237,6 +7278,7 @@ void ts_note(RPD *pd, NSUInteger nc) {
         g_ts_att[g_ts_na] = t; g_ts_ser[g_ts_na] = R.rt.color[i] ? R.rt.color[i]->serial : 0; g_ts_lv[g_ts_na] = pd.colorAttachments[i].level; g_ts_na++; }
 }
 void ts_after(void) {
+    if(!DM_RUNTIME_DIAGNOSTICS)return;
     if (!g_ts_on) return;
     id<MTLCommandBuffer> dcb = q_cb();
     for (int i = 0; i < g_ts_na; i++) {
@@ -7484,6 +7526,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     // 单独的命令缓冲排在本帧渲染之后（同一队列按提交序执行），不等 GPU、不扰动帧节奏
     // DM_NVN_REGLUM=x0,y0,x1,y1:file (normalized coordinates): read back this region on every present and record "present sequence number, present time ns, region mean luminance, subsampled grayscale thumbnail (hex)" (diagnostic: verify that animation speed is independent of frame rate).
     // A separate command buffer is queued after this frame's rendering (the same queue executes in submit order); does not wait for the GPU and does not disturb frame pacing
+#if DM_RUNTIME_DIAGNOSTICS
     static int rl = -1; static float rr[4]; static FILE *rlf; static pthread_mutex_t rlmu = PTHREAD_MUTEX_INITIALIZER;
     if (rl < 0) { const char *e = getenv("DM_NVN_REGLUM"), *c = e ? strchr(e, ':') : NULL;
         rl = c && sscanf(e, "%f,%f,%f,%f", &rr[0], &rr[1], &rr[2], &rr[3]) == 4 && (rlf = fopen(c + 1, "w")) != NULL;
@@ -7517,6 +7560,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     pthread_mutex_unlock(&g_shotq_mu);
 
     if (g_burst_left > 0) burst_grab(src);   // 测试：连拍 | test: burst capture
+#endif
     CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer();
     if (!layer) return 0;
 #if !DM_NVN_M3
@@ -7527,9 +7571,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #endif
     present_pipeline(layer.pixelFormat);   // 和原路径一样，首帧编管线在取drawable之前 | Same as the original path: the first frame compiles the pipeline before taking the drawable
     if (g_grab_cb) grab_present(src, crop, layer.drawableSize);   // 整窗截图要的游戏画面（不加锁先看一眼，真取在函数里加锁） | Game picture needed by the whole-window screenshot (peek without the lock first; the real take locks inside the function)
+#if DM_RUNTIME_DIAGNOSTICS
     uint64_t dt0 = now_ns();
+#endif
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
+#if DM_RUNTIME_DIAGNOSTICS
     if (!supplied) g_drawable_ns += now_ns() - dt0;
+#endif
     if (!dr) return 0;
     int alloc_i = (int)(ticket % 3);
     if (g_present_alloc_fence[alloc_i]) {
@@ -7565,6 +7613,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #if !DM_NVN_M3
     DM_GPU_SUBMIT([g_q4 commit:buffers count:1 options:o]);
 #endif
+#if DM_RUNTIME_DIAGNOSTICS
     if (target_ts > 0) {
         static double leads[300], e2e[300];   // e2e：游戏入队 → 系统预定上屏（含在队列里等节拍回调的时间），输入延迟里我们这一侧能读到的全程 | e2e: game enqueue -> system-scheduled present (including the time waiting in the queue for the display-link callback), the full span of input latency that our side can read
         static uint64_t lead_n;
@@ -7580,6 +7629,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                  (unsigned long long)g_link_dropped, a[149], a[0], b[149], b[0], b[299]);
         }
     }
+#endif
 #if !DM_NVN_M3
     [g_q4 signalDrawable:dr];
 #endif
@@ -7587,11 +7637,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #if TARGET_OS_SIMULATOR   // iOS 模拟器 SDK 没有呈现时刻回调与最短显示时长（只作画面验收用，不计节拍） | The iOS simulator SDK has no presentation-time callback and no minimum display duration (used only for picture acceptance, display-link ticks are not counted)
     (void)period; M3_PRESENT(cb, dr);
 #else
+#if DM_RUNTIME_DIAGNOSTICS
     uint64_t pn = ticket;   // 按游戏出图序号（票号）记上屏时刻：hle 的上屏统计按「游戏第 n 次出图」取；显示节拍路径里实际出图次数 ≠ 游戏出图次数（旧帧会被合并丢弃） | Record the present time by the game's present sequence number (ticket number): hle's present statistics are taken by "the game's nth present"; in the display link path the actual present count != the game's present count (old frames get merged and dropped)
     [dr addPresentedHandler:^(id<MTLDrawable> d) {   // 真实呈现时刻（屏幕上真正换上这一帧的时间，CACurrentMediaTime 基准） | Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
         CFTimeInterval tt = d.presentedTime;
         g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
     }];
+#endif
     // 每张至少显示一个出图周期：GPU 完成时刻在 120 Hz 刷新边界附近抖动时，不再出现「25 ms + 8.33 ms」成对的顿挫
     // Each frame is displayed for at least one present period: when the GPU completion time jitters around a 120 Hz refresh boundary, the paired "25 ms + 8.33 ms" stutter no longer appears
 #if DM_NVN_M3
@@ -7774,12 +7826,14 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     if (t) { xv_check(t->serial, 0, 0, "出图"); if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial; }
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, present_start);
     link_sync();
+#if DM_RUNTIME_DIAGNOSTICS
     {   // 测试开关 DM_TEST_LINK_STALL=起始秒,时长秒：从第一次出图起算到点暂停显示节拍（模仿前台时节拍不回调），时长到了放开。验兜底用，产品不设 | Test switch DM_TEST_LINK_STALL=start seconds,duration seconds: counting from the first present, pause the display link at that point (imitating the display link not calling back while in the foreground) and release it when the duration is up. For verifying the fallback; not set in the product
         static double t0, at = -1, dur; static int st; double now = CACurrentMediaTime();
         if (at < 0) { at = 0; const char *e = getenv("DM_TEST_LINK_STALL"); if (e && sscanf(e, "%lf,%lf", &at, &dur) == 2 && at > 0 && dur > 0) { t0 = now; st = 1; } else at = 0; }
         if (st == 1 && link_on() && now - t0 >= at) { st = 2; mtl_link_pause(1); MLOG("DM_TEST_LINK_STALL：暂停显示节拍 %.1f 秒（帧 %llu）", dur, (unsigned long long)atomic_load(&g_cur_frame)); }
         else if (st == 2 && now - t0 >= at + dur) { st = 3; mtl_link_pause(0); MLOG("DM_TEST_LINK_STALL：放开显示节拍（帧 %llu）", (unsigned long long)atomic_load(&g_cur_frame)); }
     }
+#endif
     pthread_mutex_lock(&g_pq_mu);
     while (g_pq_in - g_pq_done >= PQ) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // 队满才等；正常由 AcquireTexture 先挡住 | Wait only when the queue is full; normally AcquireTexture blocks first
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime()};
