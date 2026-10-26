@@ -2,11 +2,14 @@
 """用生产 UIKit 视图在可用 iOS 模拟器验收布局；不读取游戏资源。
 Validate production UIKit layouts on available iOS simulators without game assets.
 """
-import argparse,json,os,platform,plistlib,subprocess,time
+import argparse,json,platform,plistlib,subprocess,sys,time
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 def run(*args,**kwargs):
-    return subprocess.run([str(a) for a in args],check=True,capture_output=True,text=True,**kwargs).stdout
+    try:
+        return subprocess.run([str(a) for a in args],check=True,capture_output=True,text=True,**kwargs).stdout
+    except subprocess.CalledProcessError as error:
+        print(error.stdout or '',file=sys.stderr);print(error.stderr or '',file=sys.stderr);raise
 def main(output):
     output.mkdir(parents=True,exist_ok=True)
     runtimes=json.loads(run('xcrun','simctl','list','runtimes','-j'))['runtimes']

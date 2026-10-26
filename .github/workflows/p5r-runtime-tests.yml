@@ -116,6 +116,7 @@ jobs:
           "$RUNNER_TEMP/p5r-profile" p5r
           python3 -m unittest discover -s dm/tools -p test_p5r_pack.py -v
           python3 -m unittest discover -s dm/tools -p test_hle_registration.py -v
+          python3 -m unittest discover -s dm/ios/p5r -p test_build_policy.py -v
           python3 dm/ios/p5r/build_shell.py "$RUNNER_TEMP/p5r-shell" --metal-backend "${{ inputs.metal_backend || '4' }}"
       - name: Retain unsigned shell and build diagnostics
         if: always()

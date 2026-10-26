@@ -16,7 +16,9 @@ void dm_input_set(uint64_t buttons,int32_t lx,int32_t ly,int32_t rx,int32_t ry) 
 - (CGPoint)editCenter:(int)controlID;
 - (uint64_t)faceAt:(CGPoint)point;
 @end
-@interface PadTestTouch : UITouch
+// 生产处理器仅查询位置；用普通测试对象提供位置，避免依赖 UIKit 私有的触摸构造器。
+// Production handlers only query location; a plain test object supplies it without UIKit's private touch constructors.
+@interface PadTestTouch : NSObject
 @property CGPoint point;
 @end
 @implementation PadTestTouch

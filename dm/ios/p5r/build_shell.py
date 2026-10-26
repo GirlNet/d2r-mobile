@@ -47,6 +47,14 @@ def run(command, log):
     return result.returncode
 
 
+def retained_diagnostics(symbols):
+    # 带尾下划线的项是命名空间前缀；其余项必须精确匹配，避免误判正常采样器表 g_sreg。
+    # Trailing underscores mark namespace prefixes; other entries match exactly, excluding normal sampler tables such as g_sreg.
+    forbidden=['_g_compute_probe_', '_g_pg4_', '_g_compute_batch_', '_g_p5r_compute_batch', '_nvn_prof_entry', '_cctx_snap', '_g_sr', '_g_draw_sites', '_g_draw_sites_n']
+    names={line.split()[-1] for line in symbols.splitlines() if line.split()}
+    return [symbol for symbol in forbidden if any(name.startswith(symbol) if symbol.endswith('_') else name==symbol for name in names)]
+
+
 def build(output,metal_backend=4,diagnostics=False):
     if metal_backend not in (3,4):raise ValueError('Metal backend must be 3 or 4')
     # 背景由用户在本地提供；两种设备的图片必须成对存在，不进入公共仓库。
@@ -122,10 +130,9 @@ def build(output,metal_backend=4,diagnostics=False):
         if run(['xcrun', 'nm', executable], logs / 'player-symbols.log'):
             raise RuntimeError('Cannot inspect player build symbols')
         symbols=(logs / 'player-symbols.log').read_text()
-        forbidden=['_g_compute_probe_', '_g_pg4_', '_nvn_prof_entry', '_cctx_snap', '_g_sr', '_g_draw_sites']
-        retained=[symbol for symbol in forbidden if any(line.split()[-1].startswith(symbol) for line in symbols.splitlines() if line.split())]
+        retained=retained_diagnostics(symbols)
         if retained: raise RuntimeError('Player package retained runtime diagnostics: '+', '.join(retained))
-        report['runtime_observation_removed']=forbidden
+        report['runtime_observation_removed']=['NVN counters and wrappers','per-frame statistics','GPU timing and probes','draw-site histogram','submit context snapshot']
     info = dict(CFBundleExecutable='P5RMobile', CFBundleIdentifier='org.p5r.experimental', CFBundleName='P5RMobile',
                 CFBundleDisplayName='P5R Mobile', CFBundlePackageType='APPL', CFBundleInfoDictionaryVersion='6.0',
                 CFBundleVersion='16', CFBundleShortVersionString='0.16', MinimumOSVersion='26.0',

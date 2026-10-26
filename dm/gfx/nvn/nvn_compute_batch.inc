@@ -1,3 +1,4 @@
+#if DM_RUNTIME_DIAGNOSTICS
 // P5R Metal 4：合并相邻的纯缓冲任务；依据统一计算编码器的显式阶段屏障保持读写顺序。
 // P5R Metal 4: batch adjacent buffer-only work, preserving order with explicit unified-compute stage barriers.
 // 保留真机调试开关与计数，防止发布优化删掉同包对照所需的观测点。
@@ -73,3 +74,15 @@ static int compute_batch_buffer_only(const nvn_refl *rf) {
     }
     return 1;
 }
+
+#else
+// 未采纳的批处理只用于开发对照，玩家构建连资格扫描与观测计数一起移除。
+// Unadopted batching is developer-only; player builds omit eligibility scans and observation counters.
+static void compute_batch_stop(void) {}
+static void compute_batch_op(unsigned op) { (void)op; }
+static int compute_batch_shared(id encoder) { (void)encoder;return 0; }
+static int compute_batch_buffer_only(const nvn_refl *reflection) { (void)reflection;return 1; }
+#if !DM_NVN_M3
+static CENC compute_batch_get(void) { return nil; }
+#endif
+#endif
