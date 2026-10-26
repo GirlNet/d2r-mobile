@@ -59,7 +59,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   control-editor:
-    runs-on: macos-26-intel
+    # Intel 上 iOS 26 模拟器启动超时；使用原生 Apple 运行器做 UIKit 画面验收。
+    # iOS 26 simulator boot timed out on Intel; use a native Apple runner for UIKit acceptance.
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
