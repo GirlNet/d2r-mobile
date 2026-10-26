@@ -26,6 +26,7 @@ def main(output):
         '-mios-simulator-version-min=26.0','-fobjc-arc','-fblocks','-Wall','-Werror=implicit-function-declaration','-DDM_P5R_ONLY=1',
         '-I'+str(HERE.parents[1]/'host'),HERE/'dm_pad.m',HERE/'pad_editor.m',HERE/'t_pad_editor.m',HERE.parents[1]/'host/dm_i18n.c',
         '-framework','UIKit','-framework','Foundation','-framework','QuartzCore','-framework','GameController','-framework','CoreText',
+        '-framework','CoreGraphics','-framework','CoreFoundation',
         '-o',app/'PadEditorTest')
     bundle='org.p5r.control-editor-test'
     info=dict(CFBundleExecutable='PadEditorTest',CFBundleIdentifier=bundle,CFBundleName='PadEditorTest',CFBundleVersion='1',
